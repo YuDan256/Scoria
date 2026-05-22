@@ -14,7 +14,24 @@ else()
 endif() 
  
 include_directories(${CMAKE_SOURCE_DIR}/src) 
-file(GLOB_RECURSE SCORIA_SRCS "${CMAKE_SOURCE_DIR}/src/*.c") 
+
+# 显式列出源文件，避免使用 GLOB_RECURSE 带来的依赖追踪问题
+set(SCORIA_SRCS
+    src/main.c
+    src/frontend/lexer.c
+    src/frontend/parser.c
+    src/middleend/types.c
+    src/middleend/symtab.c
+    src/middleend/type_checker.c
+    src/ir/ir_builder.c
+    src/ir/ir_gen.c
+    src/ir/ir_printer.c
+    src/backend/reg_alloc.c
+    src/backend/asm_x86_64.c
+    src/backend/pe_linker.c
+    src/utils/memory_arena.c
+    src/utils/logger.c
+)
  
 add_executable(scoria ${SCORIA_SRCS}) 
 set_target_properties(scoria PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin") 

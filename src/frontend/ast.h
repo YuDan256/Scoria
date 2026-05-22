@@ -1,6 +1,7 @@
 #ifndef SCORIA_AST_H
 #define SCORIA_AST_H
 
+#include <stdbool.h>
 #include "token.h"
 #include "../utils/memory_arena.h"
 

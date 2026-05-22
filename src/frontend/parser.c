@@ -66,6 +66,9 @@ static AstNode* expression(Parser* parser);
 static AstNode* statement(Parser* parser);
 static AstNode* declaration(Parser* parser);
 static AstNode* parse_type(Parser* parser);
+static AstNode* var_declaration(Parser* parser, bool is_editus, bool is_const);
+static AstNode* func_declaration(Parser* parser, bool is_editus, bool is_barbarus);
+static AstNode* struct_declaration(Parser* parser, bool is_editus);
 
 // ---------------------------------------------------------
 // 类型解析 (Type Parsing)

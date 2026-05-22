@@ -83,7 +83,11 @@ bool symtab_define(Symtab* symtab, Token name, SymbolKind kind, ScoriaType* type
     sym->type = type;
     sym->node = node;
     sym->is_editus = is_editus;
+    sym->ir_val = NULL;
     
+    // 将符号反向绑定到 AST 节点，方便 IR 生成器直接读取
+    if (node) node->resolved_symbol = sym;
+
     sym->next = scope->hash_table[index];
     scope->hash_table[index] = sym;
     scope->count++;

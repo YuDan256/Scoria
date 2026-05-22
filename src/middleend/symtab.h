@@ -11,12 +11,15 @@ typedef enum {
     SYM_STRUCT
 } SymbolKind;
 
+struct SirValue; // 前置声明
+
 struct Symbol {
     Token name;
     SymbolKind kind;
     ScoriaType* type;
     AstNode* node; // 声明该符号的 AST 节点
     bool is_editus;
+    struct SirValue* ir_val; // 后端 IR 生成时绑定的虚拟寄存器/内存地址
     struct Symbol* next; // 用于哈希表冲突链
 };
 
