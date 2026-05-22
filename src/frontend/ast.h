@@ -2,6 +2,7 @@
 #define SCORIA_AST_H
 
 #include "token.h"
+#include "../utils/memory_arena.h"
 
 /**
  * @brief 抽象语法树节点类型枚举
@@ -179,6 +180,6 @@ struct AstNode {
 /**
  * @brief 创建一个新的 AST 节点
  */
-AstNode* ast_create_node(AstNodeKind kind, Token token);
+AstNode* ast_create_node(Arena* arena, AstNodeKind kind, Token token);
 
 #endif // SCORIA_AST_H
