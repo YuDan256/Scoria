@@ -41,6 +41,8 @@ typedef enum {
 } AstNodeKind;
 
 typedef struct AstNode AstNode;
+typedef struct ScoriaType ScoriaType; // 中端类型系统前置声明
+typedef struct Symbol Symbol;         // 中端符号表前置声明
 
 /**
  * @brief 抽象语法树节点 (基于标签联合)
@@ -48,6 +50,11 @@ typedef struct AstNode AstNode;
 struct AstNode {
     AstNodeKind kind;
     Token token; // 关联的核心 Token，用于报错定位
+    
+    // --- 中端语义注解 (Semantic Annotations) ---
+    ScoriaType* expr_type;     // 表达式求值后的具体类型 (Type Checker 填充)
+    Symbol* resolved_symbol;   // 标识符解析后指向的符号表条目 (Symtab 填充)
+    
     union {
         struct {
             AstNode** declarations;

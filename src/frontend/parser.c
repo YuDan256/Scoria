@@ -37,7 +37,7 @@ static void advance(Parser* parser) {
     for (;;) {
         parser->current = lexer_next_token(&parser->lexer);
         if (parser->current.kind != TK_UNKNOWN) break;
-        error(parser, "Symbolum ignotum.");
+        error(parser, "Symbolum ignotum est.");
     }
 }
 
@@ -88,9 +88,9 @@ static AstNode* parse_type(Parser* parser) {
         return node;
     } else if (match(parser, TK_TY_ACIES)) {
         node->as.type_node.is_acies = true;
-        consume(parser, TK_LBRACKET, "Exspecta '[' post acies.");
+        consume(parser, TK_LBRACKET, "Post aciem '[' exspectatur.");
         node->as.type_node.array_size = expression(parser);
-        consume(parser, TK_RBRACKET, "Exspecta ']' post magnitudinem aciei.");
+        consume(parser, TK_RBRACKET, "Post magnitudinem aciei ']' exspectatur.");
         node->as.type_node.inner_type = parse_type(parser);
         return node;
     }
@@ -111,7 +111,7 @@ static AstNode* parse_type(Parser* parser) {
                 case TK_TY_I32: node->as.type_node.base_type.kind = TK_TY_P32; break;
                 case TK_TY_I64: node->as.type_node.base_type.kind = TK_TY_P64; break;
                 default: 
-                    error(parser, "Usus invalidus modificationis 'purus'.");
+                    error(parser, "Usus modificationis 'purus' invalidus est.");
                     break;
             }
         } else if (node->as.type_node.base_type.kind == TK_TY_F64 && match(parser, TK_TY_I32)) {
@@ -119,7 +119,7 @@ static AstNode* parse_type(Parser* parser) {
             node->as.type_node.base_type.kind = TK_TY_F32;
         }
     } else {
-        error(parser, "Exspecta nomen typi.");
+        error(parser, "Nomen typi exspectatur.");
     }
 
     return node;
@@ -139,11 +139,11 @@ static AstNode* primary(Parser* parser) {
     }
     if (match(parser, TK_KW_MUTA)) {
         Token keyword = parser->previous;
-        consume(parser, TK_LPAREN, "Exspecta '(' post muta.");
+        consume(parser, TK_LPAREN, "Post 'muta' '(' exspectatur.");
         AstNode* target_type = parse_type(parser);
-        consume(parser, TK_COMMA, "Exspecta ',' post typum in muta.");
+        consume(parser, TK_COMMA, "Post typum in 'muta' ',' exspectatur.");
         AstNode* value = expression(parser);
-        consume(parser, TK_RPAREN, "Exspecta ')' post argumenta muta.");
+        consume(parser, TK_RPAREN, "Post argumenta 'muta' ')' exspectatur.");
         AstNode* node = ast_create_node(&parser->arena, AST_CAST_EXPR, keyword);
         node->as.cast_expr.target_type = target_type;
         node->as.cast_expr.value = value;
@@ -151,11 +151,11 @@ static AstNode* primary(Parser* parser) {
     }
     if (match(parser, TK_KW_VADE) || match(parser, TK_KW_RECEDE)) {
         Token keyword = parser->previous;
-        consume(parser, TK_LPAREN, "Exspecta '(' post vade/recede.");
+        consume(parser, TK_LPAREN, "Post 'vade/recede' '(' exspectatur.");
         AstNode* pointer = expression(parser);
-        consume(parser, TK_COMMA, "Exspecta ',' post indicem.");
+        consume(parser, TK_COMMA, "Post indicem ',' exspectatur.");
         AstNode* offset = expression(parser);
-        consume(parser, TK_RPAREN, "Exspecta ')' post argumenta.");
+        consume(parser, TK_RPAREN, "Post argumenta ')' exspectatur.");
         AstNode* node = ast_create_node(&parser->arena, keyword.kind == TK_KW_VADE ? AST_VADE_EXPR : AST_RECEDE_EXPR, keyword);
         node->as.pointer_offset.pointer = pointer;
         node->as.pointer_offset.offset = offset;
@@ -163,13 +163,13 @@ static AstNode* primary(Parser* parser) {
     }
     if (match(parser, TK_KW_CREA)) {
         Token keyword = parser->previous;
-        consume(parser, TK_LPAREN, "Exspecta '(' post crea.");
+        consume(parser, TK_LPAREN, "Post 'crea' '(' exspectatur.");
         AstNode* type = parse_type(parser);
         AstNode* count = NULL;
         if (match(parser, TK_COMMA)) {
             count = expression(parser);
         }
-        consume(parser, TK_RPAREN, "Exspecta ')' post argumenta crea.");
+        consume(parser, TK_RPAREN, "Post argumenta 'crea' ')' exspectatur.");
         AstNode* node = ast_create_node(&parser->arena, AST_CREA_EXPR, keyword);
         node->as.crea_expr.type = type;
         node->as.crea_expr.count = count;
@@ -177,16 +177,16 @@ static AstNode* primary(Parser* parser) {
     }
     if (match(parser, TK_KW_NECA)) {
         Token keyword = parser->previous;
-        consume(parser, TK_LPAREN, "Exspecta '(' post neca.");
+        consume(parser, TK_LPAREN, "Post 'neca' '(' exspectatur.");
         AstNode* pointer = expression(parser);
-        consume(parser, TK_RPAREN, "Exspecta ')' post argumenta neca.");
+        consume(parser, TK_RPAREN, "Post argumenta 'neca' ')' exspectatur.");
         AstNode* node = ast_create_node(&parser->arena, AST_NECA_EXPR, keyword);
         node->as.neca_expr.pointer = pointer;
         return node;
     }
     if (match(parser, TK_KW_SCRIBE)) {
         Token keyword = parser->previous;
-        consume(parser, TK_LPAREN, "Exspecta '(' post scribe.");
+        consume(parser, TK_LPAREN, "Post 'scribe' '(' exspectatur.");
         AstNode* node = ast_create_node(&parser->arena, AST_SCRIBE_EXPR, keyword);
         node->as.scribe_expr.args = NULL;
         node->as.scribe_expr.arg_count = 0;
@@ -201,15 +201,15 @@ static AstNode* primary(Parser* parser) {
                 node->as.scribe_expr.args[node->as.scribe_expr.arg_count++] = expression(parser);
             } while (match(parser, TK_COMMA));
         }
-        consume(parser, TK_RPAREN, "Exspecta ')' post argumenta scribe.");
+        consume(parser, TK_RPAREN, "Post argumenta 'scribe' ')' exspectatur.");
         return node;
     }
     if (match(parser, TK_LPAREN)) {
         AstNode* expr = expression(parser);
-        consume(parser, TK_RPAREN, "Exspecta ')' post expressionem.");
+        consume(parser, TK_RPAREN, "Post expressionem ')' exspectatur.");
         return expr;
     }
-    error(parser, "Exspecta expressionem.");
+    error(parser, "Expressio exspectatur.");
     return NULL;
 }
 
@@ -233,19 +233,19 @@ static AstNode* postfix(Parser* parser) {
                     node->as.call.args[node->as.call.arg_count++] = expression(parser);
                 } while (match(parser, TK_COMMA));
             }
-            consume(parser, TK_RPAREN, "Exspecta ')' post argumenta.");
+            consume(parser, TK_RPAREN, "Post argumenta ')' exspectatur.");
             expr = node;
         } else if (match(parser, TK_LBRACKET)) {
             Token bracket = parser->previous;
             AstNode* index = expression(parser);
-            consume(parser, TK_RBRACKET, "Exspecta ']' post indicem.");
+            consume(parser, TK_RBRACKET, "Post indicem ']' exspectatur.");
             AstNode* node = ast_create_node(&parser->arena, AST_INDEX_EXPR, bracket);
             node->as.index_expr.target = expr;
             node->as.index_expr.index = index;
             expr = node;
         } else if (match(parser, TK_DOT)) {
             Token dot = parser->previous;
-            consume(parser, TK_IDENTIFIER, "Exspecta nomen proprietatis post '.'.");
+            consume(parser, TK_IDENTIFIER, "Post '.' nomen proprietatis exspectatur.");
             Token name = parser->previous;
             AstNode* node = ast_create_node(&parser->arena, AST_MEMBER_EXPR, dot);
             node->as.member_expr.object = expr;
@@ -254,7 +254,7 @@ static AstNode* postfix(Parser* parser) {
             expr = node;
         } else if (match(parser, TK_ARROW)) {
             Token arrow = parser->previous;
-            consume(parser, TK_IDENTIFIER, "Exspecta nomen proprietatis post '->'.");
+            consume(parser, TK_IDENTIFIER, "Post '->' nomen proprietatis exspectatur.");
             Token name = parser->previous;
             AstNode* node = ast_create_node(&parser->arena, AST_MEMBER_EXPR, arrow);
             node->as.member_expr.object = expr;
@@ -435,7 +435,7 @@ static AstNode* assignment(Parser* parser) {
             node->as.assign.value = value;
             return node;
         }
-        error_at(parser, &equals, "Scopus assignationis invalidus.");
+        error_at(parser, &equals, "Scopus assignationis invalidus est.");
     }
     return expr;
 }
@@ -449,7 +449,7 @@ static AstNode* expression(Parser* parser) {
 // ---------------------------------------------------------
 static AstNode* expression_statement(Parser* parser) {
     AstNode* expr = expression(parser);
-    consume(parser, TK_SEMI, "Exspecta ';' post expressionem.");
+    consume(parser, TK_SEMI, "Post expressionem ';' exspectatur.");
     AstNode* node = ast_create_node(&parser->arena, AST_EXPR_STMT, expr ? expr->token : parser->previous);
     node->as.expr_stmt.expr = expr;
     return node;
@@ -476,18 +476,18 @@ static AstNode* block_statement(Parser* parser) {
             advance(parser);
         }
     }
-    consume(parser, TK_RBRACE, "Exspecta '}' post clausulam.");
+    consume(parser, TK_RBRACE, "Post clausulam '}' exspectatur.");
     return node;
 }
 
 static AstNode* statement(Parser* parser) {
     if (match(parser, TK_KW_SI)) {
         Token keyword = parser->previous;
-        consume(parser, TK_LPAREN, "Exspecta '(' post 'si'.");
+        consume(parser, TK_LPAREN, "Post 'si' '(' exspectatur.");
         AstNode* condition = expression(parser);
-        consume(parser, TK_RPAREN, "Exspecta ')' post condicionem.");
+        consume(parser, TK_RPAREN, "Post condicionem ')' exspectatur.");
         
-        consume(parser, TK_LBRACE, "Exspecta '{' ante corpus 'si'.");
+        consume(parser, TK_LBRACE, "Ante corpus 'si' '{' exspectatur.");
         AstNode* then_branch = block_statement(parser);
         
         AstNode* else_branch = NULL;
@@ -496,7 +496,7 @@ static AstNode* statement(Parser* parser) {
                 // aliter si
                 else_branch = statement(parser);
             } else {
-                consume(parser, TK_LBRACE, "Exspecta '{' ante corpus 'aliter'.");
+                consume(parser, TK_LBRACE, "Ante corpus 'aliter' '{' exspectatur.");
                 else_branch = block_statement(parser);
             }
         }
@@ -509,11 +509,11 @@ static AstNode* statement(Parser* parser) {
     }
     if (match(parser, TK_KW_DUM)) {
         Token keyword = parser->previous;
-        consume(parser, TK_LPAREN, "Exspecta '(' post 'dum'.");
+        consume(parser, TK_LPAREN, "Post 'dum' '(' exspectatur.");
         AstNode* condition = expression(parser);
-        consume(parser, TK_RPAREN, "Exspecta ')' post condicionem.");
+        consume(parser, TK_RPAREN, "Post condicionem ')' exspectatur.");
         
-        consume(parser, TK_LBRACE, "Exspecta '{' ante corpus 'dum'.");
+        consume(parser, TK_LBRACE, "Ante corpus 'dum' '{' exspectatur.");
         AstNode* body = block_statement(parser);
         
         AstNode* node = ast_create_node(&parser->arena, AST_WHILE_STMT, keyword);
@@ -523,7 +523,7 @@ static AstNode* statement(Parser* parser) {
     }
     if (match(parser, TK_KW_PER)) {
         Token keyword = parser->previous;
-        consume(parser, TK_LPAREN, "Exspecta '(' post 'per'.");
+        consume(parser, TK_LPAREN, "Post 'per' '(' exspectatur.");
         
         AstNode* initializer = NULL;
         if (match(parser, TK_SEMI)) {
@@ -538,15 +538,15 @@ static AstNode* statement(Parser* parser) {
         if (!check(parser, TK_SEMI)) {
             condition = expression(parser);
         }
-        consume(parser, TK_SEMI, "Exspecta ';' post condicionem 'per'.");
+        consume(parser, TK_SEMI, "Post condicionem 'per' ';' exspectatur.");
         
         AstNode* increment = NULL;
         if (!check(parser, TK_RPAREN)) {
             increment = expression(parser);
         }
-        consume(parser, TK_RPAREN, "Exspecta ')' post clausulas 'per'.");
+        consume(parser, TK_RPAREN, "Post clausulas 'per' ')' exspectatur.");
         
-        consume(parser, TK_LBRACE, "Exspecta '{' ante corpus 'per'.");
+        consume(parser, TK_LBRACE, "Ante corpus 'per' '{' exspectatur.");
         AstNode* body = block_statement(parser);
         
         AstNode* node = ast_create_node(&parser->arena, AST_FOR_STMT, keyword);
@@ -558,12 +558,12 @@ static AstNode* statement(Parser* parser) {
     }
     if (match(parser, TK_KW_RUMPE)) {
         Token keyword = parser->previous;
-        consume(parser, TK_SEMI, "Exspecta ';' post 'rumpe'.");
+        consume(parser, TK_SEMI, "Post 'rumpe' ';' exspectatur.");
         return ast_create_node(&parser->arena, AST_BREAK_STMT, keyword);
     }
     if (match(parser, TK_KW_PERGE)) {
         Token keyword = parser->previous;
-        consume(parser, TK_SEMI, "Exspecta ';' post 'perge'.");
+        consume(parser, TK_SEMI, "Post 'perge' ';' exspectatur.");
         return ast_create_node(&parser->arena, AST_CONTINUE_STMT, keyword);
     }
     if (match(parser, TK_KW_REDDE)) {
@@ -572,7 +572,7 @@ static AstNode* statement(Parser* parser) {
         if (!check(parser, TK_SEMI)) {
             value = expression(parser);
         }
-        consume(parser, TK_SEMI, "Exspecta ';' post valorem redditum.");
+        consume(parser, TK_SEMI, "Post valorem redditum ';' exspectatur.");
         AstNode* node = ast_create_node(&parser->arena, AST_RETURN_STMT, keyword);
         node->as.return_stmt.value = value;
         return node;
@@ -594,7 +594,7 @@ static AstNode* statement(Parser* parser) {
 // ---------------------------------------------------------
 static AstNode* var_declaration(Parser* parser, bool is_editus, bool is_const) {
     Token keyword = parser->previous;
-    consume(parser, TK_IDENTIFIER, "Exspecta nomen variabilis.");
+    consume(parser, TK_IDENTIFIER, "Nomen variabilis exspectatur.");
     Token name = parser->previous;
 
     AstNode* type = NULL;
@@ -606,14 +606,14 @@ static AstNode* var_declaration(Parser* parser, bool is_editus, bool is_const) {
     if (match(parser, TK_ASSIGN)) {
         initializer = expression(parser);
     } else if (is_const) {
-        error(parser, "Exspecta '=' et valorem pro 'lex'.");
+        error(parser, "Pro 'lex' '=' et valor exspectantur.");
     }
 
     if (!type && !initializer) {
-        error(parser, "Exspecta typum vel valorem pro inferentia.");
+        error(parser, "Pro inferentia typus vel valor exspectatur.");
     }
 
-    consume(parser, TK_SEMI, "Exspecta ';' post declarationem variabilis.");
+    consume(parser, TK_SEMI, "Post declarationem variabilis ';' exspectatur.");
 
     AstNode* node = ast_create_node(&parser->arena, is_const ? AST_CONST_DECL : AST_VAR_DECL, keyword);
     node->as.var_decl.name = name;
@@ -625,10 +625,10 @@ static AstNode* var_declaration(Parser* parser, bool is_editus, bool is_const) {
 
 static AstNode* func_declaration(Parser* parser, bool is_editus, bool is_barbarus) {
     Token keyword = parser->previous;
-    consume(parser, TK_IDENTIFIER, "Exspecta nomen actionis.");
+    consume(parser, TK_IDENTIFIER, "Nomen actionis exspectatur.");
     Token name = parser->previous;
 
-    consume(parser, TK_LPAREN, "Exspecta '(' post nomen actionis.");
+    consume(parser, TK_LPAREN, "Post nomen actionis '(' exspectatur.");
     
     AstNode** params = NULL;
     int param_count = 0;
@@ -641,9 +641,9 @@ static AstNode* func_declaration(Parser* parser, bool is_editus, bool is_barbaru
                 capacity = capacity < 4 ? 4 : capacity * 2;
                 params = arena_realloc(&parser->arena, params, sizeof(AstNode*) * old_capacity, sizeof(AstNode*) * capacity);
             }
-            consume(parser, TK_IDENTIFIER, "Exspecta nomen parametri.");
+            consume(parser, TK_IDENTIFIER, "Nomen parametri exspectatur.");
             Token param_name = parser->previous;
-            consume(parser, TK_COLON, "Exspecta ':' post nomen parametri.");
+            consume(parser, TK_COLON, "Post nomen parametri ':' exspectatur.");
             AstNode* param_type = parse_type(parser);
             
             AstNode* param_node = ast_create_node(&parser->arena, AST_VAR_DECL, param_name);
@@ -654,7 +654,7 @@ static AstNode* func_declaration(Parser* parser, bool is_editus, bool is_barbaru
             params[param_count++] = param_node;
         } while (match(parser, TK_COMMA));
     }
-    consume(parser, TK_RPAREN, "Exspecta ')' post parametros.");
+    consume(parser, TK_RPAREN, "Post parametros ')' exspectatur.");
 
     AstNode* return_type = NULL;
     if (match(parser, TK_ARROW)) {
@@ -665,7 +665,7 @@ static AstNode* func_declaration(Parser* parser, bool is_editus, bool is_barbaru
     if (match(parser, TK_SEMI)) {
         // 外部函数声明，无函数体
     } else {
-        consume(parser, TK_LBRACE, "Exspecta '{' ante corpus actionis.");
+        consume(parser, TK_LBRACE, "Ante corpus actionis '{' exspectatur.");
         body = block_statement(parser);
     }
 
@@ -687,10 +687,10 @@ static AstNode* struct_declaration(Parser* parser, bool is_editus) {
         is_densa = true;
     }
     
-    consume(parser, TK_IDENTIFIER, "Exspecta nomen formae.");
+    consume(parser, TK_IDENTIFIER, "Nomen formae exspectatur.");
     Token name = parser->previous;
     
-    consume(parser, TK_LBRACE, "Exspecta '{' ante corpus formae.");
+    consume(parser, TK_LBRACE, "Ante corpus formae '{' exspectatur.");
     
     AstNode** fields = NULL;
     int field_count = 0;
@@ -705,12 +705,12 @@ static AstNode* struct_declaration(Parser* parser, bool is_editus) {
             }
             fields[field_count++] = var_declaration(parser, false, false);
         } else {
-            error(parser, "Exspecta 'sit' pro declaratione campi formae.");
+            error(parser, "Pro declaratione campi formae 'sit' exspectatur.");
             advance(parser);
         }
     }
     
-    consume(parser, TK_RBRACE, "Exspecta '}' post corpus formae.");
+    consume(parser, TK_RBRACE, "Post corpus formae '}' exspectatur.");
     
     AstNode* node = ast_create_node(&parser->arena, AST_STRUCT_DECL, keyword);
     node->as.struct_decl.name = name;
@@ -754,26 +754,26 @@ static AstNode* declaration(Parser* parser) {
     
     if (match(parser, TK_KW_LIBER)) {
         Token keyword = parser->previous;
-        consume(parser, TK_IDENTIFIER, "Exspecta nomen libri.");
+        consume(parser, TK_IDENTIFIER, "Nomen libri exspectatur.");
         Token name = parser->previous;
-        consume(parser, TK_SEMI, "Exspecta ';' post declarationem libri.");
+        consume(parser, TK_SEMI, "Post declarationem libri ';' exspectatur.");
         decl = ast_create_node(&parser->arena, AST_MODULE_DECL, keyword);
         decl->as.module_decl.name = name;
     } else if (match(parser, TK_KW_CONSULE)) {
         Token keyword = parser->previous;
-        consume(parser, TK_KW_LIBER, "Exspecta 'liber' post 'consule'.");
-        consume(parser, TK_IDENTIFIER, "Exspecta nomen libri.");
+        consume(parser, TK_KW_LIBER, "Post 'consule' 'liber' exspectatur.");
+        consume(parser, TK_IDENTIFIER, "Nomen libri exspectatur.");
         Token name = parser->previous;
-        consume(parser, TK_SEMI, "Exspecta ';' post declarationem importatam.");
+        consume(parser, TK_SEMI, "Post declarationem importatam ';' exspectatur.");
         decl = ast_create_node(&parser->arena, AST_IMPORT_DECL, keyword);
         decl->as.import_decl.module_name = name;
         decl->as.import_decl.items = NULL;
         decl->as.import_decl.item_count = 0;
     } else if (match(parser, TK_KW_DE)) {
         Token keyword = parser->previous;
-        consume(parser, TK_IDENTIFIER, "Exspecta nomen libri post 'de'.");
+        consume(parser, TK_IDENTIFIER, "Post 'de' nomen libri exspectatur.");
         Token name = parser->previous;
-        consume(parser, TK_KW_EXCERPE, "Exspecta 'excerpe' post nomen libri.");
+        consume(parser, TK_KW_EXCERPE, "Post nomen libri 'excerpe' exspectatur.");
         
         Token* items = NULL;
         int item_count = 0;
@@ -785,11 +785,11 @@ static AstNode* declaration(Parser* parser) {
                 capacity = capacity < 4 ? 4 : capacity * 2;
                 items = arena_realloc(&parser->arena, items, sizeof(Token) * old_capacity, sizeof(Token) * capacity);
             }
-            consume(parser, TK_IDENTIFIER, "Exspecta nomen elementi ad importandum.");
+            consume(parser, TK_IDENTIFIER, "Nomen elementi ad importandum exspectatur.");
             items[item_count++] = parser->previous;
         } while (match(parser, TK_COMMA));
         
-        consume(parser, TK_SEMI, "Exspecta ';' post declarationem importatam.");
+        consume(parser, TK_SEMI, "Post declarationem importatam ';' exspectatur.");
         decl = ast_create_node(&parser->arena, AST_IMPORT_DECL, keyword);
         decl->as.import_decl.module_name = name;
         decl->as.import_decl.items = items;
@@ -808,7 +808,7 @@ static AstNode* declaration(Parser* parser) {
             decl = struct_declaration(parser, is_editus);
         } else {
             if (is_editus || is_barbarus) {
-                error(parser, "Usus invalidus modificationis 'editus' vel 'barbarus'.");
+                error(parser, "Usus modificationis 'editus' vel 'barbarus' invalidus est.");
             }
             decl = statement(parser);
         }
