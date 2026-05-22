@@ -76,16 +76,23 @@ static AstNode* parse_type(Parser* parser) {
     node->as.type_node.is_cohors = false;
     node->as.type_node.is_acies = false;
     node->as.type_node.array_size = NULL;
+    node->as.type_node.inner_type = NULL;
 
     if (match(parser, TK_TY_VIA)) {
         node->as.type_node.is_via = true;
+        node->as.type_node.inner_type = parse_type(parser);
+        return node;
     } else if (match(parser, TK_TY_COHORS)) {
         node->as.type_node.is_cohors = true;
+        node->as.type_node.inner_type = parse_type(parser);
+        return node;
     } else if (match(parser, TK_TY_ACIES)) {
         node->as.type_node.is_acies = true;
         consume(parser, TK_LBRACKET, "Exspecta '[' post acies.");
         node->as.type_node.array_size = expression(parser);
         consume(parser, TK_RBRACKET, "Exspecta ']' post magnitudinem aciei.");
+        node->as.type_node.inner_type = parse_type(parser);
+        return node;
     }
 
     if (match(parser, TK_TY_I8) || match(parser, TK_TY_I16) || match(parser, TK_TY_I32) || match(parser, TK_TY_I64) ||
@@ -103,7 +110,9 @@ static AstNode* parse_type(Parser* parser) {
                 case TK_TY_I16: node->as.type_node.base_type.kind = TK_TY_P16; break;
                 case TK_TY_I32: node->as.type_node.base_type.kind = TK_TY_P32; break;
                 case TK_TY_I64: node->as.type_node.base_type.kind = TK_TY_P64; break;
-                default: error(parser, "Usus invalidus modificationis 'purus'.");
+                default: 
+                    error(parser, "Usus invalidus modificationis 'purus'.");
+                    break;
             }
         } else if (node->as.type_node.base_type.kind == TK_TY_F64 && match(parser, TK_TY_I32)) {
             // fractus (f64) medius (i32) -> f32
@@ -458,7 +467,14 @@ static AstNode* block_statement(Parser* parser) {
             capacity = capacity < 8 ? 8 : capacity * 2;
             node->as.block.statements = arena_realloc(&parser->arena, node->as.block.statements, sizeof(AstNode*) * old_capacity, sizeof(AstNode*) * capacity);
         }
-        node->as.block.statements[node->as.block.stmt_count++] = declaration(parser);
+        AstNode* decl = declaration(parser);
+        if (decl) {
+            node->as.block.statements[node->as.block.stmt_count++] = decl;
+        }
+        // 如果在恐慌模式下，且游标没有前进，强制推进以避免死循环
+        if (parser->panic_mode && parser->current.kind == parser->previous.kind) {
+            advance(parser);
+        }
     }
     consume(parser, TK_RBRACE, "Exspecta '}' post clausulam.");
     return node;
@@ -707,21 +723,30 @@ static AstNode* struct_declaration(Parser* parser, bool is_editus) {
 
 // 错误恢复同步
 static void synchronize(Parser* parser) {
-    parser->panic_mode = false;
     while (parser->current.kind != TK_EOF) {
-        if (parser->previous.kind == TK_SEMI) return;
+        if (parser->previous.kind == TK_SEMI) {
+            parser->panic_mode = false;
+            return;
+        }
         switch (parser->current.kind) {
             case TK_KW_ACTIO:
             case TK_KW_SIT:
+            case TK_KW_LEX:
+            case TK_TY_FORMA:
+            case TK_KW_LIBER:
+            case TK_KW_CONSULE:
             case TK_KW_SI:
             case TK_KW_DUM:
+            case TK_KW_PER:
             case TK_KW_REDDE:
+                parser->panic_mode = false;
                 return;
             default:
                 ; // 继续寻找同步点
         }
         advance(parser);
     }
+    parser->panic_mode = false;
 }
 
 static AstNode* declaration(Parser* parser) {
@@ -821,7 +846,14 @@ AstNode* parse_program(Parser* parser) {
             capacity = capacity < 8 ? 8 : capacity * 2;
             node->as.program.declarations = arena_realloc(&parser->arena, node->as.program.declarations, sizeof(AstNode*) * old_capacity, sizeof(AstNode*) * capacity);
         }
-        node->as.program.declarations[node->as.program.decl_count++] = declaration(parser);
+        AstNode* decl = declaration(parser);
+        if (decl) {
+            node->as.program.declarations[node->as.program.decl_count++] = decl;
+        }
+        // 如果在恐慌模式下，且游标没有前进，强制推进以避免死循环
+        if (parser->panic_mode && parser->current.kind == parser->previous.kind) {
+            advance(parser);
+        }
     }
     return node;
 }

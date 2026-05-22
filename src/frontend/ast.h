@@ -183,6 +183,7 @@ struct AstNode {
             bool is_cohors;
             bool is_acies;
             AstNode* array_size;
+            AstNode* inner_type; // 支持多级嵌套类型 (如 via via i32)
         } type_node;
     } as;
 };

@@ -61,7 +61,10 @@ void* arena_realloc(Arena* arena, void* old_ptr, size_t old_size, size_t new_siz
     if ((uint8_t*)old_ptr + aligned_old == chunk->base + chunk->offset) {
         if (chunk->offset - aligned_old + aligned_new <= chunk->size) {
             chunk->offset = chunk->offset - aligned_old + aligned_new;
-            memset((uint8_t*)old_ptr + aligned_old, 0, aligned_new - aligned_old);
+            // 只有在扩容时才需要清零新增的物理内存，避免缩容时 size_t 下溢
+            if (aligned_new > aligned_old) {
+                memset((uint8_t*)old_ptr + aligned_old, 0, aligned_new - aligned_old);
+            }
             return old_ptr;
         }
     }
