@@ -1,21 +1,20 @@
-﻿# CMakeList.txt: Scoria 的 CMake 项目，在此处包括源代码并定义
-# 项目特定的逻辑。
-#
-cmake_minimum_required (VERSION 3.8)
-
-# 如果支持，请为 MSVC 编译器启用热重载。
-if (POLICY CMP0141)
-  cmake_policy(SET CMP0141 NEW)
-  set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<IF:$<AND:$<C_COMPILER_ID:MSVC>,$<CXX_COMPILER_ID:MSVC>>,$<$<CONFIG:Debug,RelWithDebInfo>:EditAndContinue>,$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>>")
-endif()
-
-project ("Scoria")
-
-# 将源代码添加到此项目的可执行文件。
-add_executable (Scoria "Scoria.cpp" "Scoria.h")
-
-if (CMAKE_VERSION VERSION_GREATER 3.12)
-  set_property(TARGET Scoria PROPERTY CXX_STANDARD 20)
-endif()
-
-# TODO: 如有需要，请添加测试并安装目标。
+cmake_minimum_required(VERSION 3.15) 
+ 
+project(Scoria VERSION 1.0.0 LANGUAGES C) 
+ 
+set(CMAKE_C_STANDARD 11) 
+set(CMAKE_C_STANDARD_REQUIRED ON) 
+set(CMAKE_C_EXTENSIONS OFF) 
+ 
+if(CMAKE_C_COMPILER_ID MATCHES "MSVC") 
+    add_compile_options(/W4 /WX /utf-8) 
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS) 
+else() 
+    add_compile_options(-Wall -Wextra -Werror) 
+endif() 
+ 
+include_directories(${CMAKE_SOURCE_DIR}/src) 
+file(GLOB_RECURSE SCORIA_SRCS "${CMAKE_SOURCE_DIR}/src/*.c") 
+ 
+add_executable(scoria ${SCORIA_SRCS}) 
+set_target_properties(scoria PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin") 
