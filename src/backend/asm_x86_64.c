@@ -4,9 +4,9 @@
 #include <string.h>
 
 // 物理寄存器映射表 (对应 reg_alloc.h 中的 NUM_PHYS_REGS = 6)
-static const char* phys_regs64[] = {"%rbx", "%r10", "%r11", "%r12", "%r13", "%r14"};
-static const char* phys_regs32[] = {"%ebx", "%r10d", "%r11d", "%r12d", "%r13d", "%r14d"};
-static const char* phys_regs8[]  = {"%bl", "%r10b", "%r11b", "%r12b", "%r13b", "%r14b"};
+static const char* phys_regs64[] = {"%rbx", "%rsi", "%rdi", "%r12", "%r13", "%r14"};
+static const char* phys_regs32[] = {"%ebx", "%esi", "%edi", "%r12d", "%r13d", "%r14d"};
+static const char* phys_regs8[]  = {"%bl", "%sil", "%dil", "%r12b", "%r13b", "%r14b"};
 
 // 辅助函数：将 SirValue 转换为 x86_64 汇编操作数格式
 static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int size) {
