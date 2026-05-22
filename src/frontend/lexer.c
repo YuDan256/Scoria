@@ -108,6 +108,9 @@ static TokenKind identifier_type(Lexer* lexer) {
     if (len == 3 && memcmp(lexer->start, "crs", 3) == 0) return TK_TY_COHORS;
     if (len == 3 && memcmp(lexer->start, "act", 3) == 0) return TK_KW_ACTIO;
     if (len == 3 && memcmp(lexer->start, "rdd", 3) == 0) return TK_KW_REDDE;
+    if (len == 3 && memcmp(lexer->start, "nhl", 3) == 0) return TK_KW_NIHIL;
+    if (len == 3 && memcmp(lexer->start, "rmp", 3) == 0) return TK_KW_RUMPE;
+    if (len == 3 && memcmp(lexer->start, "prg", 3) == 0) return TK_KW_PERGE;
 
     // 【古典宗卷长体映射网络】
     switch (c) {
@@ -156,10 +159,20 @@ static TokenKind identifier_type(Lexer* lexer) {
         break;
     case 'n':
         if (len == 4) return check_keyword(lexer, 1, 3, "eca", TK_KW_NECA);
+        if (len == 5) return check_keyword(lexer, 1, 4, "ihil", TK_KW_NIHIL);
         break;
-    case 'p': return check_keyword(lexer, 1, 4, "urus", TK_TY_PURUS);
+    case 'p':
+        if (len == 3) return check_keyword(lexer, 1, 2, "er", TK_KW_PER);
+        if (len == 5) {
+            if (memcmp(lexer->start + 1, "erge", 4) == 0) return TK_KW_PERGE;
+            if (memcmp(lexer->start + 1, "urus", 4) == 0) return TK_TY_PURUS;
+        }
+        break;
     case 'r':
-        if (len == 5) return check_keyword(lexer, 1, 4, "edde", TK_KW_REDDE);
+        if (len == 5) {
+            if (memcmp(lexer->start + 1, "edde", 4) == 0) return TK_KW_REDDE;
+            if (memcmp(lexer->start + 1, "umpe", 4) == 0) return TK_KW_RUMPE;
+        }
         if (len == 6) return check_keyword(lexer, 1, 5, "ecede", TK_KW_RECEDE);
         break;
     case 's':

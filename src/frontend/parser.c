@@ -92,7 +92,7 @@ static AstNode* parse_type(Parser* parser) {
         match(parser, TK_TY_P8) || match(parser, TK_TY_P16) || match(parser, TK_TY_P32) || match(parser, TK_TY_P64) ||
         match(parser, TK_TY_F32) || match(parser, TK_TY_F64) ||
         match(parser, TK_TY_LOGICA) || match(parser, TK_TY_LITTERA) || match(parser, TK_TY_TEXTUS) ||
-        match(parser, TK_IDENTIFIER)) {
+        match(parser, TK_KW_NIHIL) || match(parser, TK_IDENTIFIER)) {
         
         node->as.type_node.base_type = parser->previous;
         
@@ -122,7 +122,7 @@ static AstNode* parse_type(Parser* parser) {
 static AstNode* primary(Parser* parser) {
     if (match(parser, TK_INT_CONST) || match(parser, TK_FLOAT_CONST) ||
         match(parser, TK_BOOL_CONST) || match(parser, TK_STRING_CONST) ||
-        match(parser, TK_CHAR_CONST)) {
+        match(parser, TK_CHAR_CONST) || match(parser, TK_KW_NIHIL)) {
         return ast_create_node(&parser->arena, AST_LITERAL_EXPR, parser->previous);
     }
     if (match(parser, TK_IDENTIFIER)) {
@@ -505,6 +505,51 @@ static AstNode* statement(Parser* parser) {
         node->as.while_stmt.body = body;
         return node;
     }
+    if (match(parser, TK_KW_PER)) {
+        Token keyword = parser->previous;
+        consume(parser, TK_LPAREN, "Exspecta '(' post 'per'.");
+        
+        AstNode* initializer = NULL;
+        if (match(parser, TK_SEMI)) {
+            // 空初始化
+        } else if (match(parser, TK_KW_SIT)) {
+            initializer = var_declaration(parser, false, false);
+        } else {
+            initializer = expression_statement(parser);
+        }
+        
+        AstNode* condition = NULL;
+        if (!check(parser, TK_SEMI)) {
+            condition = expression(parser);
+        }
+        consume(parser, TK_SEMI, "Exspecta ';' post condicionem 'per'.");
+        
+        AstNode* increment = NULL;
+        if (!check(parser, TK_RPAREN)) {
+            increment = expression(parser);
+        }
+        consume(parser, TK_RPAREN, "Exspecta ')' post clausulas 'per'.");
+        
+        consume(parser, TK_LBRACE, "Exspecta '{' ante corpus 'per'.");
+        AstNode* body = block_statement(parser);
+        
+        AstNode* node = ast_create_node(&parser->arena, AST_FOR_STMT, keyword);
+        node->as.for_stmt.initializer = initializer;
+        node->as.for_stmt.condition = condition;
+        node->as.for_stmt.increment = increment;
+        node->as.for_stmt.body = body;
+        return node;
+    }
+    if (match(parser, TK_KW_RUMPE)) {
+        Token keyword = parser->previous;
+        consume(parser, TK_SEMI, "Exspecta ';' post 'rumpe'.");
+        return ast_create_node(&parser->arena, AST_BREAK_STMT, keyword);
+    }
+    if (match(parser, TK_KW_PERGE)) {
+        Token keyword = parser->previous;
+        consume(parser, TK_SEMI, "Exspecta ';' post 'perge'.");
+        return ast_create_node(&parser->arena, AST_CONTINUE_STMT, keyword);
+    }
     if (match(parser, TK_KW_REDDE)) {
         Token keyword = parser->previous;
         AstNode* value = NULL;
@@ -518,6 +563,12 @@ static AstNode* statement(Parser* parser) {
     }
     if (match(parser, TK_LBRACE)) {
         return block_statement(parser);
+    }
+    if (match(parser, TK_SEMI)) {
+        // 容忍孤立的分号 (空语句)
+        AstNode* node = ast_create_node(&parser->arena, AST_EXPR_STMT, parser->previous);
+        node->as.expr_stmt.expr = NULL;
+        return node;
     }
     return expression_statement(parser);
 }
@@ -538,7 +589,14 @@ static AstNode* var_declaration(Parser* parser, bool is_editus, bool is_const) {
     AstNode* initializer = NULL;
     if (match(parser, TK_ASSIGN)) {
         initializer = expression(parser);
+    } else if (is_const) {
+        error(parser, "Exspecta '=' et valorem pro 'lex'.");
     }
+
+    if (!type && !initializer) {
+        error(parser, "Exspecta typum vel valorem pro inferentia.");
+    }
+
     consume(parser, TK_SEMI, "Exspecta ';' post declarationem variabilis.");
 
     AstNode* node = ast_create_node(&parser->arena, is_const ? AST_CONST_DECL : AST_VAR_DECL, keyword);

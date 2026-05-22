@@ -56,9 +56,10 @@ typedef enum {
 
     // ================= [语言关键字 : 流程与指令] =================
     TK_KW_ACTIO, TK_KW_REDDE, TK_KW_SIT, TK_KW_LEX,
-    TK_KW_SI, TK_KW_ALITER, TK_KW_DUM, TK_KW_MUTA,
+    TK_KW_SI, TK_KW_ALITER, TK_KW_DUM, TK_KW_PER, TK_KW_MUTA,
+    TK_KW_RUMPE, TK_KW_PERGE,
     TK_KW_LOCUS, TK_KW_TENE, TK_KW_VADE, TK_KW_RECEDE,
-    TK_KW_SCRIBE, TK_KW_CREA, TK_KW_NECA,
+    TK_KW_SCRIBE, TK_KW_CREA, TK_KW_NECA, TK_KW_NIHIL,
 
     // ================= [系统类型定义] =================
     // 现代工程缩写

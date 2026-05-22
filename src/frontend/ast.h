@@ -19,6 +19,9 @@ typedef enum {
     AST_EXPR_STMT,
     AST_IF_STMT,
     AST_WHILE_STMT,
+    AST_FOR_STMT,
+    AST_BREAK_STMT,
+    AST_CONTINUE_STMT,
     AST_RETURN_STMT,
     AST_BINARY_EXPR,
     AST_UNARY_EXPR,
@@ -101,6 +104,13 @@ struct AstNode {
             AstNode* condition;
             AstNode* body;
         } while_stmt;
+
+        struct {
+            AstNode* initializer;
+            AstNode* condition;
+            AstNode* increment;
+            AstNode* body;
+        } for_stmt;
 
         struct {
             AstNode* value;
