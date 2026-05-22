@@ -5,24 +5,46 @@
 
 #define ALIGN_UP(n, a) (((n) + (a) - 1) & ~((a) - 1))
 
-void arena_init(Arena* arena, size_t size) {
-    arena->base = (uint8_t*)malloc(size);
-    if (!arena->base) {
-        fprintf(stderr, "Clades Memoriae: Failed to allocate %zu bytes for Arena.\n", size);
+static ArenaChunk* arena_chunk_create(size_t size) {
+    ArenaChunk* chunk = (ArenaChunk*)malloc(sizeof(ArenaChunk));
+    if (!chunk) {
+        fprintf(stderr, "Clades Memoriae: Allocatio ArenaChunk defecit.\n");
         exit(1);
     }
-    arena->size = size;
-    arena->offset = 0;
+    chunk->base = (uint8_t*)malloc(size);
+    if (!chunk->base) {
+        fprintf(stderr, "Clades Memoriae: Allocatio %zu octetorum pro Arena defecit.\n", size);
+        exit(1);
+    }
+    chunk->size = size;
+    chunk->offset = 0;
+    chunk->next = NULL;
+    return chunk;
+}
+
+void arena_init(Arena* arena, size_t size) {
+    arena->default_chunk_size = size;
+    arena->head = arena_chunk_create(size);
+    arena->current = arena->head;
 }
 
 void* arena_alloc(Arena* arena, size_t size) {
     size_t aligned_size = ALIGN_UP(size, 8);
-    if (arena->offset + aligned_size > arena->size) {
-        fprintf(stderr, "Clades Memoriae: Arena out of memory! (Capacity: %zu)\n", arena->size);
-        exit(1);
+    ArenaChunk* chunk = arena->current;
+
+    if (chunk->offset + aligned_size > chunk->size) {
+        // 当前营地已满，开辟新营地并链接
+        size_t new_size = arena->default_chunk_size;
+        if (aligned_size > new_size) new_size = aligned_size;
+        
+        ArenaChunk* new_chunk = arena_chunk_create(new_size);
+        chunk->next = new_chunk;
+        arena->current = new_chunk;
+        chunk = new_chunk;
     }
-    void* ptr = arena->base + arena->offset;
-    arena->offset += aligned_size;
+
+    void* ptr = chunk->base + chunk->offset;
+    chunk->offset += aligned_size;
     memset(ptr, 0, aligned_size); // 物理清零，确保安全
     return ptr;
 }
@@ -33,16 +55,15 @@ void* arena_realloc(Arena* arena, void* old_ptr, size_t old_size, size_t new_siz
 
     size_t aligned_old = ALIGN_UP(old_size, 8);
     size_t aligned_new = ALIGN_UP(new_size, 8);
+    ArenaChunk* chunk = arena->current;
 
-    // 如果是最后一次分配，直接在原地址向后推进游标
-    if ((uint8_t*)old_ptr + aligned_old == arena->base + arena->offset) {
-        if (arena->offset - aligned_old + aligned_new > arena->size) {
-            fprintf(stderr, "Clades Memoriae: Arena out of memory during realloc!\n");
-            exit(1);
+    // 如果是最后一次分配，且当前营地容量足够，直接在原地址向后推进游标
+    if ((uint8_t*)old_ptr + aligned_old == chunk->base + chunk->offset) {
+        if (chunk->offset - aligned_old + aligned_new <= chunk->size) {
+            chunk->offset = chunk->offset - aligned_old + aligned_new;
+            memset((uint8_t*)old_ptr + aligned_old, 0, aligned_new - aligned_old);
+            return old_ptr;
         }
-        arena->offset = arena->offset - aligned_old + aligned_new;
-        memset((uint8_t*)old_ptr + aligned_old, 0, aligned_new - aligned_old);
-        return old_ptr;
     }
 
     // 否则，开辟新领地并转移辎重
@@ -52,10 +73,13 @@ void* arena_realloc(Arena* arena, void* old_ptr, size_t old_size, size_t new_siz
 }
 
 void arena_free(Arena* arena) {
-    if (arena->base) {
-        free(arena->base);
-        arena->base = NULL;
+    ArenaChunk* chunk = arena->head;
+    while (chunk) {
+        ArenaChunk* next = chunk->next;
+        free(chunk->base);
+        free(chunk);
+        chunk = next;
     }
-    arena->size = 0;
-    arena->offset = 0;
+    arena->head = NULL;
+    arena->current = NULL;
 }

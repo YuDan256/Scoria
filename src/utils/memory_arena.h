@@ -7,10 +7,17 @@
 /**
  * @brief 幽灵后勤大营：巨型连续内存池 (Bump Allocator)
  */
-typedef struct {
+typedef struct ArenaChunk {
     uint8_t* base;
     size_t size;
     size_t offset;
+    struct ArenaChunk* next;
+} ArenaChunk;
+
+typedef struct {
+    ArenaChunk* head;
+    ArenaChunk* current;
+    size_t default_chunk_size;
 } Arena;
 
 /**
