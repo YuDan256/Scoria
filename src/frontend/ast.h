@@ -80,6 +80,7 @@ struct AstNode {
             AstNode* body;
             bool is_editus;
             bool is_barbarus;
+            Token dll_name; // 用于 barbara("dll.dll")
         } func_decl;
 
         struct {

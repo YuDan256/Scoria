@@ -631,10 +631,21 @@ static AstNode* func_declaration(Parser* parser) {
     Token keyword = parser->previous;
     bool is_edita = false;
     bool is_barbara = false;
+    Token dll_name = {0};
+    
     while (true) {
-        if (match(parser, TK_KW_EDITA)) is_edita = true;
-        else if (match(parser, TK_KW_BARBARA)) is_barbara = true;
-        else break;
+        if (match(parser, TK_KW_EDITA)) {
+            is_edita = true;
+        } else if (match(parser, TK_KW_BARBARA)) {
+            is_barbara = true;
+            if (match(parser, TK_LPAREN)) {
+                consume(parser, TK_STRING_CONST, "Nomen bibliothecae (DLL) exspectatur.");
+                dll_name = parser->previous;
+                consume(parser, TK_RPAREN, "Post nomen bibliothecae ')' exspectatur.");
+            }
+        } else {
+            break;
+        }
     }
     consume(parser, TK_IDENTIFIER, "Nomen actionis exspectatur.");
     Token name = parser->previous;
@@ -688,6 +699,7 @@ static AstNode* func_declaration(Parser* parser) {
     node->as.func_decl.body = body;
     node->as.func_decl.is_editus = is_edita;
     node->as.func_decl.is_barbarus = is_barbara;
+    node->as.func_decl.dll_name = dll_name;
     return node;
 }
 

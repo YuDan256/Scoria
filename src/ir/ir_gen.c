@@ -640,6 +640,13 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
             Symbol* sym = decl->resolved_symbol;
             if (!sym || sym->type->kind != TY_ACTIO) continue;
 
+            if (!decl->as.func_decl.body) {
+                // 外部函数声明 (barbara)
+                ir_builder_add_extern(builder, decl->as.func_decl.name.start, decl->as.func_decl.name.length, 
+                                      decl->as.func_decl.dll_name.start, decl->as.func_decl.dll_name.length);
+                continue;
+            }
+
             // 1. 提取函数名并创建 SIR 函数
             char* func_name = (char*)arena_alloc(&builder->arena, decl->as.func_decl.name.length + 1);
             memcpy(func_name, decl->as.func_decl.name.start, decl->as.func_decl.name.length);

@@ -29,6 +29,7 @@ set(SCORIA_SRCS
     src/backend/reg_alloc.c
     src/backend/asm_x86_64.c
     src/backend/pe_linker.c
+    src/backend/pe_idata.c
     src/backend/builtins.c
     src/utils/memory_arena.c
     src/utils/logger.c

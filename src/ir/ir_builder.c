@@ -16,6 +16,8 @@ void ir_builder_init(IrBuilder* builder, const char* module_name) {
     builder->module->last_func = NULL;
     builder->module->first_global = NULL;
     builder->module->last_global = NULL;
+    builder->module->first_extern = NULL;
+    builder->module->last_extern = NULL;
     
     builder->current_func = NULL;
     builder->current_block = NULL;
@@ -50,6 +52,34 @@ SirGlobalVar* ir_builder_create_global(IrBuilder* builder, const char* name_star
     }
     builder->module->last_global = gvar;
     return gvar;
+}
+
+void ir_builder_add_extern(IrBuilder* builder, const char* name_start, int name_len, const char* dll_start, int dll_len) {
+    SirExternFunc* ext = (SirExternFunc*)arena_alloc(&builder->arena, sizeof(SirExternFunc));
+    char* name = (char*)arena_alloc(&builder->arena, name_len + 1);
+    strncpy(name, name_start, name_len);
+    name[name_len] = '\0';
+    ext->name = name;
+    
+    if (dll_start && dll_len >= 2) {
+        // 去除首尾引号
+        int actual_len = dll_len - 2;
+        char* dll = (char*)arena_alloc(&builder->arena, actual_len + 1);
+        strncpy(dll, dll_start + 1, actual_len);
+        dll[actual_len] = '\0';
+        ext->dll_name = dll;
+    } else {
+        ext->dll_name = "msvcrt.dll"; // 默认 fallback
+    }
+    
+    ext->next = NULL;
+    
+    if (!builder->module->first_extern) {
+        builder->module->first_extern = ext;
+    } else {
+        builder->module->last_extern->next = ext;
+    }
+    builder->module->last_extern = ext;
 }
 
 SirFunction* ir_builder_create_function(IrBuilder* builder, const char* name, ScoriaType* func_type) {

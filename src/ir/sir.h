@@ -115,6 +115,15 @@ typedef struct SirGlobalVar {
 } SirGlobalVar;
 
 // =========================================================
+// SIR 外部函数 (Extern Functions)
+// =========================================================
+typedef struct SirExternFunc {
+    const char* name;
+    const char* dll_name;
+    struct SirExternFunc* next;
+} SirExternFunc;
+
+// =========================================================
 // SIR 模块 (Modules)
 // =========================================================
 typedef struct SirModule {
@@ -125,6 +134,9 @@ typedef struct SirModule {
     
     SirGlobalVar* first_global;
     SirGlobalVar* last_global;
+    
+    SirExternFunc* first_extern;
+    SirExternFunc* last_extern;
 } SirModule;
 
 #endif // SCORIA_SIR_H

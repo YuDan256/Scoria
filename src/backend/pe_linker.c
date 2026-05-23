@@ -1,6 +1,7 @@
 #include "pe_linker.h"
 #include "reg_alloc.h"
 #include "builtins.h"
+#include "pe_idata.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -224,6 +225,7 @@ typedef struct {
     const char** funcs;
     uint32_t* func_offsets;
     int func_count;
+    SirExternFunc* first_extern;
 } LinkCtx;
 
 // 全局重定位表 (用于跨函数回填)
@@ -239,6 +241,10 @@ int g_data_reloc_count = 0;
 uint32_t g_func_relocs[1024];
 uint32_t g_func_offs[1024];
 int g_func_reloc_count = 0;
+
+uint32_t g_extern_relocs[1024];
+int g_extern_idxs[1024];
+int g_extern_reloc_count = 0;
 
 // 智能操作数加载器：处理常量、物理寄存器、栈溢出和 RIP 寻址
 static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, int scratch, LinkCtx* ctx) {
@@ -281,10 +287,6 @@ static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, in
         emit32(cb, 0); // 占位符，链接时回填
         return scratch;
     } else if (val->kind == SIR_VAL_GLOBAL) {
-        emit_rex(cb, 1, scratch > 7, 0, 0);
-        emit8(cb, 0x8D); // lea r64, [rip + rel32]
-        emit_modrm(cb, 0, scratch & 7, 5);
-        
         bool is_global = false;
         uint32_t target_off = 0;
         for (int i = 0; i < ctx->global_count; i++) {
@@ -296,22 +298,51 @@ static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, in
         }
         
         if (is_global) {
+            emit_rex(cb, 1, scratch > 7, 0, 0);
+            emit8(cb, 0x8D); // lea r64, [rip + rel32]
+            emit_modrm(cb, 0, scratch & 7, 5);
             if (ctx->pass == 1) {
                 g_data_relocs[g_data_reloc_count] = (uint32_t)cb->size;
                 g_data_offs[g_data_reloc_count] = target_off;
                 g_data_reloc_count++;
             }
         } else {
-            for (int i = 0; i < ctx->func_count; i++) {
-                if (strcmp(ctx->funcs[i], val->as.global_name) == 0) {
-                    target_off = ctx->func_offsets[i];
+            bool is_extern = false;
+            int target_idx = 0;
+            int current_idx = 0;
+            for (SirExternFunc* ext = ctx->first_extern; ext; ext = ext->next) {
+                if (strcmp(ext->name, val->as.global_name) == 0) {
+                    is_extern = true;
+                    target_idx = current_idx;
                     break;
                 }
+                current_idx++;
             }
-            if (ctx->pass == 1) {
-                g_func_relocs[g_func_reloc_count] = (uint32_t)cb->size;
-                g_func_offs[g_func_reloc_count] = target_off;
-                g_func_reloc_count++;
+            
+            if (is_extern) {
+                emit_rex(cb, 1, scratch > 7, 0, 0);
+                emit8(cb, 0x8B); // mov r64, [rip + rel32] (从 IAT 读取函数指针)
+                emit_modrm(cb, 0, scratch & 7, 5);
+                if (ctx->pass == 1) {
+                    g_extern_relocs[g_extern_reloc_count] = (uint32_t)cb->size;
+                    g_extern_idxs[g_extern_reloc_count] = target_idx;
+                    g_extern_reloc_count++;
+                }
+            } else {
+                emit_rex(cb, 1, scratch > 7, 0, 0);
+                emit8(cb, 0x8D); // lea r64, [rip + rel32]
+                emit_modrm(cb, 0, scratch & 7, 5);
+                for (int i = 0; i < ctx->func_count; i++) {
+                    if (strcmp(ctx->funcs[i], val->as.global_name) == 0) {
+                        target_off = ctx->func_offsets[i];
+                        break;
+                    }
+                }
+                if (ctx->pass == 1) {
+                    g_func_relocs[g_func_reloc_count] = (uint32_t)cb->size;
+                    g_func_offs[g_func_reloc_count] = target_off;
+                    g_func_reloc_count++;
+                }
             }
         }
         emit32(cb, 0);
@@ -481,6 +512,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
         g_neca_reloc_count = 0;
         g_data_reloc_count = 0;
         g_func_reloc_count = 0;
+        g_extern_reloc_count = 0;
 
         LinkCtx ctx;
         ctx.pass = pass;
@@ -493,6 +525,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
         ctx.funcs = func_names;
         ctx.func_offsets = func_offsets;
         ctx.func_count = func_count;
+        ctx.first_extern = module->first_extern;
 
         int current_func_idx = 0;
         for (SirFunction* func = module->first_func; func; func = func->next) {
@@ -1111,15 +1144,37 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
                             
                             if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
-                                uint32_t target_offset = 0;
-                                for (int f = 0; f < ctx.func_count; f++) {
-                                    if (strcmp(ctx.funcs[f], inst->operands[0]->as.global_name) == 0) {
-                                        target_offset = ctx.func_offsets[f];
+                                bool is_extern = false;
+                                int target_idx = 0;
+                                int current_idx = 0;
+                                for (SirExternFunc* ext = ctx.first_extern; ext; ext = ext->next) {
+                                    if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
+                                        is_extern = true;
+                                        target_idx = current_idx;
                                         break;
                                     }
+                                    current_idx++;
                                 }
-                                emit8(&linker->text_section, 0xE8); // call rel32
-                                emit32(&linker->text_section, (uint32_t)(target_offset - (linker->text_section.size + 4)));
+
+                                if (is_extern) {
+                                    emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15); // call [rip + rel32]
+                                    if (ctx.pass == 1) {
+                                        g_extern_relocs[g_extern_reloc_count] = (uint32_t)linker->text_section.size;
+                                        g_extern_idxs[g_extern_reloc_count] = target_idx;
+                                        g_extern_reloc_count++;
+                                    }
+                                    emit32(&linker->text_section, 0);
+                                } else {
+                                    uint32_t target_offset = 0;
+                                    for (int f = 0; f < ctx.func_count; f++) {
+                                        if (strcmp(ctx.funcs[f], inst->operands[0]->as.global_name) == 0) {
+                                            target_offset = ctx.func_offsets[f];
+                                            break;
+                                        }
+                                    }
+                                    emit8(&linker->text_section, 0xE8); // call rel32
+                                    emit32(&linker->text_section, (uint32_t)(target_offset - (linker->text_section.size + 4)));
+                                }
                             } else {
                                 int callee_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_R10, &ctx);
                                 emit_rex(&linker->text_section, 1, 0, 0, callee_reg > 7);
@@ -1272,97 +1327,30 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     // =========================================================
     // 构建导入表 (Import Directory)
     // =========================================================
-    // 确保 IAT 8 字节对齐
-    while (linker->rdata_section.size % 8 != 0) buf_append(&linker->rdata_section, 0);
-
     uint32_t rdata_rva = align_up(text_sec.VirtualAddress + text_sec.VirtualSize, sec_align);
-    uint32_t current_rdata_offset = (uint32_t)linker->rdata_section.size;
-
-    // 1. IAT (FirstThunk)
-    uint32_t iat_offset = current_rdata_offset;
-    uint64_t iat[] = {0, 0, 0, 0, 0, 0, 0};
-    for (size_t i=0; i<sizeof(iat); i++) buf_append(&linker->rdata_section, ((uint8_t*)&iat)[i]);
-
-    // 2. INT (OriginalFirstThunk)
-    uint32_t int_offset = (uint32_t)linker->rdata_section.size;
-    uint64_t int_array[] = {0, 0, 0, 0, 0, 0, 0};
-    for (size_t i=0; i<sizeof(int_array); i++) buf_append(&linker->rdata_section, ((uint8_t*)&int_array)[i]);
-
-    // 3. Hint/Name
-    uint32_t hn_getstdhandle_offset = (uint32_t)linker->rdata_section.size;
-    buf_append(&linker->rdata_section, 0); buf_append(&linker->rdata_section, 0);
-    const char* name1 = "GetStdHandle";
-    for (size_t i=0; i<=strlen(name1); i++) buf_append(&linker->rdata_section, (uint8_t)name1[i]);
-    if (linker->rdata_section.size % 2 != 0) buf_append(&linker->rdata_section, 0);
-
-    uint32_t hn_writefile_offset = (uint32_t)linker->rdata_section.size;
-    buf_append(&linker->rdata_section, 0); buf_append(&linker->rdata_section, 0);
-    const char* name2 = "WriteFile";
-    for (size_t i=0; i<=strlen(name2); i++) buf_append(&linker->rdata_section, (uint8_t)name2[i]);
-    if (linker->rdata_section.size % 2 != 0) buf_append(&linker->rdata_section, 0);
-
-    uint32_t hn_exitprocess_offset = (uint32_t)linker->rdata_section.size;
-    buf_append(&linker->rdata_section, 0); buf_append(&linker->rdata_section, 0);
-    const char* name3 = "ExitProcess";
-    for (size_t i=0; i<=strlen(name3); i++) buf_append(&linker->rdata_section, (uint8_t)name3[i]);
-    if (linker->rdata_section.size % 2 != 0) buf_append(&linker->rdata_section, 0);
-
-    uint32_t hn_getprocessheap_offset = (uint32_t)linker->rdata_section.size;
-    buf_append(&linker->rdata_section, 0); buf_append(&linker->rdata_section, 0);
-    const char* name4 = "GetProcessHeap";
-    for (size_t i=0; i<=strlen(name4); i++) buf_append(&linker->rdata_section, (uint8_t)name4[i]);
-    if (linker->rdata_section.size % 2 != 0) buf_append(&linker->rdata_section, 0);
-
-    uint32_t hn_heapalloc_offset = (uint32_t)linker->rdata_section.size;
-    buf_append(&linker->rdata_section, 0); buf_append(&linker->rdata_section, 0);
-    const char* name5 = "HeapAlloc";
-    for (size_t i=0; i<=strlen(name5); i++) buf_append(&linker->rdata_section, (uint8_t)name5[i]);
-    if (linker->rdata_section.size % 2 != 0) buf_append(&linker->rdata_section, 0);
-
-    uint32_t hn_heapfree_offset = (uint32_t)linker->rdata_section.size;
-    buf_append(&linker->rdata_section, 0); buf_append(&linker->rdata_section, 0);
-    const char* name6 = "HeapFree";
-    for (size_t i=0; i<=strlen(name6); i++) buf_append(&linker->rdata_section, (uint8_t)name6[i]);
-    if (linker->rdata_section.size % 2 != 0) buf_append(&linker->rdata_section, 0);
-
-    // 4. DLL Name
-    uint32_t dll_name_offset = (uint32_t)linker->rdata_section.size;
-    const char* dll_name = "kernel32.dll";
-    for (size_t i=0; i<=strlen(dll_name); i++) buf_append(&linker->rdata_section, (uint8_t)dll_name[i]);
-
-    // 5. Import Descriptor
-    uint32_t import_desc_offset = (uint32_t)linker->rdata_section.size;
-    ImageImportDescriptor desc[2] = {0};
-    desc[0].OriginalFirstThunk = rdata_rva + int_offset;
-    desc[0].Name = rdata_rva + dll_name_offset;
-    desc[0].FirstThunk = rdata_rva + iat_offset;
-    for (size_t i=0; i<sizeof(desc); i++) buf_append(&linker->rdata_section, ((uint8_t*)&desc)[i]);
-
-    // 回填 IAT 和 INT
-    uint64_t hn1_rva = rdata_rva + hn_getstdhandle_offset;
-    uint64_t hn2_rva = rdata_rva + hn_writefile_offset;
-    uint64_t hn3_rva = rdata_rva + hn_exitprocess_offset;
-    uint64_t hn4_rva = rdata_rva + hn_getprocessheap_offset;
-    uint64_t hn5_rva = rdata_rva + hn_heapalloc_offset;
-    uint64_t hn6_rva = rdata_rva + hn_heapfree_offset;
-    memcpy(linker->rdata_section.buffer + iat_offset, &hn1_rva, 8);
-    memcpy(linker->rdata_section.buffer + iat_offset + 8, &hn2_rva, 8);
-    memcpy(linker->rdata_section.buffer + iat_offset + 16, &hn3_rva, 8);
-    memcpy(linker->rdata_section.buffer + iat_offset + 24, &hn4_rva, 8);
-    memcpy(linker->rdata_section.buffer + iat_offset + 32, &hn5_rva, 8);
-    memcpy(linker->rdata_section.buffer + iat_offset + 40, &hn6_rva, 8);
-    memcpy(linker->rdata_section.buffer + int_offset, &hn1_rva, 8);
-    memcpy(linker->rdata_section.buffer + int_offset + 8, &hn2_rva, 8);
-    memcpy(linker->rdata_section.buffer + int_offset + 16, &hn3_rva, 8);
-    memcpy(linker->rdata_section.buffer + int_offset + 24, &hn4_rva, 8);
-    memcpy(linker->rdata_section.buffer + int_offset + 32, &hn5_rva, 8);
-    memcpy(linker->rdata_section.buffer + int_offset + 40, &hn6_rva, 8);
-
-    // 更新 Optional Header
-    opt.DataDirectory[1].VirtualAddress = rdata_rva + import_desc_offset; // Import Table RVA
-    opt.DataDirectory[1].Size = (uint32_t)sizeof(desc);                   // Import Table Size
-    opt.DataDirectory[12].VirtualAddress = rdata_rva + iat_offset;        // IAT RVA
-    opt.DataDirectory[12].Size = 56;                                      // IAT Size (7 entries * 8 bytes)
+    
+    PeImportTable* idata = pe_idata_create();
+    pe_idata_add_import(idata, "kernel32.dll", "GetStdHandle");
+    pe_idata_add_import(idata, "kernel32.dll", "WriteFile");
+    pe_idata_add_import(idata, "kernel32.dll", "ExitProcess");
+    pe_idata_add_import(idata, "kernel32.dll", "GetProcessHeap");
+    pe_idata_add_import(idata, "kernel32.dll", "HeapAlloc");
+    pe_idata_add_import(idata, "kernel32.dll", "HeapFree");
+    
+    for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) {
+        pe_idata_add_import(idata, ext->dll_name, ext->name);
+    }
+    
+    uint32_t import_dir_offset = 0;
+    uint32_t import_dir_size = 0;
+    uint32_t iat_rva = 0;
+    uint32_t iat_size = 0;
+    pe_idata_build(idata, &linker->rdata_section, rdata_rva, &import_dir_offset, &import_dir_size, &iat_rva, &iat_size);
+    
+    opt.DataDirectory[1].VirtualAddress = rdata_rva + import_dir_offset;
+    opt.DataDirectory[1].Size = import_dir_size;
+    opt.DataDirectory[12].VirtualAddress = iat_rva;
+    opt.DataDirectory[12].Size = iat_size;
 
     rdata_sec.VirtualSize = (uint32_t)linker->rdata_section.size;
     rdata_sec.SizeOfRawData = align_up((uint32_t)linker->rdata_section.size, file_align);
@@ -1507,33 +1495,37 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
         memcpy(linker->text_section.buffer + text_off, &rel32, 4);
     }
 
-    // 回填 IAT 调用重定位
-    int32_t rel_getstdhandle = (int32_t)((rdata_sec.VirtualAddress + iat_offset) - (text_sec.VirtualAddress + g_call_getstdhandle_reloc + 4));
-    memcpy(linker->text_section.buffer + g_call_getstdhandle_reloc, &rel_getstdhandle, 4);
+    // 回填 IAT 调用重定位 (Builtins)
+    #define RELOC_IAT(reloc_var, dll, func) \
+        do { \
+            uint32_t iat_off = pe_idata_get_iat_offset(idata, dll, func); \
+            int32_t rel32 = (int32_t)((rdata_sec.VirtualAddress + iat_off) - (text_sec.VirtualAddress + reloc_var + 4)); \
+            memcpy(linker->text_section.buffer + reloc_var, &rel32, 4); \
+        } while(0)
 
-    int32_t rel_writefile = (int32_t)((rdata_sec.VirtualAddress + iat_offset + 8) - (text_sec.VirtualAddress + g_call_writeconsolea_reloc + 4));
-    memcpy(linker->text_section.buffer + g_call_writeconsolea_reloc, &rel_writefile, 4);
+    RELOC_IAT(g_call_getstdhandle_reloc, "kernel32.dll", "GetStdHandle");
+    RELOC_IAT(g_call_writeconsolea_reloc, "kernel32.dll", "WriteFile");
+    RELOC_IAT(g_call_getstdhandle_reloc2, "kernel32.dll", "GetStdHandle");
+    RELOC_IAT(g_call_writeconsolea_reloc2, "kernel32.dll", "WriteFile");
+    RELOC_IAT(g_call_exitprocess_reloc, "kernel32.dll", "ExitProcess");
+    RELOC_IAT(g_call_getprocessheap_reloc1, "kernel32.dll", "GetProcessHeap");
+    RELOC_IAT(g_call_getprocessheap_reloc2, "kernel32.dll", "GetProcessHeap");
+    RELOC_IAT(g_call_heapalloc_reloc, "kernel32.dll", "HeapAlloc");
+    RELOC_IAT(g_call_heapfree_reloc, "kernel32.dll", "HeapFree");
 
-    int32_t rel_getstdhandle2 = (int32_t)((rdata_sec.VirtualAddress + iat_offset) - (text_sec.VirtualAddress + g_call_getstdhandle_reloc2 + 4));
-    memcpy(linker->text_section.buffer + g_call_getstdhandle_reloc2, &rel_getstdhandle2, 4);
-
-    int32_t rel_writefile2 = (int32_t)((rdata_sec.VirtualAddress + iat_offset + 8) - (text_sec.VirtualAddress + g_call_writeconsolea_reloc2 + 4));
-    memcpy(linker->text_section.buffer + g_call_writeconsolea_reloc2, &rel_writefile2, 4);
-
-    int32_t rel_exitprocess = (int32_t)((rdata_sec.VirtualAddress + iat_offset + 16) - (text_sec.VirtualAddress + g_call_exitprocess_reloc + 4));
-    memcpy(linker->text_section.buffer + g_call_exitprocess_reloc, &rel_exitprocess, 4);
-
-    int32_t rel_getprocessheap1 = (int32_t)((rdata_sec.VirtualAddress + iat_offset + 24) - (text_sec.VirtualAddress + g_call_getprocessheap_reloc1 + 4));
-    memcpy(linker->text_section.buffer + g_call_getprocessheap_reloc1, &rel_getprocessheap1, 4);
-
-    int32_t rel_getprocessheap2 = (int32_t)((rdata_sec.VirtualAddress + iat_offset + 24) - (text_sec.VirtualAddress + g_call_getprocessheap_reloc2 + 4));
-    memcpy(linker->text_section.buffer + g_call_getprocessheap_reloc2, &rel_getprocessheap2, 4);
-
-    int32_t rel_heapalloc = (int32_t)((rdata_sec.VirtualAddress + iat_offset + 32) - (text_sec.VirtualAddress + g_call_heapalloc_reloc + 4));
-    memcpy(linker->text_section.buffer + g_call_heapalloc_reloc, &rel_heapalloc, 4);
-
-    int32_t rel_heapfree = (int32_t)((rdata_sec.VirtualAddress + iat_offset + 40) - (text_sec.VirtualAddress + g_call_heapfree_reloc + 4));
-    memcpy(linker->text_section.buffer + g_call_heapfree_reloc, &rel_heapfree, 4);
+    // 回填外部函数 (Externs) 调用重定位
+    for (int i = 0; i < g_extern_reloc_count; i++) {
+        uint32_t text_off = g_extern_relocs[i];
+        int target_idx = g_extern_idxs[i];
+        SirExternFunc* ext = module->first_extern;
+        for (int j = 0; j < target_idx; j++) ext = ext->next;
+        
+        uint32_t iat_off = pe_idata_get_iat_offset(idata, ext->dll_name, ext->name);
+        int32_t rel32 = (int32_t)((rdata_sec.VirtualAddress + iat_off) - (text_sec.VirtualAddress + text_off + 4));
+        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+    }
+    
+    pe_idata_free(idata);
 
     // 写入 .text 段
     fwrite(linker->text_section.buffer, 1, linker->text_section.size, out);
