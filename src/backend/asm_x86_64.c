@@ -99,11 +99,21 @@ static void generate_function(FILE* out, SirFunction* func) {
     fprintf(out, "    pushq %%r14\n");
     fprintf(out, "    pushq %%r15\n");
     
-    // 将前 4 个参数寄存器保存到 Shadow Space
-    fprintf(out, "    movq %%rcx, 16(%%rbp)\n");
-    fprintf(out, "    movq %%rdx, 24(%%rbp)\n");
-    fprintf(out, "    movq %%r8, 32(%%rbp)\n");
-    fprintf(out, "    movq %%r9, 40(%%rbp)\n");
+    // 将前 4 个参数寄存器保存到 Shadow Space (支持浮点数)
+    int param_count = func->type->as.func_type.param_count;
+    for (int i = 0; i < param_count && i < 4; i++) {
+        ScoriaType* ptype = func->type->as.func_type.param_types[i];
+        bool is_float = (ptype && (ptype->kind == TY_F32 || ptype->kind == TY_F64));
+        bool is_f32 = (ptype && ptype->kind == TY_F32);
+        int offset = 16 + i * 8;
+        if (is_float) {
+            if (is_f32) fprintf(out, "    movss %%xmm%d, %d(%%rbp)\n", i, offset);
+            else fprintf(out, "    movsd %%xmm%d, %d(%%rbp)\n", i, offset);
+        } else {
+            const char* regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
+            fprintf(out, "    movq %s, %d(%%rbp)\n", regs[i], offset);
+        }
+    }
 
     // 2. 扫描函数，找到最大的虚拟寄存器 ID 和 ALLOCA 空间
     uint32_t max_vreg = 0;
@@ -323,7 +333,21 @@ static void generate_function(FILE* out, SirFunction* func) {
                 case SIR_GET_PARAM: {
                     int param_idx = (int)inst->operands[0]->as.int_val;
                     int offset = 16 + param_idx * 8;
-                    fprintf(out, "    movq %d(%%rbp), %%rax\n", offset);
+                    int size = type_get_size(inst->dest->type);
+                    bool is_signed = type_is_signed(inst->dest->type);
+                    
+                    if (size == 1) {
+                        if (is_signed) fprintf(out, "    movsbq %d(%%rbp), %%rax\n", offset);
+                        else fprintf(out, "    movzbq %d(%%rbp), %%rax\n", offset);
+                    } else if (size == 2) {
+                        if (is_signed) fprintf(out, "    movswq %d(%%rbp), %%rax\n", offset);
+                        else fprintf(out, "    movzwq %d(%%rbp), %%rax\n", offset);
+                    } else if (size == 4) {
+                        if (is_signed) fprintf(out, "    movslq %d(%%rbp), %%rax\n", offset);
+                        else fprintf(out, "    movl %d(%%rbp), %%eax\n", offset);
+                    } else {
+                        fprintf(out, "    movq %d(%%rbp), %%rax\n", offset);
+                    }
                     fprintf(out, "    movq %%rax, %s\n", dest);
                     break;
                 }

@@ -96,6 +96,10 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                     if (expr->token.start[i] == '\\' && i + 1 < expr->token.length - 1) {
                         if (expr->token.start[i+1] == 'n') { str[j++] = '\n'; i++; continue; }
                         if (expr->token.start[i+1] == 't') { str[j++] = '\t'; i++; continue; }
+                        if (expr->token.start[i+1] == 'r') { str[j++] = '\r'; i++; continue; }
+                        if (expr->token.start[i+1] == '0') { str[j++] = '\0'; i++; continue; }
+                        if (expr->token.start[i+1] == '"') { str[j++] = '\"'; i++; continue; }
+                        if (expr->token.start[i+1] == '\'') { str[j++] = '\''; i++; continue; }
                         if (expr->token.start[i+1] == '\\') { str[j++] = '\\'; i++; continue; }
                     }
                     str[j++] = expr->token.start[i];

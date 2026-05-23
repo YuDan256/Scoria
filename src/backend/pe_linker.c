@@ -564,15 +564,27 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                 emit32(&linker->text_section, (uint32_t)stack_size);
             }
             
-            // 将前 4 个参数寄存器保存到 Shadow Space
-            // mov [rbp+16], rcx
-            emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit_mem(&linker->text_section, REG_RCX, REG_RBP, 16);
-            // mov [rbp+24], rdx
-            emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit_mem(&linker->text_section, REG_RDX, REG_RBP, 24);
-            // mov [rbp+32], r8
-            emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x89); emit_mem(&linker->text_section, 0, REG_RBP, 32); // r8 is reg 0 with REX.R
-            // mov [rbp+40], r9
-            emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x89); emit_mem(&linker->text_section, 1, REG_RBP, 40); // r9 is reg 1 with REX.R
+            // 将前 4 个参数寄存器保存到 Shadow Space (支持浮点数)
+            int param_count = func->type->as.func_type.param_count;
+            for (int i = 0; i < param_count && i < 4; i++) {
+                ScoriaType* ptype = func->type->as.func_type.param_types[i];
+                bool is_float = (ptype && (ptype->kind == TY_F32 || ptype->kind == TY_F64));
+                bool is_f32 = (ptype && ptype->kind == TY_F32);
+                int offset = 16 + i * 8;
+                
+                if (is_float) {
+                    // movss/movsd [rbp+offset], xmmI
+                    emit8(&linker->text_section, is_f32 ? 0xF3 : 0xF2);
+                    emit_rex(&linker->text_section, 0, 0, 0, 0);
+                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x11);
+                    emit_mem(&linker->text_section, i, REG_RBP, offset);
+                } else {
+                    int regs[] = {REG_RCX, REG_RDX, 8, 9};
+                    emit_rex(&linker->text_section, 1, regs[i] > 7, 0, 0);
+                    emit8(&linker->text_section, 0x89);
+                    emit_mem(&linker->text_section, regs[i] & 7, REG_RBP, offset);
+                }
+            }
 
             for (SirBlock* block = func->first_block; block; block = block->next) {
                 if (block->id < 1024) block_offsets[block->id] = (uint32_t)linker->text_section.size;
@@ -582,8 +594,27 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_GET_PARAM: {
                             int param_idx = (int)inst->operands[0]->as.int_val;
                             int offset = 16 + param_idx * 8; // 前4个在 shadow space (16~40)，后面的紧跟其后 (48+)
-                            emit_rex(&linker->text_section, 1, 0, 0, 0);
-                            emit8(&linker->text_section, 0x8B); // mov rax, [rbp + offset]
+                            int size = type_get_size(inst->dest->type);
+                            bool is_signed = type_is_signed(inst->dest->type);
+                            
+                            if (size == 1) {
+                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBE : 0xB6); // movsx/movzx rax, byte ptr
+                            } else if (size == 2) {
+                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBF : 0xB7); // movsx/movzx rax, word ptr
+                            } else if (size == 4) {
+                                if (is_signed) {
+                                    emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                    emit8(&linker->text_section, 0x63); // movsxd rax, dword ptr
+                                } else {
+                                    emit_rex(&linker->text_section, 0, 0, 0, 0);
+                                    emit8(&linker->text_section, 0x8B); // mov eax, dword ptr
+                                }
+                            } else {
+                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                emit8(&linker->text_section, 0x8B); // mov rax, qword ptr
+                            }
                             emit_mem(&linker->text_section, REG_RAX, REG_RBP, offset);
                             store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                             break;
