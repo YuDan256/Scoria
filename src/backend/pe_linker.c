@@ -313,8 +313,27 @@ static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, in
         int color = reg_alloc_get_color(alloc, val->as.vreg);
         if (color != -1) return get_phys_reg(color);
         int offset = reg_alloc_get_offset(alloc, val->as.vreg, 8);
-        emit_rex(cb, 1, scratch > 7, 0, 0);
-        emit8(cb, 0x8B); // mov r64, m64
+        int size = type_get_size(val->type);
+        bool is_signed = type_is_signed(val->type);
+        
+        if (size == 1) {
+            emit_rex(cb, 1, scratch > 7, 0, 0);
+            emit8(cb, 0x0F); emit8(cb, is_signed ? 0xBE : 0xB6); // movsx/movzx r64, m8
+        } else if (size == 2) {
+            emit_rex(cb, 1, scratch > 7, 0, 0);
+            emit8(cb, 0x0F); emit8(cb, is_signed ? 0xBF : 0xB7); // movsx/movzx r64, m16
+        } else if (size == 4) {
+            if (is_signed) {
+                emit_rex(cb, 1, scratch > 7, 0, 0);
+                emit8(cb, 0x63); // movsxd r64, m32
+            } else {
+                emit_rex(cb, 0, scratch > 7, 0, 0);
+                emit8(cb, 0x8B); // mov r32, m32
+            }
+        } else {
+            emit_rex(cb, 1, scratch > 7, 0, 0);
+            emit8(cb, 0x8B); // mov r64, m64
+        }
         emit_mem(cb, scratch, REG_RBP, offset);
         return scratch;
     }
@@ -480,11 +499,16 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
 
             uint32_t max_vreg = 0;
             int local_stack_size = 72; // 56字节给7个callee-saved + 16字节给caller-saved(r10,r11)
+            int max_call_args = 0;
             int* alloca_offsets = calloc(10000, sizeof(int));
 
-            // 预扫描：计算最大寄存器和 ALLOCA 空间
+            // 预扫描：计算最大寄存器、ALLOCA 空间和最大调用参数数
             for (SirBlock* block = func->first_block; block; block = block->next) {
                 for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                    if (inst->opcode == SIR_CALL) {
+                        int args = inst->num_operands - 1;
+                        if (args > max_call_args) max_call_args = args;
+                    }
                     if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
                         if (inst->dest->as.vreg > max_vreg) max_vreg = inst->dest->as.vreg;
                     }
@@ -507,7 +531,8 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             allocator.current_offset = local_stack_size;
             reg_alloc_build_and_color(&allocator, func);
 
-            int stack_size = allocator.current_offset + 32; // 预留 32 字节 Shadow Space (Windows ABI)
+            int call_stack_space = max_call_args > 4 ? (max_call_args - 4) * 8 : 0;
+            int stack_size = allocator.current_offset + 32 + call_stack_space; // 预留 Shadow Space 和溢出参数空间
             // 保持 16 字节对齐，并补偿 9 个 push (1 个 ret addr + 8 个 rbp/rbx 等) 造成的 8 字节偏移
             stack_size = (stack_size + 15) & ~15;
             stack_size += 8;
@@ -624,6 +649,38 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 // cvtsi2sd xmm0, rax
                                 emit8(&linker->text_section, 0xF2); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x2A); emit_modrm(&linker->text_section, 3, 0, REG_RAX); // cvtsi2sd xmm0, rax
                                 emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); emit_modrm(&linker->text_section, 3, 0, REG_RAX); // movq rax, xmm0
+                            } else {
+                                int src_size = type_get_size(src_type);
+                                int dst_size = type_get_size(dst_type);
+                                if (src_size < dst_size) {
+                                    if (type_is_signed(src_type)) {
+                                        if (src_size == 1) {
+                                            emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                            emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xBE); // movsx rax, al
+                                        } else if (src_size == 2) {
+                                            emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                            emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xBF); // movsx rax, ax
+                                        } else if (src_size == 4) {
+                                            emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                            emit8(&linker->text_section, 0x63); // movsxd rax, eax
+                                        }
+                                        emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
+                                    } else {
+                                        if (src_size == 1) {
+                                            emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                            emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB6); // movzx rax, al
+                                            emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
+                                        } else if (src_size == 2) {
+                                            emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                            emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB7); // movzx rax, ax
+                                            emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
+                                        } else if (src_size == 4) {
+                                            emit_rex(&linker->text_section, 0, 0, 0, 0);
+                                            emit8(&linker->text_section, 0x8B); // mov eax, eax (zero extends to rax)
+                                            emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
+                                        }
+                                    }
+                                }
                             }
                             
                             store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
@@ -693,17 +750,28 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         }
                         case SIR_DIV:
                         case SIR_MOD: {
+                            bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                             int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
                             int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                             if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
                             
-                            emit_rex(&linker->text_section, 1, 0, 0, 0);
-                            emit8(&linker->text_section, 0x99); // cqo
-                            
-                            emit_rex(&linker->text_section, 1, 0, 0, 0);
-                            emit8(&linker->text_section, 0xF7); // idiv rcx
-                            emit_modrm(&linker->text_section, 3, 7, REG_RCX);
+                            if (is_unsigned) {
+                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                emit8(&linker->text_section, 0x31); // xor rdx, rdx
+                                emit_modrm(&linker->text_section, 3, REG_RDX, REG_RDX);
+                                
+                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                emit8(&linker->text_section, 0xF7); // div rcx
+                                emit_modrm(&linker->text_section, 3, 6, REG_RCX);
+                            } else {
+                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                emit8(&linker->text_section, 0x99); // cqo
+                                
+                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                emit8(&linker->text_section, 0xF7); // idiv rcx
+                                emit_modrm(&linker->text_section, 3, 7, REG_RCX);
+                            }
                             
                             if (inst->opcode == SIR_MOD) {
                                 emit_mov_reg_reg(&linker->text_section, REG_RAX, REG_RDX);
@@ -713,14 +781,19 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         }
                         case SIR_SHL:
                         case SIR_SHR: {
+                            bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                             int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
                             int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                             if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
                             
                             emit_rex(&linker->text_section, 1, 0, 0, 0);
-                            emit8(&linker->text_section, 0xD3); // shl/shr rax, cl
-                            emit_modrm(&linker->text_section, 3, inst->opcode == SIR_SHL ? 4 : 5, REG_RAX);
+                            emit8(&linker->text_section, 0xD3); // shl/shr/sar rax, cl
+                            if (inst->opcode == SIR_SHL) {
+                                emit_modrm(&linker->text_section, 3, 4, REG_RAX);
+                            } else {
+                                emit_modrm(&linker->text_section, 3, is_unsigned ? 5 : 7, REG_RAX);
+                            }
                             
                             store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                             break;
@@ -769,13 +842,14 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 emit_modrm(&linker->text_section, 3, right & 7, left & 7);
                             }
                             
+                            bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                             emit8(&linker->text_section, 0x0F); // setCC al
-                            if (inst->opcode == SIR_ICMP_LT) emit8(&linker->text_section, 0x9C);
-                            else if (inst->opcode == SIR_ICMP_GT) emit8(&linker->text_section, 0x9F);
-                            else if (inst->opcode == SIR_ICMP_LE) emit8(&linker->text_section, 0x9E);
-                            else if (inst->opcode == SIR_ICMP_GE) emit8(&linker->text_section, 0x9D);
-                            else if (inst->opcode == SIR_ICMP_EQ) emit8(&linker->text_section, 0x94);
+                            if (inst->opcode == SIR_ICMP_EQ) emit8(&linker->text_section, 0x94);
                             else if (inst->opcode == SIR_ICMP_NE) emit8(&linker->text_section, 0x95);
+                            else if (inst->opcode == SIR_ICMP_LT) emit8(&linker->text_section, is_unsigned ? 0x92 : 0x9C);
+                            else if (inst->opcode == SIR_ICMP_LE) emit8(&linker->text_section, is_unsigned ? 0x96 : 0x9E);
+                            else if (inst->opcode == SIR_ICMP_GT) emit8(&linker->text_section, is_unsigned ? 0x97 : 0x9F);
+                            else if (inst->opcode == SIR_ICMP_GE) emit8(&linker->text_section, is_unsigned ? 0x93 : 0x9D);
                             emit_modrm(&linker->text_section, 3, 0, REG_RAX);
                             
                             emit_rex(&linker->text_section, 1, 0, 0, 0);

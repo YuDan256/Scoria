@@ -146,6 +146,16 @@ int type_get_size(ScoriaType* type) {
     }
 }
 
+bool type_is_signed(ScoriaType* type) {
+    if (!type) return false;
+    return type->kind == TY_I8 || type->kind == TY_I16 || type->kind == TY_I32 || type->kind == TY_I64;
+}
+
+bool type_is_unsigned(ScoriaType* type) {
+    if (!type) return false;
+    return type->kind == TY_P8 || type->kind == TY_P16 || type->kind == TY_P32 || type->kind == TY_P64 || type->kind == TY_LITTERA || type->kind == TY_LOGICA;
+}
+
 ScoriaType* type_create_actio(ScoriaType* return_type, ScoriaType** param_types, int param_count) {
     ScoriaType* t = (ScoriaType*)malloc(sizeof(ScoriaType));
     t->kind = TY_ACTIO;

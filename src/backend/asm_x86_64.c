@@ -7,6 +7,7 @@
 // 物理寄存器映射表 (对应 reg_alloc.h 中的 NUM_PHYS_REGS = 9)
 static const char* phys_regs64[] = {"%rbx", "%rsi", "%rdi", "%r12", "%r13", "%r14", "%r15", "%r10", "%r11"};
 static const char* phys_regs32[] = {"%ebx", "%esi", "%edi", "%r12d", "%r13d", "%r14d", "%r15d", "%r10d", "%r11d"};
+static const char* phys_regs16[] = {"%bx", "%si", "%di", "%r12w", "%r13w", "%r14w", "%r15w", "%r10w", "%r11w"};
 static const char* phys_regs8[]  = {"%bl", "%sil", "%dil", "%r12b", "%r13b", "%r14b", "%r15b", "%r10b", "%r11b"};
 
 typedef struct {
@@ -57,6 +58,7 @@ static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int s
             if (color != -1) {
                 // 分配到了物理寄存器
                 if (size == 1) strcpy(buf, phys_regs8[color]);
+                else if (size == 2) strcpy(buf, phys_regs16[color]);
                 else if (size == 4) strcpy(buf, phys_regs32[color]);
                 else strcpy(buf, phys_regs64[color]);
             } else {
@@ -99,10 +101,15 @@ static void generate_function(FILE* out, SirFunction* func) {
     // 2. 扫描函数，找到最大的虚拟寄存器 ID 和 ALLOCA 空间
     uint32_t max_vreg = 0;
     int local_stack_size = 72; // 56字节给7个callee-saved + 16字节给caller-saved(r10,r11)
+    int max_call_args = 0;
     int* alloca_offsets = calloc(10000, sizeof(int));
 
     for (SirBlock* block = func->first_block; block; block = block->next) {
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+            if (inst->opcode == SIR_CALL) {
+                int args = inst->num_operands - 1;
+                if (args > max_call_args) max_call_args = args;
+            }
             if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
                 if (inst->dest->as.vreg > max_vreg) max_vreg = inst->dest->as.vreg;
             }
@@ -133,7 +140,8 @@ static void generate_function(FILE* out, SirFunction* func) {
         }
     }
     
-    int stack_size = allocator.current_offset + 32; // 预留 32 字节 Shadow Space (Windows ABI)
+    int call_stack_space = max_call_args > 4 ? (max_call_args - 4) * 8 : 0;
+    int stack_size = allocator.current_offset + 32 + call_stack_space; // 预留 Shadow Space 和溢出参数空间
     // 保持 16 字节对齐，并补偿 9 个 push (1 个 ret addr + 8 个 rbp/rbx 等) 造成的 8 字节偏移
     stack_size = (stack_size + 15) & ~15;
     stack_size += 8;
@@ -199,7 +207,23 @@ static void generate_function(FILE* out, SirFunction* func) {
                         fprintf(out, "    movq %%xmm0, %%rax\n");
                         fprintf(out, "    movq %%rax, %s\n", dest);
                     } else {
-                        fprintf(out, "    movq %s, %%rax\n", op0);
+                        int src_size = type_get_size(src_type);
+                        int dst_size = type_get_size(dst_type);
+                        if (src_size < dst_size) {
+                            char src_op[64];
+                            get_operand_str(src_op, inst->operands[0], &allocator, src_size);
+                            if (type_is_signed(src_type)) {
+                                if (src_size == 1) fprintf(out, "    movsbq %s, %%rax\n", src_op);
+                                else if (src_size == 2) fprintf(out, "    movswq %s, %%rax\n", src_op);
+                                else if (src_size == 4) fprintf(out, "    movslq %s, %%rax\n", src_op);
+                            } else {
+                                if (src_size == 1) fprintf(out, "    movzbq %s, %%rax\n", src_op);
+                                else if (src_size == 2) fprintf(out, "    movzwq %s, %%rax\n", src_op);
+                                else if (src_size == 4) fprintf(out, "    movl %s, %%eax\n", src_op);
+                            }
+                        } else {
+                            fprintf(out, "    movq %s, %%rax\n", op0);
+                        }
                         fprintf(out, "    movq %%rax, %s\n", dest);
                     }
                     break;
@@ -278,18 +302,23 @@ static void generate_function(FILE* out, SirFunction* func) {
                 }
 
                 case SIR_DIV:
+                case SIR_MOD: {
+                    bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                     fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    cqo\n");
-                    fprintf(out, "    idivq %s\n", op1);
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                    if (is_unsigned) {
+                        fprintf(out, "    xorq %%rdx, %%rdx\n");
+                        fprintf(out, "    divq %s\n", op1);
+                    } else {
+                        fprintf(out, "    cqo\n");
+                        fprintf(out, "    idivq %s\n", op1);
+                    }
+                    if (inst->opcode == SIR_DIV) {
+                        fprintf(out, "    movq %%rax, %s\n", dest);
+                    } else {
+                        fprintf(out, "    movq %%rdx, %s\n", dest);
+                    }
                     break;
-
-                case SIR_MOD:
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    cqo\n");
-                    fprintf(out, "    idivq %s\n", op1);
-                    fprintf(out, "    movq %%rdx, %s\n", dest);
-                    break;
+                }
 
                 case SIR_AND:
                     fprintf(out, "    movq %s, %%rax\n", op0);
@@ -310,18 +339,19 @@ static void generate_function(FILE* out, SirFunction* func) {
                     break;
 
                 case SIR_SHL:
+                case SIR_SHR: {
+                    bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                     fprintf(out, "    movq %s, %%rax\n", op0);
                     fprintf(out, "    movq %s, %%rcx\n", op1);
-                    fprintf(out, "    shlq %%cl, %%rax\n");
+                    if (inst->opcode == SIR_SHL) {
+                        fprintf(out, "    shlq %%cl, %%rax\n");
+                    } else {
+                        if (is_unsigned) fprintf(out, "    shrq %%cl, %%rax\n");
+                        else fprintf(out, "    sarq %%cl, %%rax\n");
+                    }
                     fprintf(out, "    movq %%rax, %s\n", dest);
                     break;
-
-                case SIR_SHR:
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    movq %s, %%rcx\n", op1);
-                    fprintf(out, "    shrq %%cl, %%rax\n");
-                    fprintf(out, "    movq %%rax, %s\n", dest);
-                    break;
+                }
 
                 case SIR_ICMP_EQ:
                 case SIR_ICMP_NE:
@@ -329,12 +359,13 @@ static void generate_function(FILE* out, SirFunction* func) {
                 case SIR_ICMP_LE:
                 case SIR_ICMP_GT:
                 case SIR_ICMP_GE: {
+                    bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                     const char* cc = "e";
                     if (inst->opcode == SIR_ICMP_NE) cc = "ne";
-                    else if (inst->opcode == SIR_ICMP_LT) cc = "l";
-                    else if (inst->opcode == SIR_ICMP_LE) cc = "le";
-                    else if (inst->opcode == SIR_ICMP_GT) cc = "g";
-                    else if (inst->opcode == SIR_ICMP_GE) cc = "ge";
+                    else if (inst->opcode == SIR_ICMP_LT) cc = is_unsigned ? "b" : "l";
+                    else if (inst->opcode == SIR_ICMP_LE) cc = is_unsigned ? "be" : "le";
+                    else if (inst->opcode == SIR_ICMP_GT) cc = is_unsigned ? "a" : "g";
+                    else if (inst->opcode == SIR_ICMP_GE) cc = is_unsigned ? "ae" : "ge";
                     
                     fprintf(out, "    movq %s, %%rax\n", op0);
                     fprintf(out, "    cmpq %s, %%rax\n", op1);

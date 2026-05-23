@@ -82,4 +82,8 @@ bool type_equals(ScoriaType* a, ScoriaType* b);
 // 获取类型在内存中的实际字节大小
 int type_get_size(ScoriaType* type);
 
+// 判断类型是否有符号/无符号
+bool type_is_signed(ScoriaType* type);
+bool type_is_unsigned(ScoriaType* type);
+
 #endif // SCORIA_TYPES_H
