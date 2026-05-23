@@ -90,7 +90,12 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
     switch (expr->kind) {
         case AST_LITERAL_EXPR: {
             if (expr->token.kind == TK_INT_CONST) {
-                int64_t val = strtoll(expr->token.start, NULL, 10);
+                int64_t val = 0;
+                if (expr->token.length > 2 && expr->token.start[0] == '0' && (expr->token.start[1] == 'b' || expr->token.start[1] == 'B')) {
+                    val = strtoll(expr->token.start + 2, NULL, 2); // 二进制
+                } else {
+                    val = strtoll(expr->token.start, NULL, 0); // 自动识别 10进制、16进制(0x)和8进制(0)
+                }
                 return ir_const_int(builder, expr->expr_type, val);
             } else if (expr->token.kind == TK_FLOAT_CONST) {
                 double val = strtod(expr->token.start, NULL);
@@ -115,7 +120,19 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                     str[j++] = expr->token.start[i];
                 }
                 str[j] = '\0';
-                return ir_const_string(builder, str);
+                
+                SirValue* raw_str_val = ir_const_string(builder, str);
+                ScoriaType* cohors_type = type_get_cohors(type_get_basic(TY_LITTERA));
+                SirValue* slice_ptr = ir_build_alloca(builder, cohors_type, 16);
+                
+                ir_build_store(builder, raw_str_val, slice_ptr);
+                
+                SirValue* len_offset = ir_const_int(builder, type_get_basic(TY_I32), 1);
+                SirValue* len_ptr = ir_build_gep(builder, slice_ptr, len_offset, 8, type_get_via(type_get_basic(TY_I64)));
+                SirValue* len_val = ir_const_int(builder, type_get_basic(TY_I64), j);
+                ir_build_store(builder, len_val, len_ptr);
+                
+                return slice_ptr;
             }
             // TODO: 处理字符字面量
             break;
@@ -290,6 +307,10 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             ScoriaType* target_type = expr->expr_type;
             ScoriaType* src_type = expr->as.cast_expr.value->expr_type;
             
+            if (type_equals(src_type, target_type)) {
+                return gen_expression(builder, expr->as.cast_expr.value);
+            }
+            
             if (src_type->kind == TY_ACIES && target_type->kind == TY_COHORS) {
                 // 数组转切片 (胖指针构造)
                 SirValue* slice_ptr = ir_build_alloca(builder, target_type, 16);
@@ -328,8 +349,12 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             
             // 动态计算分配类型的实际大小
             ScoriaType* allocated_type = expr->expr_type;
+            bool is_slice = false;
             if (allocated_type->kind == TY_VIA) {
                 allocated_type = allocated_type->as.inner;
+            } else if (allocated_type->kind == TY_COHORS) {
+                allocated_type = allocated_type->as.inner;
+                is_slice = true;
             }
             int element_size = type_get_size(allocated_type);
             
@@ -337,15 +362,33 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             if (expr->as.crea_expr.count) {
                 count_val = gen_expression(builder, expr->as.crea_expr.count);
             } else {
-                count_val = ir_const_int(builder, type_get_basic(TY_I32), 1);
+                count_val = ir_const_int(builder, type_get_basic(TY_I64), 1);
             }
-            SirValue* size_val = ir_const_int(builder, type_get_basic(TY_I32), element_size);
+            
+            if (type_get_size(count_val->type) < 8) {
+                count_val = ir_build_cast(builder, count_val, type_get_basic(TY_I64));
+            }
+            
+            SirValue* size_val = ir_const_int(builder, type_get_basic(TY_I64), element_size);
             SirValue* total_size = ir_build_binary(builder, SIR_MUL, count_val, size_val);
             
             SirValue** args = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * 1);
             args[0] = total_size;
             
-            return ir_build_call(builder, callee, args, 1, expr->expr_type);
+            SirValue* raw_ptr = ir_build_call(builder, callee, args, 1, type_get_via(allocated_type));
+            
+            if (is_slice) {
+                SirValue* slice_ptr = ir_build_alloca(builder, expr->expr_type, 16);
+                ir_build_store(builder, raw_ptr, slice_ptr); // 写入游标 (偏移 0)
+                
+                SirValue* len_offset = ir_const_int(builder, type_get_basic(TY_I32), 1);
+                SirValue* len_ptr = ir_build_gep(builder, slice_ptr, len_offset, 8, type_get_via(type_get_basic(TY_I64)));
+                ir_build_store(builder, count_val, len_ptr); // 写入长度 (偏移 8)
+                
+                return slice_ptr;
+            }
+            
+            return raw_ptr;
         }
         case AST_NECA_EXPR: {
             SirValue* callee = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
@@ -353,8 +396,14 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             callee->type = type_get_basic(TY_ACTIO);
             callee->as.global_name = "neca";
             
+            SirValue* ptr_val = gen_expression(builder, expr->as.neca_expr.pointer);
+            if (expr->as.neca_expr.pointer->expr_type->kind == TY_COHORS) {
+                // 如果是切片，提取内部的游标 (前 8 字节)
+                ptr_val = ir_build_load(builder, ptr_val);
+            }
+            
             SirValue** args = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * 1);
-            args[0] = gen_expression(builder, expr->as.neca_expr.pointer);
+            args[0] = ptr_val;
             
             return ir_build_call(builder, callee, args, 1, type_get_basic(TY_NIHIL));
         }

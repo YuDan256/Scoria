@@ -16,7 +16,6 @@ static void print_type(FILE* out, ScoriaType* type) {
         case TY_F64: fprintf(out, "f64"); break;
         case TY_LOGICA: fprintf(out, "logica"); break;
         case TY_LITTERA: fprintf(out, "littera"); break;
-        case TY_TEXTUS: fprintf(out, "textus"); break;
         case TY_NIHIL: fprintf(out, "nihil"); break;
         case TY_VIA:
             fprintf(out, "via ");

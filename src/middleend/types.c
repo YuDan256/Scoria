@@ -8,7 +8,7 @@ static ScoriaType basic_types[] = {
     {TY_I8}, {TY_I16}, {TY_I32}, {TY_I64},
     {TY_P8}, {TY_P16}, {TY_P32}, {TY_P64},
     {TY_F32}, {TY_F64},
-    {TY_LOGICA}, {TY_LITTERA}, {TY_TEXTUS}
+    {TY_LOGICA}, {TY_LITTERA}
 };
 
 // 简单的链表用于 Type Interning
@@ -24,7 +24,10 @@ void types_init(void) {
 }
 
 ScoriaType* type_get_basic(TypeKind kind) {
-    if (kind >= TY_UNKNOWN && kind <= TY_TEXTUS) {
+    if (kind == TY_TEXTUS) {
+        return type_get_cohors(type_get_basic(TY_LITTERA));
+    }
+    if (kind >= TY_UNKNOWN && kind <= TY_LITTERA) {
         return &basic_types[kind];
     }
     return &basic_types[TY_UNKNOWN];

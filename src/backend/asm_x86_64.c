@@ -511,17 +511,15 @@ static void generate_function(FILE* out, SirFunction* func) {
                         get_operand_str(arg_str, inst->operands[1], &allocator, 8);
                         fprintf(out, "    movq %s, %%rcx\n", arg_str);
                         
-                        bool is_str = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_TEXTUS) || (inst->operands[1]->kind == SIR_VAL_CONST_STRING);
+                        bool is_str = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_COHORS && inst->operands[1]->type->as.inner->kind == TY_LITTERA);
                         bool is_bool = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_LOGICA) || (inst->operands[1]->kind == SIR_VAL_CONST_BOOL);
-                        bool is_ptr = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_VIA || inst->operands[1]->type->kind == TY_COHORS || inst->operands[1]->type->kind == TY_ACIES));
+                        bool is_ptr = !is_str && (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_VIA || inst->operands[1]->type->kind == TY_COHORS || inst->operands[1]->type->kind == TY_ACIES));
                         bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
                         
                         if (is_str) {
-                            int str_len = 0;
-                            if (inst->operands[1]->kind == SIR_VAL_CONST_STRING) {
-                                str_len = (int)strlen(inst->operands[1]->as.string_val);
-                            }
-                            fprintf(out, "    movq $%d, %%rdx\n", str_len);
+                            fprintf(out, "    movq %s, %%rax\n", arg_str);
+                            fprintf(out, "    movq 8(%%rax), %%rdx\n");
+                            fprintf(out, "    movq (%%rax), %%rcx\n");
                             fprintf(out, "    call __print_str\n");
                         } else if (is_bool) {
                             fprintf(out, "    call __print_bool\n");
