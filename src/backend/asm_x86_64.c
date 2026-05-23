@@ -189,11 +189,20 @@ static void generate_function(FILE* out, SirFunction* func) {
 
                 case SIR_LOAD: {
                     int size = type_get_size(inst->dest->type);
+                    bool is_signed = type_is_signed(inst->dest->type);
                     fprintf(out, "    movq %s, %%rax\n", op0);
-                    if (size == 1) fprintf(out, "    movzbq (%%rax), %%rcx\n");
-                    else if (size == 2) fprintf(out, "    movzwq (%%rax), %%rcx\n");
-                    else if (size == 4) fprintf(out, "    movl (%%rax), %%ecx\n");
-                    else fprintf(out, "    movq (%%rax), %%rcx\n");
+                    if (size == 1) {
+                        if (is_signed) fprintf(out, "    movsbq (%%rax), %%rcx\n");
+                        else fprintf(out, "    movzbq (%%rax), %%rcx\n");
+                    } else if (size == 2) {
+                        if (is_signed) fprintf(out, "    movswq (%%rax), %%rcx\n");
+                        else fprintf(out, "    movzwq (%%rax), %%rcx\n");
+                    } else if (size == 4) {
+                        if (is_signed) fprintf(out, "    movslq (%%rax), %%rcx\n");
+                        else fprintf(out, "    movl (%%rax), %%ecx\n");
+                    } else {
+                        fprintf(out, "    movq (%%rax), %%rcx\n");
+                    }
                     fprintf(out, "    movq %%rcx, %s\n", dest);
                     break;
                 }
@@ -235,22 +244,18 @@ static void generate_function(FILE* out, SirFunction* func) {
                         }
                         fprintf(out, "    movq %%rax, %s\n", dest);
                     } else {
-                        int src_size = type_get_size(src_type);
+                        fprintf(out, "    movq %s, %%rax\n", op0);
                         int dst_size = type_get_size(dst_type);
-                        if (src_size < dst_size) {
-                            char src_op[64];
-                            get_operand_str(src_op, inst->operands[0], &allocator, src_size);
-                            if (type_is_signed(src_type)) {
-                                if (src_size == 1) fprintf(out, "    movsbq %s, %%rax\n", src_op);
-                                else if (src_size == 2) fprintf(out, "    movswq %s, %%rax\n", src_op);
-                                else if (src_size == 4) fprintf(out, "    movslq %s, %%rax\n", src_op);
+                        if (dst_size < 8) {
+                            if (type_is_signed(dst_type)) {
+                                if (dst_size == 1) fprintf(out, "    movsbq %%al, %%rax\n");
+                                else if (dst_size == 2) fprintf(out, "    movswq %%ax, %%rax\n");
+                                else if (dst_size == 4) fprintf(out, "    movslq %%eax, %%rax\n");
                             } else {
-                                if (src_size == 1) fprintf(out, "    movzbq %s, %%rax\n", src_op);
-                                else if (src_size == 2) fprintf(out, "    movzwq %s, %%rax\n", src_op);
-                                else if (src_size == 4) fprintf(out, "    movl %s, %%eax\n", src_op);
+                                if (dst_size == 1) fprintf(out, "    movzbq %%al, %%rax\n");
+                                else if (dst_size == 2) fprintf(out, "    movzwq %%ax, %%rax\n");
+                                else if (dst_size == 4) fprintf(out, "    movl %%eax, %%eax\n");
                             }
-                        } else {
-                            fprintf(out, "    movq %s, %%rax\n", op0);
                         }
                         fprintf(out, "    movq %%rax, %s\n", dest);
                     }
@@ -328,8 +333,10 @@ static void generate_function(FILE* out, SirFunction* func) {
                     fprintf(out, "    pushq %%rsi\n");
                     fprintf(out, "    pushq %%rdi\n");
                     fprintf(out, "    pushq %%rcx\n");
-                    fprintf(out, "    movq %s, %%rdi\n", op0);
-                    fprintf(out, "    movq %s, %%rsi\n", op1);
+                    fprintf(out, "    movq %s, %%rax\n", op0);
+                    fprintf(out, "    movq %s, %%rcx\n", op1);
+                    fprintf(out, "    movq %%rax, %%rdi\n");
+                    fprintf(out, "    movq %%rcx, %%rsi\n");
                     fprintf(out, "    movq $%d, %%rcx\n", size);
                     fprintf(out, "    rep movsb\n");
                     fprintf(out, "    popq %%rcx\n");

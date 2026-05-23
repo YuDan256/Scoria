@@ -620,17 +620,23 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         }
                         case SIR_LOAD: {
                             int size = type_get_size(inst->dest->type);
+                            bool is_signed = type_is_signed(inst->dest->type);
                             int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RCX, &ctx);
                             
                             if (size == 1) {
                                 emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
-                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB6); // movzx rax, byte ptr
+                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBE : 0xB6); // movsx/movzx rax, byte ptr
                             } else if (size == 2) {
                                 emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
-                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB7); // movzx rax, word ptr
+                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBF : 0xB7); // movsx/movzx rax, word ptr
                             } else if (size == 4) {
-                                emit_rex(&linker->text_section, 0, 0, 0, ptr_reg > 7);
-                                emit8(&linker->text_section, 0x8B); // mov eax, dword ptr
+                                if (is_signed) {
+                                    emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
+                                    emit8(&linker->text_section, 0x63); // movsxd rax, dword ptr
+                                } else {
+                                    emit_rex(&linker->text_section, 0, 0, 0, ptr_reg > 7);
+                                    emit8(&linker->text_section, 0x8B); // mov eax, dword ptr
+                                }
                             } else {
                                 emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
                                 emit8(&linker->text_section, 0x8B); // mov rax, qword ptr
@@ -669,31 +675,30 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 // movq/movd rax, xmm0
                                 emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, src_is_f32 ? 1 : 0, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
                             } else {
-                                int src_size = type_get_size(src_type);
                                 int dst_size = type_get_size(dst_type);
-                                if (src_size < dst_size) {
-                                    if (type_is_signed(src_type)) {
-                                        if (src_size == 1) {
+                                if (dst_size < 8) {
+                                    if (type_is_signed(dst_type)) {
+                                        if (dst_size == 1) {
                                             emit_rex(&linker->text_section, 1, 0, 0, 0);
                                             emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xBE); // movsx rax, al
-                                        } else if (src_size == 2) {
+                                        } else if (dst_size == 2) {
                                             emit_rex(&linker->text_section, 1, 0, 0, 0);
                                             emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xBF); // movsx rax, ax
-                                        } else if (src_size == 4) {
+                                        } else if (dst_size == 4) {
                                             emit_rex(&linker->text_section, 1, 0, 0, 0);
                                             emit8(&linker->text_section, 0x63); // movsxd rax, eax
                                         }
                                         emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
                                     } else {
-                                        if (src_size == 1) {
+                                        if (dst_size == 1) {
                                             emit_rex(&linker->text_section, 1, 0, 0, 0);
                                             emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB6); // movzx rax, al
                                             emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
-                                        } else if (src_size == 2) {
+                                        } else if (dst_size == 2) {
                                             emit_rex(&linker->text_section, 1, 0, 0, 0);
                                             emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB7); // movzx rax, ax
                                             emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
-                                        } else if (src_size == 4) {
+                                        } else if (dst_size == 4) {
                                             emit_rex(&linker->text_section, 0, 0, 0, 0);
                                             emit8(&linker->text_section, 0x8B); // mov eax, eax (zero extends to rax)
                                             emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
@@ -827,10 +832,13 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             emit8(&linker->text_section, 0x51); // push rcx
                             
                             int dst_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                            int src_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RDX, &ctx);
+                            if (dst_reg != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, dst_reg);
                             
-                            if (dst_reg != REG_RDI) emit_mov_reg_reg(&linker->text_section, REG_RDI, dst_reg);
-                            if (src_reg != REG_RSI) emit_mov_reg_reg(&linker->text_section, REG_RSI, src_reg);
+                            int src_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RDX, &ctx);
+                            if (src_reg != REG_RDX) emit_mov_reg_reg(&linker->text_section, REG_RDX, src_reg);
+                            
+                            emit_mov_reg_reg(&linker->text_section, REG_RDI, REG_RAX);
+                            emit_mov_reg_reg(&linker->text_section, REG_RSI, REG_RDX);
                             emit_mov_reg_imm32(&linker->text_section, REG_RCX, size);
                             
                             emit8(&linker->text_section, 0xF3); // rep
