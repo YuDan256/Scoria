@@ -664,11 +664,33 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
 void ir_gen_generate(IrBuilder* builder, AstNode* program) {
     if (!program || program->kind != AST_PROGRAM) return;
 
-    // 创建全局初始化函数 __scoria_init
-    ScoriaType* init_func_type = type_create_actio(type_get_basic(TY_NIHIL), NULL, 0);
-    SirFunction* init_func = ir_builder_create_function(builder, "__scoria_init", init_func_type);
-    SirBlock* init_block = ir_builder_create_block(builder, "ingressus");
-    SirBlock* current_init_block = init_block;
+    // 查找或创建全局初始化函数 __scoria_init (支持多文件合并到同一个 Module)
+    SirFunction* init_func = NULL;
+    for (SirFunction* f = builder->module->first_func; f; f = f->next) {
+        if (strcmp(f->name, "__scoria_init") == 0) {
+            init_func = f;
+            break;
+        }
+    }
+    
+    SirBlock* current_init_block = NULL;
+    if (!init_func) {
+        ScoriaType* init_func_type = type_create_actio(type_get_basic(TY_NIHIL), NULL, 0);
+        init_func = ir_builder_create_function(builder, "__scoria_init", init_func_type);
+        current_init_block = ir_builder_create_block(builder, "ingressus");
+    } else {
+        current_init_block = init_func->last_block;
+        // 移除之前的 ret 指令，以便继续追加初始化代码
+        if (current_init_block->last_inst && current_init_block->last_inst->opcode == SIR_RET) {
+            SirInst* ret_inst = current_init_block->last_inst;
+            current_init_block->last_inst = ret_inst->prev;
+            if (current_init_block->last_inst) {
+                current_init_block->last_inst->next = NULL;
+            } else {
+                current_init_block->first_inst = NULL;
+            }
+        }
+    }
 
     for (int i = 0; i < program->as.program.decl_count; i++) {
         AstNode* decl = program->as.program.declarations[i];
