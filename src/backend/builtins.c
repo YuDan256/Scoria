@@ -236,6 +236,34 @@ void asm_builtins_generate(FILE* out) {
     fprintf(out, "    ret\n\n");
     }
 
+    if (g_use_crea) {
+    fprintf(out, "    .globl crea\n");
+    fprintf(out, "crea:\n");
+    fprintf(out, "    subq $40, %%rsp\n");
+    fprintf(out, "    movq %%rcx, 48(%%rsp)\n");
+    fprintf(out, "    call GetProcessHeap\n");
+    fprintf(out, "    movq 48(%%rsp), %%r8\n");
+    fprintf(out, "    movq $8, %%rdx\n");
+    fprintf(out, "    movq %%rax, %%rcx\n");
+    fprintf(out, "    call HeapAlloc\n");
+    fprintf(out, "    addq $40, %%rsp\n");
+    fprintf(out, "    ret\n\n");
+    }
+
+    if (g_use_neca) {
+    fprintf(out, "    .globl neca\n");
+    fprintf(out, "neca:\n");
+    fprintf(out, "    subq $40, %%rsp\n");
+    fprintf(out, "    movq %%rcx, 48(%%rsp)\n");
+    fprintf(out, "    call GetProcessHeap\n");
+    fprintf(out, "    movq 48(%%rsp), %%r8\n");
+    fprintf(out, "    movq $0, %%rdx\n");
+    fprintf(out, "    movq %%rax, %%rcx\n");
+    fprintf(out, "    call HeapFree\n");
+    fprintf(out, "    addq $40, %%rsp\n");
+    fprintf(out, "    ret\n\n");
+    }
+
     if (g_use_print_float || g_use_print_bool) {
         fprintf(out, "    .section .rdata,\"a\"\n");
         if (g_use_print_float) {

@@ -523,7 +523,8 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
         case AST_EXPR_STMT:
             gen_expression(builder, stmt->as.expr_stmt.expr);
             break;
-        case AST_VAR_DECL: {
+        case AST_VAR_DECL:
+        case AST_CONST_DECL: {
             Symbol* sym = stmt->resolved_symbol;
             if (sym) {
                 // 1. 在当前函数的栈帧上分配内存 (Alloca)
@@ -531,8 +532,9 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
                 sym->ir_val = ir_build_alloca(builder, sym->type, type_size);
                 
                 // 2. 如果有初始值，生成 Store 或 Memcpy 指令写入栈内存
-                if (stmt->as.var_decl.initializer) {
-                    SirValue* init_val = gen_expression(builder, stmt->as.var_decl.initializer);
+                AstNode* initializer = (stmt->kind == AST_VAR_DECL) ? stmt->as.var_decl.initializer : stmt->as.const_decl.initializer;
+                if (initializer) {
+                    SirValue* init_val = gen_expression(builder, initializer);
                     if (sym->type->kind == TY_FORMA || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS) {
                         ir_build_memcpy(builder, sym->ir_val, init_val, type_size);
                     } else {
@@ -671,7 +673,7 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
     for (int i = 0; i < program->as.program.decl_count; i++) {
         AstNode* decl = program->as.program.declarations[i];
         
-        if (decl->kind == AST_VAR_DECL) {
+        if (decl->kind == AST_VAR_DECL || decl->kind == AST_CONST_DECL) {
             Symbol* sym = decl->resolved_symbol;
             if (sym) {
                 int size = type_get_size(sym->type);
@@ -683,14 +685,15 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
                 val->as.global_name = gvar->name;
                 sym->ir_val = val;
 
-                if (decl->as.var_decl.initializer) {
+                AstNode* initializer = (decl->kind == AST_VAR_DECL) ? decl->as.var_decl.initializer : decl->as.const_decl.initializer;
+                if (initializer) {
                     SirFunction* prev_func = builder->current_func;
                     SirBlock* prev_block = builder->current_block;
                     
                     builder->current_func = init_func;
                     ir_builder_set_insert_point(builder, current_init_block);
                     
-                    SirValue* init_val = gen_expression(builder, decl->as.var_decl.initializer);
+                    SirValue* init_val = gen_expression(builder, initializer);
                     if (sym->type->kind == TY_FORMA || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS) {
                         ir_build_memcpy(builder, sym->ir_val, init_val, size);
                     } else {
