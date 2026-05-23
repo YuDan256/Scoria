@@ -38,10 +38,17 @@ static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int s
             sprintf(buf, "$%lld", (long long)val->as.int_val);
             break;
         case SIR_VAL_CONST_FLOAT: {
-            uint64_t bits;
-            double d = val->as.float_val;
-            memcpy(&bits, &d, 8);
-            sprintf(buf, "$%llu", (unsigned long long)bits);
+            if (val->type && val->type->kind == TY_F32) {
+                float f = (float)val->as.float_val;
+                uint32_t bits;
+                memcpy(&bits, &f, 4);
+                sprintf(buf, "$%u", bits);
+            } else {
+                uint64_t bits;
+                double d = val->as.float_val;
+                memcpy(&bits, &d, 8);
+                sprintf(buf, "$%llu", (unsigned long long)bits);
+            }
             break;
         }
         case SIR_VAL_CONST_BOOL:
@@ -198,13 +205,34 @@ static void generate_function(FILE* out, SirFunction* func) {
                     bool dst_is_float = (dst_type && (dst_type->kind == TY_F32 || dst_type->kind == TY_F64));
                     
                     if (src_is_float && !dst_is_float) {
-                        fprintf(out, "    movq %s, %%xmm0\n", op0);
-                        fprintf(out, "    cvttsd2si %%xmm0, %%rax\n");
+                        if (src_type->kind == TY_F32) {
+                            fprintf(out, "    movd %s, %%xmm0\n", op0);
+                            fprintf(out, "    cvttss2si %%xmm0, %%rax\n");
+                        } else {
+                            fprintf(out, "    movq %s, %%xmm0\n", op0);
+                            fprintf(out, "    cvttsd2si %%xmm0, %%rax\n");
+                        }
                         fprintf(out, "    movq %%rax, %s\n", dest);
                     } else if (!src_is_float && dst_is_float) {
                         fprintf(out, "    movq %s, %%rax\n", op0);
-                        fprintf(out, "    cvtsi2sd %%rax, %%xmm0\n");
-                        fprintf(out, "    movq %%xmm0, %%rax\n");
+                        if (dst_type->kind == TY_F32) {
+                            fprintf(out, "    cvtsi2ss %%rax, %%xmm0\n");
+                            fprintf(out, "    movd %%xmm0, %%eax\n");
+                        } else {
+                            fprintf(out, "    cvtsi2sd %%rax, %%xmm0\n");
+                            fprintf(out, "    movq %%xmm0, %%rax\n");
+                        }
+                        fprintf(out, "    movq %%rax, %s\n", dest);
+                    } else if (src_is_float && dst_is_float && src_type->kind != dst_type->kind) {
+                        if (src_type->kind == TY_F32) {
+                            fprintf(out, "    movd %s, %%xmm0\n", op0);
+                            fprintf(out, "    cvtss2sd %%xmm0, %%xmm0\n");
+                            fprintf(out, "    movq %%xmm0, %%rax\n");
+                        } else {
+                            fprintf(out, "    movq %s, %%xmm0\n", op0);
+                            fprintf(out, "    cvtsd2ss %%xmm0, %%xmm0\n");
+                            fprintf(out, "    movd %%xmm0, %%eax\n");
+                        }
                         fprintf(out, "    movq %%rax, %s\n", dest);
                     } else {
                         int src_size = type_get_size(src_type);
@@ -251,18 +279,30 @@ static void generate_function(FILE* out, SirFunction* func) {
                 case SIR_FADD:
                 case SIR_FSUB:
                 case SIR_FMUL:
-                case SIR_FDIV:
+                case SIR_FDIV: {
+                    bool is_f32 = (inst->operands[0]->type && inst->operands[0]->type->kind == TY_F32);
                     fprintf(out, "    movq %s, %%rax\n", op0);
                     fprintf(out, "    movq %s, %%rcx\n", op1);
-                    fprintf(out, "    movq %%rax, %%xmm0\n");
-                    fprintf(out, "    movq %%rcx, %%xmm1\n");
-                    if (inst->opcode == SIR_FADD) fprintf(out, "    addsd %%xmm1, %%xmm0\n");
-                    else if (inst->opcode == SIR_FSUB) fprintf(out, "    subsd %%xmm1, %%xmm0\n");
-                    else if (inst->opcode == SIR_FMUL) fprintf(out, "    mulsd %%xmm1, %%xmm0\n");
-                    else if (inst->opcode == SIR_FDIV) fprintf(out, "    divsd %%xmm1, %%xmm0\n");
-                    fprintf(out, "    movq %%xmm0, %%rax\n");
+                    if (is_f32) {
+                        fprintf(out, "    movd %%eax, %%xmm0\n");
+                        fprintf(out, "    movd %%ecx, %%xmm1\n");
+                        if (inst->opcode == SIR_FADD) fprintf(out, "    addss %%xmm1, %%xmm0\n");
+                        else if (inst->opcode == SIR_FSUB) fprintf(out, "    subss %%xmm1, %%xmm0\n");
+                        else if (inst->opcode == SIR_FMUL) fprintf(out, "    mulss %%xmm1, %%xmm0\n");
+                        else if (inst->opcode == SIR_FDIV) fprintf(out, "    divss %%xmm1, %%xmm0\n");
+                        fprintf(out, "    movd %%xmm0, %%eax\n");
+                    } else {
+                        fprintf(out, "    movq %%rax, %%xmm0\n");
+                        fprintf(out, "    movq %%rcx, %%xmm1\n");
+                        if (inst->opcode == SIR_FADD) fprintf(out, "    addsd %%xmm1, %%xmm0\n");
+                        else if (inst->opcode == SIR_FSUB) fprintf(out, "    subsd %%xmm1, %%xmm0\n");
+                        else if (inst->opcode == SIR_FMUL) fprintf(out, "    mulsd %%xmm1, %%xmm0\n");
+                        else if (inst->opcode == SIR_FDIV) fprintf(out, "    divsd %%xmm1, %%xmm0\n");
+                        fprintf(out, "    movq %%xmm0, %%rax\n");
+                    }
                     fprintf(out, "    movq %%rax, %s\n", dest);
                     break;
+                }
 
                 case SIR_JMP:
                     fprintf(out, "    jmp .L%s_%u\n", inst->operands[0]->as.block->name, inst->operands[0]->as.block->id);
@@ -396,6 +436,7 @@ static void generate_function(FILE* out, SirFunction* func) {
                 case SIR_FCMP_LE:
                 case SIR_FCMP_GT:
                 case SIR_FCMP_GE: {
+                    bool is_f32 = (inst->operands[0]->type && inst->operands[0]->type->kind == TY_F32);
                     const char* cc = "e";
                     if (inst->opcode == SIR_FCMP_NE) cc = "ne";
                     else if (inst->opcode == SIR_FCMP_LT) cc = "b";
@@ -405,9 +446,15 @@ static void generate_function(FILE* out, SirFunction* func) {
                     
                     fprintf(out, "    movq %s, %%rax\n", op0);
                     fprintf(out, "    movq %s, %%rcx\n", op1);
-                    fprintf(out, "    movq %%rax, %%xmm0\n");
-                    fprintf(out, "    movq %%rcx, %%xmm1\n");
-                    fprintf(out, "    ucomisd %%xmm1, %%xmm0\n");
+                    if (is_f32) {
+                        fprintf(out, "    movd %%eax, %%xmm0\n");
+                        fprintf(out, "    movd %%ecx, %%xmm1\n");
+                        fprintf(out, "    ucomiss %%xmm1, %%xmm0\n");
+                    } else {
+                        fprintf(out, "    movq %%rax, %%xmm0\n");
+                        fprintf(out, "    movq %%rcx, %%xmm1\n");
+                        fprintf(out, "    ucomisd %%xmm1, %%xmm0\n");
+                    }
                     fprintf(out, "    set%s %%al\n", cc);
                     fprintf(out, "    movzbq %%al, %%rax\n");
                     fprintf(out, "    movq %%rax, %s\n", dest);

@@ -247,10 +247,17 @@ static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, in
         emit_mov_reg_imm32(cb, scratch, (int32_t)val->as.int_val);
         return scratch;
     } else if (val->kind == SIR_VAL_CONST_FLOAT) {
-        uint64_t bits;
-        double d = val->as.float_val;
-        memcpy(&bits, &d, 8);
-        emit_mov_reg_imm64(cb, scratch, bits);
+        if (val->type && val->type->kind == TY_F32) {
+            float f = (float)val->as.float_val;
+            uint32_t bits;
+            memcpy(&bits, &f, 4);
+            emit_mov_reg_imm32(cb, scratch, (int32_t)bits);
+        } else {
+            uint64_t bits;
+            double d = val->as.float_val;
+            memcpy(&bits, &d, 8);
+            emit_mov_reg_imm64(cb, scratch, bits);
+        }
         return scratch;
     } else if (val->kind == SIR_VAL_CONST_BOOL) {
         emit_mov_reg_imm32(cb, scratch, val->as.bool_val ? 1 : 0);
@@ -642,13 +649,25 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             if (src != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, src);
                             
                             if (src_is_float && !dst_is_float) {
-                                // cvttsd2si rax, xmm0
-                                emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, REG_RAX); // movq xmm0, rax
-                                emit8(&linker->text_section, 0xF2); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x2C); emit_modrm(&linker->text_section, 3, REG_RAX, 0); // cvttsd2si rax, xmm0
+                                bool is_f32 = (src_type->kind == TY_F32);
+                                // movd/movq xmm0, rax
+                                emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
+                                // cvttss2si/cvttsd2si rax, xmm0
+                                emit8(&linker->text_section, is_f32 ? 0xF3 : 0xF2); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x2C); emit_modrm(&linker->text_section, 3, REG_RAX, 0);
                             } else if (!src_is_float && dst_is_float) {
-                                // cvtsi2sd xmm0, rax
-                                emit8(&linker->text_section, 0xF2); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x2A); emit_modrm(&linker->text_section, 3, 0, REG_RAX); // cvtsi2sd xmm0, rax
-                                emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); emit_modrm(&linker->text_section, 3, 0, REG_RAX); // movq rax, xmm0
+                                bool is_f32 = (dst_type->kind == TY_F32);
+                                // cvtsi2ss/cvtsi2sd xmm0, rax
+                                emit8(&linker->text_section, is_f32 ? 0xF3 : 0xF2); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x2A); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
+                                // movd/movq rax, xmm0
+                                emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
+                            } else if (src_is_float && dst_is_float && src_type->kind != dst_type->kind) {
+                                bool src_is_f32 = (src_type->kind == TY_F32);
+                                // movd/movq xmm0, rax
+                                emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, src_is_f32 ? 0 : 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
+                                // cvtss2sd/cvtsd2ss xmm0, xmm0
+                                emit8(&linker->text_section, src_is_f32 ? 0xF3 : 0xF2); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x5A); emit_modrm(&linker->text_section, 3, 0, 0);
+                                // movq/movd rax, xmm0
+                                emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, src_is_f32 ? 1 : 0, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
                             } else {
                                 int src_size = type_get_size(src_type);
                                 int dst_size = type_get_size(dst_type);
@@ -724,26 +743,27 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_FSUB:
                         case SIR_FMUL:
                         case SIR_FDIV: {
+                            bool is_f32 = (inst->operands[0]->type && inst->operands[0]->type->kind == TY_F32);
                             int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
                             int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                             if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
                             
-                            // movq xmm0, rax
-                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
-                            // movq xmm1, rcx
-                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 1, REG_RCX);
+                            // movd/movq xmm0, rax
+                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
+                            // movd/movq xmm1, rcx
+                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 1, REG_RCX);
                             
                             // op
-                            emit8(&linker->text_section, 0xF2); emit8(&linker->text_section, 0x0F);
+                            emit8(&linker->text_section, is_f32 ? 0xF3 : 0xF2); emit8(&linker->text_section, 0x0F);
                             if (inst->opcode == SIR_FADD) emit8(&linker->text_section, 0x58);
                             else if (inst->opcode == SIR_FSUB) emit8(&linker->text_section, 0x5C);
                             else if (inst->opcode == SIR_FMUL) emit8(&linker->text_section, 0x59);
                             else if (inst->opcode == SIR_FDIV) emit8(&linker->text_section, 0x5E);
                             emit_modrm(&linker->text_section, 3, 0, 1); // xmm0, xmm1
                             
-                            // movq rax, xmm0
-                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
+                            // movd/movq rax, xmm0
+                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
                             
                             store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                             break;
@@ -887,18 +907,20 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_FCMP_GE:
                         case SIR_FCMP_EQ:
                         case SIR_FCMP_NE: {
+                            bool is_f32 = (inst->operands[0]->type && inst->operands[0]->type->kind == TY_F32);
                             int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
                             int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                             if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
                             
-                            // movq xmm0, rax
-                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
-                            // movq xmm1, rcx
-                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 1, REG_RCX);
+                            // movd/movq xmm0, rax
+                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
+                            // movd/movq xmm1, rcx
+                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 1, REG_RCX);
                             
-                            // ucomisd xmm0, xmm1
-                            emit8(&linker->text_section, 0x66); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x2E); emit_modrm(&linker->text_section, 3, 0, 1);
+                            // ucomiss/ucomisd xmm0, xmm1
+                            if (!is_f32) emit8(&linker->text_section, 0x66);
+                            emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x2E); emit_modrm(&linker->text_section, 3, 0, 1);
                             
                             emit8(&linker->text_section, 0x0F); // setCC al
                             if (inst->opcode == SIR_FCMP_EQ) emit8(&linker->text_section, 0x94); // sete
@@ -1004,8 +1026,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                     
                                     bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
                                     if (is_float) {
-                                        // movq xmmX, arg_regs[i]
-                                        emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, arg_regs[i] > 7); 
+                                        bool is_f32 = (inst->operands[i+1]->type->kind == TY_F32);
+                                        // movd/movq xmmX, arg_regs[i]
+                                        emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, arg_regs[i] > 7); 
                                         emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); 
                                         emit_modrm(&linker->text_section, 3, i, arg_regs[i] & 7);
                                     }
@@ -1043,8 +1066,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             if (inst->dest) {
                                 bool ret_is_float = (inst->dest->type && (inst->dest->type->kind == TY_F32 || inst->dest->type->kind == TY_F64));
                                 if (ret_is_float) {
-                                    // movq rax, xmm0
-                                    emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); 
+                                    bool is_f32 = (inst->dest->type->kind == TY_F32);
+                                    // movd/movq rax, xmm0
+                                    emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); 
                                     emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); 
                                     emit_modrm(&linker->text_section, 3, 0, REG_RAX);
                                 }
@@ -1074,8 +1098,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 
                                 bool ret_is_float = (inst->operands[0]->type && (inst->operands[0]->type->kind == TY_F32 || inst->operands[0]->type->kind == TY_F64));
                                 if (ret_is_float) {
-                                    // movq xmm0, rax
-                                    emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); 
+                                    bool is_f32 = (inst->operands[0]->type->kind == TY_F32);
+                                    // movd/movq xmm0, rax
+                                    emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); 
                                     emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); 
                                     emit_modrm(&linker->text_section, 3, 0, REG_RAX);
                                 }
