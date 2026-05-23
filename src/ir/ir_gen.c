@@ -192,7 +192,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                     return val;
                 } else if (sym->ir_val) {
                     // 结构体、数组和切片作为右值时，退化为指针
-                    if (sym->type->kind == TY_FORMA || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS) {
+                    if (sym->type && (sym->type->kind == TY_FORMA || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS)) {
                         return sym->ir_val;
                     }
                     // 局部变量或全局变量的 ir_val 是指针，使用时需要 load 出来
@@ -532,7 +532,7 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
                 sym->ir_val = ir_build_alloca(builder, sym->type, type_size);
                 
                 // 2. 如果有初始值，生成 Store 或 Memcpy 指令写入栈内存
-                AstNode* initializer = (stmt->kind == AST_VAR_DECL) ? stmt->as.var_decl.initializer : stmt->as.const_decl.initializer;
+                AstNode* initializer = stmt->as.var_decl.initializer;
                 if (initializer) {
                     SirValue* init_val = gen_expression(builder, initializer);
                     if (sym->type->kind == TY_FORMA || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS) {
@@ -685,7 +685,7 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
                 val->as.global_name = gvar->name;
                 sym->ir_val = val;
 
-                AstNode* initializer = (decl->kind == AST_VAR_DECL) ? decl->as.var_decl.initializer : decl->as.const_decl.initializer;
+                AstNode* initializer = decl->as.var_decl.initializer;
                 if (initializer) {
                     SirFunction* prev_func = builder->current_func;
                     SirBlock* prev_block = builder->current_block;

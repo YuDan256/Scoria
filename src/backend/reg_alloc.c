@@ -45,8 +45,16 @@ static void update_live_interval(RegAllocator* allocator, SirValue* val, int ins
 
 void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func) {
     // 1. 计算活跃区间 (Live Intervals) - 简化的线性扫描法
+    uint32_t max_block_id = 0;
+    for (SirBlock* block = func->first_block; block; block = block->next) {
+        if (block->id > max_block_id) max_block_id = block->id;
+    }
+    int* block_start = (int*)calloc(max_block_id + 1, sizeof(int));
+    int* block_end = (int*)calloc(max_block_id + 1, sizeof(int));
+
     int inst_idx = 0;
     for (SirBlock* block = func->first_block; block; block = block->next) {
+        block_start[block->id] = inst_idx;
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
             for (int i = 0; i < inst->num_operands; i++) {
                 update_live_interval(allocator, inst->operands[i], inst_idx);
@@ -54,7 +62,45 @@ void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func) {
             update_live_interval(allocator, inst->dest, inst_idx);
             inst_idx++;
         }
+        block_end[block->id] = inst_idx > block_start[block->id] ? inst_idx - 1 : inst_idx;
     }
+
+    // 处理循环 (向后跳转)：延长在循环头活跃的变量的生命周期到循环尾
+    for (SirBlock* block = func->first_block; block; block = block->next) {
+        SirInst* last = block->last_inst;
+        if (!last) continue;
+        
+        SirBlock* target1 = NULL;
+        SirBlock* target2 = NULL;
+        if (last->opcode == SIR_JMP) {
+            target1 = last->operands[0]->as.block;
+        } else if (last->opcode == SIR_BR) {
+            target1 = last->operands[1]->as.block;
+            target2 = last->operands[2]->as.block;
+        }
+        
+        if (target1 && block_start[target1->id] <= block_end[block->id]) {
+            int loop_start = block_start[target1->id];
+            int loop_end = block_end[block->id];
+            for (uint32_t i = 1; i <= allocator->max_vreg; i++) {
+                if (allocator->live_start[i] <= loop_start && allocator->live_end[i] >= loop_start) {
+                    if (allocator->live_end[i] < loop_end) allocator->live_end[i] = loop_end;
+                }
+            }
+        }
+        if (target2 && block_start[target2->id] <= block_end[block->id]) {
+            int loop_start = block_start[target2->id];
+            int loop_end = block_end[block->id];
+            for (uint32_t i = 1; i <= allocator->max_vreg; i++) {
+                if (allocator->live_start[i] <= loop_start && allocator->live_end[i] >= loop_start) {
+                    if (allocator->live_end[i] < loop_end) allocator->live_end[i] = loop_end;
+                }
+            }
+        }
+    }
+
+    free(block_start);
+    free(block_end);
 
     // 2. 构建冲突图 (Interference Graph)
     uint32_t max_v = allocator->max_vreg;
