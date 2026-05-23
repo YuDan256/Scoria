@@ -80,6 +80,10 @@ static void print_inst(FILE* out, SirInst* inst) {
         case SIR_MUL: fprintf(out, "mul "); break;
         case SIR_DIV: fprintf(out, "div "); break;
         case SIR_MOD: fprintf(out, "mod "); break;
+        case SIR_FADD: fprintf(out, "fadd "); break;
+        case SIR_FSUB: fprintf(out, "fsub "); break;
+        case SIR_FMUL: fprintf(out, "fmul "); break;
+        case SIR_FDIV: fprintf(out, "fdiv "); break;
         case SIR_AND: fprintf(out, "and "); break;
         case SIR_OR:  fprintf(out, "or "); break;
         case SIR_XOR: fprintf(out, "xor "); break;
@@ -91,6 +95,12 @@ static void print_inst(FILE* out, SirInst* inst) {
         case SIR_ICMP_LE: fprintf(out, "icmp le "); break;
         case SIR_ICMP_GT: fprintf(out, "icmp gt "); break;
         case SIR_ICMP_GE: fprintf(out, "icmp ge "); break;
+        case SIR_FCMP_EQ: fprintf(out, "fcmp eq "); break;
+        case SIR_FCMP_NE: fprintf(out, "fcmp ne "); break;
+        case SIR_FCMP_LT: fprintf(out, "fcmp lt "); break;
+        case SIR_FCMP_LE: fprintf(out, "fcmp le "); break;
+        case SIR_FCMP_GT: fprintf(out, "fcmp gt "); break;
+        case SIR_FCMP_GE: fprintf(out, "fcmp ge "); break;
         case SIR_ALLOCA: fprintf(out, "alloca "); break;
         case SIR_LOAD: fprintf(out, "load "); break;
         case SIR_STORE: fprintf(out, "store "); break;

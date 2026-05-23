@@ -11,6 +11,7 @@
 typedef enum {
     // 算术与位运算
     SIR_ADD, SIR_SUB, SIR_MUL, SIR_DIV, SIR_MOD,
+    SIR_FADD, SIR_FSUB, SIR_FMUL, SIR_FDIV,
     SIR_AND, SIR_OR, SIR_XOR, SIR_SHL, SIR_SHR,
     
     // 比较运算

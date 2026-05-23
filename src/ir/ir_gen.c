@@ -22,14 +22,14 @@ static int get_type_size(ScoriaType* type) {
             int max_align = 1;
             for (int i = 0; i < type->as.struct_type.field_count; i++) {
                 int field_size = get_type_size(type->as.struct_type.fields[i].type);
-                int field_align = type->as.struct_type.is_packed ? 1 : (field_size > 8 ? 8 : field_size);
+                int field_align = type->as.struct_type.is_densa ? 1 : (field_size > 8 ? 8 : field_size);
                 if (field_align > max_align) max_align = field_align;
-                if (!type->as.struct_type.is_packed) {
+                if (!type->as.struct_type.is_densa) {
                     size = (size + field_align - 1) & ~(field_align - 1);
                 }
                 size += field_size;
             }
-            if (!type->as.struct_type.is_packed) {
+            if (!type->as.struct_type.is_densa) {
                 size = (size + max_align - 1) & ~(max_align - 1);
             }
             return size;
@@ -85,9 +85,9 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
             for (int i = 0; i < obj_type->as.struct_type.field_count; i++) {
                 StructField field = obj_type->as.struct_type.fields[i];
                 int field_size = get_type_size(field.type);
-                int field_align = obj_type->as.struct_type.is_packed ? 1 : (field_size > 8 ? 8 : field_size);
+                int field_align = obj_type->as.struct_type.is_densa ? 1 : (field_size > 8 ? 8 : field_size);
                 
-                if (!obj_type->as.struct_type.is_packed) {
+                if (!obj_type->as.struct_type.is_densa) {
                     byte_offset = (byte_offset + field_align - 1) & ~(field_align - 1);
                 }
                 
@@ -157,11 +157,12 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             SirValue* left = gen_expression(builder, expr->as.binary.left);
             SirValue* right = gen_expression(builder, expr->as.binary.right);
             SirOpcode op = SIR_ADD;
+            bool is_float = (left->type && (left->type->kind == TY_F32 || left->type->kind == TY_F64));
             switch (expr->as.binary.op.kind) {
-                case TK_PLUS:  op = SIR_ADD; break;
-                case TK_MINUS: op = SIR_SUB; break;
-                case TK_STAR:  op = SIR_MUL; break;
-                case TK_SLASH: op = SIR_DIV; break;
+                case TK_PLUS:  op = is_float ? SIR_FADD : SIR_ADD; break;
+                case TK_MINUS: op = is_float ? SIR_FSUB : SIR_SUB; break;
+                case TK_STAR:  op = is_float ? SIR_FMUL : SIR_MUL; break;
+                case TK_SLASH: op = is_float ? SIR_FDIV : SIR_DIV; break;
                 case TK_MOD:   op = SIR_MOD; break;
                 case TK_SHL:   op = SIR_SHL; break;
                 case TK_SHR:   op = SIR_SHR; break;
@@ -170,12 +171,12 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 case TK_PIPE:
                 case TK_LOGIC_OR:  op = SIR_OR; break;
                 case TK_CARET: op = SIR_XOR; break;
-                case TK_EQ:    op = SIR_ICMP_EQ; break;
-                case TK_NEQ:   op = SIR_ICMP_NE; break;
-                case TK_LT:    op = SIR_ICMP_LT; break;
-                case TK_LTE:   op = SIR_ICMP_LE; break;
-                case TK_GT:    op = SIR_ICMP_GT; break;
-                case TK_GTE:   op = SIR_ICMP_GE; break;
+                case TK_EQ:    op = is_float ? SIR_FCMP_EQ : SIR_ICMP_EQ; break;
+                case TK_NEQ:   op = is_float ? SIR_FCMP_NE : SIR_ICMP_NE; break;
+                case TK_LT:    op = is_float ? SIR_FCMP_LT : SIR_ICMP_LT; break;
+                case TK_LTE:   op = is_float ? SIR_FCMP_LE : SIR_ICMP_LE; break;
+                case TK_GT:    op = is_float ? SIR_FCMP_GT : SIR_ICMP_GT; break;
+                case TK_GTE:   op = is_float ? SIR_FCMP_GE : SIR_ICMP_GE; break;
                 default: break;
             }
             return ir_build_binary(builder, op, left, right);
@@ -197,8 +198,9 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 return ir_build_binary(builder, SIR_XOR, operand, true_val); // !x 等价于 x XOR true
             } else if (expr->as.unary.op.kind == TK_MINUS) {
                 SirValue* operand = gen_expression(builder, expr->as.unary.operand);
-                SirValue* zero = ir_const_int(builder, operand->type, 0);
-                return ir_build_binary(builder, SIR_SUB, zero, operand); // -x 等价于 0 - x
+                bool is_float = (operand->type && (operand->type->kind == TY_F32 || operand->type->kind == TY_F64));
+                SirValue* zero = is_float ? ir_const_float(builder, operand->type, 0.0) : ir_const_int(builder, operand->type, 0);
+                return ir_build_binary(builder, is_float ? SIR_FSUB : SIR_SUB, zero, operand); // -x 等价于 0 - x
             } else if (expr->as.unary.op.kind == TK_TILDE) {
                 SirValue* operand = gen_expression(builder, expr->as.unary.operand);
                 SirValue* minus_one = ir_const_int(builder, operand->type, -1);

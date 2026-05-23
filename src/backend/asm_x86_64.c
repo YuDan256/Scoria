@@ -4,10 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-// 物理寄存器映射表 (对应 reg_alloc.h 中的 NUM_PHYS_REGS = 6)
-static const char* phys_regs64[] = {"%rbx", "%rsi", "%rdi", "%r12", "%r13", "%r14"};
-static const char* phys_regs32[] = {"%ebx", "%esi", "%edi", "%r12d", "%r13d", "%r14d"};
-static const char* phys_regs8[]  = {"%bl", "%sil", "%dil", "%r12b", "%r13b", "%r14b"};
+// 物理寄存器映射表 (对应 reg_alloc.h 中的 NUM_PHYS_REGS = 9)
+static const char* phys_regs64[] = {"%rbx", "%rsi", "%rdi", "%r12", "%r13", "%r14", "%r15", "%r10", "%r11"};
+static const char* phys_regs32[] = {"%ebx", "%esi", "%edi", "%r12d", "%r13d", "%r14d", "%r15d", "%r10d", "%r11d"};
+static const char* phys_regs8[]  = {"%bl", "%sil", "%dil", "%r12b", "%r13b", "%r14b", "%r15b", "%r10b", "%r11b"};
 
 typedef struct {
     const char* str;
@@ -81,6 +81,15 @@ static void generate_function(FILE* out, SirFunction* func) {
     fprintf(out, "    pushq %%rbp\n");
     fprintf(out, "    movq %%rsp, %%rbp\n");
     
+    // 保存 callee-saved 寄存器
+    fprintf(out, "    pushq %%rbx\n");
+    fprintf(out, "    pushq %%rsi\n");
+    fprintf(out, "    pushq %%rdi\n");
+    fprintf(out, "    pushq %%r12\n");
+    fprintf(out, "    pushq %%r13\n");
+    fprintf(out, "    pushq %%r14\n");
+    fprintf(out, "    pushq %%r15\n");
+    
     // 将前 4 个参数寄存器保存到 Shadow Space
     fprintf(out, "    movq %%rcx, 16(%%rbp)\n");
     fprintf(out, "    movq %%rdx, 24(%%rbp)\n");
@@ -89,7 +98,7 @@ static void generate_function(FILE* out, SirFunction* func) {
 
     // 2. 扫描函数，找到最大的虚拟寄存器 ID 和 ALLOCA 空间
     uint32_t max_vreg = 0;
-    int local_stack_size = 0;
+    int local_stack_size = 72; // 56字节给7个callee-saved + 16字节给caller-saved(r10,r11)
     int* alloca_offsets = calloc(10000, sizeof(int));
 
     for (SirBlock* block = func->first_block; block; block = block->next) {
@@ -186,6 +195,22 @@ static void generate_function(FILE* out, SirFunction* func) {
                 case SIR_MUL:
                     fprintf(out, "    movq %s, %%rax\n", op0);
                     fprintf(out, "    imulq %s, %%rax\n", op1);
+                    fprintf(out, "    movq %%rax, %s\n", dest);
+                    break;
+
+                case SIR_FADD:
+                case SIR_FSUB:
+                case SIR_FMUL:
+                case SIR_FDIV:
+                    fprintf(out, "    movq %s, %%rax\n", op0);
+                    fprintf(out, "    movq %s, %%rcx\n", op1);
+                    fprintf(out, "    movq %%rax, %%xmm0\n");
+                    fprintf(out, "    movq %%rcx, %%xmm1\n");
+                    if (inst->opcode == SIR_FADD) fprintf(out, "    addsd %%xmm1, %%xmm0\n");
+                    else if (inst->opcode == SIR_FSUB) fprintf(out, "    subsd %%xmm1, %%xmm0\n");
+                    else if (inst->opcode == SIR_FMUL) fprintf(out, "    mulsd %%xmm1, %%xmm0\n");
+                    else if (inst->opcode == SIR_FDIV) fprintf(out, "    divsd %%xmm1, %%xmm0\n");
+                    fprintf(out, "    movq %%xmm0, %%rax\n");
                     fprintf(out, "    movq %%rax, %s\n", dest);
                     break;
 
@@ -293,7 +318,35 @@ static void generate_function(FILE* out, SirFunction* func) {
                     break;
                 }
 
+                case SIR_FCMP_EQ:
+                case SIR_FCMP_NE:
+                case SIR_FCMP_LT:
+                case SIR_FCMP_LE:
+                case SIR_FCMP_GT:
+                case SIR_FCMP_GE: {
+                    const char* cc = "e";
+                    if (inst->opcode == SIR_FCMP_NE) cc = "ne";
+                    else if (inst->opcode == SIR_FCMP_LT) cc = "b";
+                    else if (inst->opcode == SIR_FCMP_LE) cc = "be";
+                    else if (inst->opcode == SIR_FCMP_GT) cc = "a";
+                    else if (inst->opcode == SIR_FCMP_GE) cc = "ae";
+                    
+                    fprintf(out, "    movq %s, %%rax\n", op0);
+                    fprintf(out, "    movq %s, %%rcx\n", op1);
+                    fprintf(out, "    movq %%rax, %%xmm0\n");
+                    fprintf(out, "    movq %%rcx, %%xmm1\n");
+                    fprintf(out, "    ucomisd %%xmm1, %%xmm0\n");
+                    fprintf(out, "    set%s %%al\n", cc);
+                    fprintf(out, "    movzbq %%al, %%rax\n");
+                    fprintf(out, "    movq %%rax, %s\n", dest);
+                    break;
+                }
+
                 case SIR_CALL:
+                    // 保护 Caller-Saved 寄存器
+                    fprintf(out, "    movq %%r10, -64(%%rbp)\n");
+                    fprintf(out, "    movq %%r11, -72(%%rbp)\n");
+
                     if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "scribe") == 0) {
                         char arg_str[64];
                         get_operand_str(arg_str, inst->operands[1], &allocator, 8);
@@ -320,6 +373,10 @@ static void generate_function(FILE* out, SirFunction* func) {
                         } else {
                             fprintf(out, "    call __print_int\n");
                         }
+                        
+                        // 恢复 Caller-Saved 寄存器
+                        fprintf(out, "    movq -64(%%rbp), %%r10\n");
+                        fprintf(out, "    movq -72(%%rbp), %%r11\n");
                         break;
                     }
                     
@@ -338,6 +395,11 @@ static void generate_function(FILE* out, SirFunction* func) {
                     // 针对可变参数函数 (如 printf/scribe)，清空 %al
                     fprintf(out, "    xorq %%rax, %%rax\n");
                     fprintf(out, "    call %s\n", inst->operands[0]->as.global_name);
+                    
+                    // 恢复 Caller-Saved 寄存器
+                    fprintf(out, "    movq -64(%%rbp), %%r10\n");
+                    fprintf(out, "    movq -72(%%rbp), %%r11\n");
+                    
                     if (inst->dest) {
                         fprintf(out, "    movq %%rax, %s\n", dest);
                     }
@@ -348,7 +410,14 @@ static void generate_function(FILE* out, SirFunction* func) {
                         fprintf(out, "    movq %s, %%rax\n", op0);
                     }
                     // 5. 函数跋 (Epilogue)
-                    fprintf(out, "    movq %%rbp, %%rsp\n");
+                    fprintf(out, "    leaq -56(%%rbp), %%rsp\n");
+                    fprintf(out, "    popq %%r15\n");
+                    fprintf(out, "    popq %%r14\n");
+                    fprintf(out, "    popq %%r13\n");
+                    fprintf(out, "    popq %%r12\n");
+                    fprintf(out, "    popq %%rdi\n");
+                    fprintf(out, "    popq %%rsi\n");
+                    fprintf(out, "    popq %%rbx\n");
                     fprintf(out, "    popq %%rbp\n");
                     fprintf(out, "    ret\n");
                     break;

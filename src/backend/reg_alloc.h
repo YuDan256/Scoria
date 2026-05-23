@@ -4,7 +4,7 @@
 #include "../ir/sir.h"
 #include <stdint.h>
 
-#define NUM_PHYS_REGS 6 // 可用的通用物理寄存器数量 (例如: rbx, r10, r11, r12, r13, r14)
+#define NUM_PHYS_REGS 9 // 可用的通用物理寄存器数量 (7个非易失 + 2个易失)
 
 // 图着色寄存器分配器 (Graph Coloring Register Allocator)
 typedef struct {
