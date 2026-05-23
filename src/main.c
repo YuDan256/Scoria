@@ -41,32 +41,37 @@ static char* read_file(const char* path) {
 
 int main(int argc, char** argv) {
     logger_init();
-    LOG_INFO("Roma Invicta! Cor compilatoris Scoriae spirat.");
 
     const char* source_path = NULL;
     const char* output_path = "scoria_out.exe";
     bool emit_ir = false;
     bool emit_asm = false;
+    bool verbose = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             output_path = argv[++i];
-        } else if (strcmp(argv[i], "--emit-ir") == 0) {
+        } else if (strcmp(argv[i], "--emitte-ir") == 0) {
             emit_ir = true;
-        } else if (strcmp(argv[i], "--emit-asm") == 0) {
+        } else if (strcmp(argv[i], "--emitte-asm") == 0) {
             emit_asm = true;
+        } else if (strcmp(argv[i], "--verbosus") == 0 || strcmp(argv[i], "-v") == 0) {
+            verbose = true;
         } else if (argv[i][0] != '-') {
             source_path = argv[i];
         } else {
             LOG_ERROR("Argumentum ignotum: %s", argv[i]);
-            printf("Usus: scoria <fasciculus.sco> [-o <output.exe>] [--emit-ir] [--emit-asm]\n");
+            printf("Usus: scoria <fasciculus.sco> [-o <opus.exe>] [--emitte-ir] [--emitte-asm] [--verbosus]\n");
             return 1;
         }
     }
 
+    logger_set_level(verbose ? LOG_INFO : LOG_WARN);
+    LOG_INFO("Incipit compilatio Scoriae. Roma Invicta.");
+
     if (!source_path) {
         LOG_ERROR("Nullus fasciculus datus est.");
-        printf("Usus: scoria <fasciculus.sco> [-o <output.exe>] [--emit-ir] [--emit-asm]\n");
+        printf("Usus: scoria <fasciculus.sco> [-o <opus.exe>] [--emitte-ir] [--emitte-asm] [--verbosus]\n");
         return 1;
     }
 
@@ -75,7 +80,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    LOG_INFO("--- [1] Fons (Source): %s ---", source_path);
+    LOG_INFO("[I] Lectio fontis: %s", source_path);
 
     // 1. 前端：语法分析 (Syntax Analysis)
     Parser parser;
@@ -83,11 +88,11 @@ int main(int argc, char** argv) {
     AstNode* program = parse_program(&parser);
     
     if (parser.had_error) {
-        LOG_ERROR("Erratum in syntaxi. Compilatio terminata.");
+        LOG_ERROR("Vitia syntactica inventa sunt. Processus abortus est.");
         parser_free(&parser);
         return 1;
     }
-    LOG_INFO("--- [2] Syntaxis (AST) OK ---");
+    LOG_INFO("[II] Analysis syntactica perfecta est.");
 
     // 2. 中端：类型检查与语义分析 (Semantic Analysis)
     types_init(); // 初始化类型系统单例
@@ -95,12 +100,12 @@ int main(int argc, char** argv) {
     type_checker_init(&checker);
     
     if (!type_checker_run(&checker, program)) {
-        LOG_ERROR("Erratum in typis. Compilatio terminata.");
+        LOG_ERROR("Vitia semantica inventa sunt. Processus abortus est.");
         type_checker_free(&checker);
         parser_free(&parser);
         return 1;
     }
-    LOG_INFO("--- [3] Semantica (Type Check) OK ---");
+    LOG_INFO("[III] Probatio typorum et semantica perfecta est.");
 
     // 3. 后端：IR 生成 (IR Generation)
     IrBuilder builder;
@@ -108,14 +113,14 @@ int main(int argc, char** argv) {
     ir_gen_generate(&builder, program);
     
     if (emit_ir) {
-        LOG_INFO("--- [4] SIR (Scoria IR) ---");
+        LOG_INFO("[IV] Generatio Repraesentationis Intermediae (SIR):");
         sir_print_module(stdout, builder.module);
         printf("\n");
     }
 
     // 4. 后端：生成汇编代码 (Assembly Generation)
     if (emit_asm) {
-        LOG_INFO("--- [5] Assembly (x86_64) ---");
+        LOG_INFO("[V] Generatio codicis machinalis (x86_64):");
         asm_x86_64_generate(stdout, builder.module);
         printf("\n");
     }
@@ -124,10 +129,10 @@ int main(int argc, char** argv) {
     PeLinker pe_linker;
     pe_linker_init(&pe_linker);
     if (pe_linker_generate_executable(&pe_linker, builder.module, output_path)) {
-        LOG_INFO("--- [6] Executable Generated: %s ---", output_path);
-        LOG_INFO("Potes nunc currere: %s", output_path);
+        LOG_INFO("[VI] Opus perfectum est: %s", output_path);
+        LOG_INFO("Feliciter. Imperium exspectat: %s", output_path);
     } else {
-        LOG_ERROR("Erratum in generatione PE.");
+        LOG_ERROR("Defectus in generatione formae PE.");
     }
     pe_linker_free(&pe_linker);
 

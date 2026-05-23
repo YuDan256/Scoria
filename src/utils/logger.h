@@ -4,14 +4,17 @@
 #include <stdio.h>
 
 typedef enum {
+    LOG_DEBUG,
     LOG_INFO,
     LOG_WARN,
-    LOG_ERROR,
-    LOG_DEBUG
+    LOG_ERROR
 } LogLevel;
 
 // 初始化日志系统
 void logger_init(void);
+
+// 设置日志级别
+void logger_set_level(LogLevel level);
 
 // 打印日志
 void log_msg(LogLevel level, const char* format, ...);
