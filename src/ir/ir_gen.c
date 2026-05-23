@@ -500,6 +500,12 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
 void ir_gen_generate(IrBuilder* builder, AstNode* program) {
     if (!program || program->kind != AST_PROGRAM) return;
 
+    // 创建全局初始化函数 __scoria_init
+    ScoriaType* init_func_type = type_create_actio(type_get_basic(TY_NIHIL), NULL, 0);
+    SirFunction* init_func = ir_builder_create_function(builder, "__scoria_init", init_func_type);
+    SirBlock* init_block = ir_builder_create_block(builder, "ingressus");
+    SirBlock* current_init_block = init_block;
+
     for (int i = 0; i < program->as.program.decl_count; i++) {
         AstNode* decl = program->as.program.declarations[i];
         
@@ -514,6 +520,22 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
                 val->type = type_get_via(sym->type);
                 val->as.global_name = gvar->name;
                 sym->ir_val = val;
+
+                if (decl->as.var_decl.initializer) {
+                    SirFunction* prev_func = builder->current_func;
+                    SirBlock* prev_block = builder->current_block;
+                    
+                    builder->current_func = init_func;
+                    ir_builder_set_insert_point(builder, current_init_block);
+                    
+                    SirValue* init_val = gen_expression(builder, decl->as.var_decl.initializer);
+                    ir_build_store(builder, init_val, sym->ir_val);
+                    
+                    current_init_block = builder->current_block;
+                    
+                    builder->current_func = prev_func;
+                    ir_builder_set_insert_point(builder, prev_block);
+                }
             }
         } else if (decl->kind == AST_FUNC_DECL) {
             Symbol* sym = decl->resolved_symbol;
@@ -555,4 +577,13 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
             }
         }
     }
+
+    // 结束 __scoria_init 函数
+    SirFunction* prev_func = builder->current_func;
+    SirBlock* prev_block = builder->current_block;
+    builder->current_func = init_func;
+    ir_builder_set_insert_point(builder, current_init_block);
+    ir_build_ret(builder, NULL);
+    builder->current_func = prev_func;
+    ir_builder_set_insert_point(builder, prev_block);
 }

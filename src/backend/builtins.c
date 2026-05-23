@@ -180,9 +180,20 @@ void asm_builtins_generate(FILE* out) {
     fprintf(out, "    .align 8\n");
     fprintf(out, ".Lfloat_10:\n    .quad 4621819117588971520\n"); // 10.0 in IEEE 754 double
     fprintf(out, "    .text\n\n");
+
+    fprintf(out, "    .globl main\n");
+    fprintf(out, "main:\n");
+    fprintf(out, "    pushq %%rbp\n");
+    fprintf(out, "    movq %%rsp, %%rbp\n");
+    fprintf(out, "    subq $32, %%rsp\n");
+    fprintf(out, "    call __scoria_init\n");
+    fprintf(out, "    call princeps\n");
+    fprintf(out, "    addq $32, %%rsp\n");
+    fprintf(out, "    popq %%rbp\n");
+    fprintf(out, "    ret\n\n");
 }
 
-void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset) {
+void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t init_offset) {
     // 追加内置汇编例程: __print_str
     g_print_str_offset = (uint32_t)linker->text_section.size;
     
@@ -332,6 +343,10 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset) {
     linker->entry_point_offset = (uint32_t)linker->text_section.size;
     // sub rsp, 40 (32 bytes shadow space + 8 bytes alignment)
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x28);
+    // call __scoria_init
+    emit8(&linker->text_section, 0xE8);
+    int32_t rel_init = (int32_t)(init_offset - (linker->text_section.size + 4));
+    emit32(&linker->text_section, (uint32_t)rel_init);
     // call princeps
     emit8(&linker->text_section, 0xE8);
     int32_t rel_princeps = (int32_t)(princeps_offset - (linker->text_section.size + 4));

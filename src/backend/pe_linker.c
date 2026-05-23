@@ -358,6 +358,7 @@ uint32_t g_minus_rdata_off = 0;
 uint32_t g_float_10_rdata_off = 0;
 
 uint32_t g_princeps_offset = 0;
+uint32_t g_init_offset = 0;
 
 uint32_t g_crea_relocs[1024];
 int g_crea_reloc_count = 0;
@@ -473,6 +474,8 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
 
             if (strcmp(func->name, "princeps") == 0) {
                 g_princeps_offset = (uint32_t)linker->text_section.size;
+            } else if (strcmp(func->name, "__scoria_init") == 0) {
+                g_init_offset = (uint32_t)linker->text_section.size;
             }
 
             uint32_t max_vreg = 0;
@@ -954,7 +957,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
         }
 
         // 追加内置汇编例程
-        pe_builtins_generate(linker, g_princeps_offset);
+        pe_builtins_generate(linker, g_princeps_offset, g_init_offset);
     }
 
     free(block_offsets);

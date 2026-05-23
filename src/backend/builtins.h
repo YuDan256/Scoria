@@ -9,7 +9,7 @@
 void asm_builtins_generate(FILE* out);
 
 // PE 链接器后端内置例程
-void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset);
+void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t init_offset);
 
 // 共享的偏移量与重定位记录
 extern uint32_t g_print_str_offset;
