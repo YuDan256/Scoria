@@ -14,6 +14,8 @@ void ir_builder_init(IrBuilder* builder, const char* module_name) {
     builder->module->name = module_name;
     builder->module->first_func = NULL;
     builder->module->last_func = NULL;
+    builder->module->first_global = NULL;
+    builder->module->last_global = NULL;
     
     builder->current_func = NULL;
     builder->current_block = NULL;
@@ -30,6 +32,25 @@ void ir_builder_free(IrBuilder* builder) {
 // =========================================================
 // 结构构建 API
 // =========================================================
+SirGlobalVar* ir_builder_create_global(IrBuilder* builder, const char* name_start, int name_len, ScoriaType* type, int size) {
+    SirGlobalVar* gvar = (SirGlobalVar*)arena_alloc(&builder->arena, sizeof(SirGlobalVar));
+    char* name = (char*)arena_alloc(&builder->arena, name_len + 1);
+    strncpy(name, name_start, name_len);
+    name[name_len] = '\0';
+    gvar->name = name;
+    gvar->type = type;
+    gvar->size = size;
+    gvar->next = NULL;
+    
+    if (!builder->module->first_global) {
+        builder->module->first_global = gvar;
+    } else {
+        builder->module->last_global->next = gvar;
+    }
+    builder->module->last_global = gvar;
+    return gvar;
+}
+
 SirFunction* ir_builder_create_function(IrBuilder* builder, const char* name, ScoriaType* func_type) {
     SirFunction* func = (SirFunction*)arena_alloc(&builder->arena, sizeof(SirFunction));
     func->name = name;

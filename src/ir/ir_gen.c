@@ -139,9 +139,21 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
         }
         case AST_IDENT_EXPR: {
             Symbol* sym = expr->resolved_symbol;
-            if (sym && sym->ir_val) {
-                // 局部变量的 ir_val 是 alloca 分配的栈指针，使用时需要 load 出来
-                return ir_build_load(builder, sym->ir_val);
+            if (sym) {
+                if (sym->type && sym->type->kind == TY_ACTIO) {
+                    // 获取函数指针
+                    SirValue* val = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
+                    val->kind = SIR_VAL_GLOBAL;
+                    val->type = type_get_via(sym->type);
+                    char* name = (char*)arena_alloc(&builder->arena, sym->name.length + 1);
+                    strncpy(name, sym->name.start, sym->name.length);
+                    name[sym->name.length] = '\0';
+                    val->as.global_name = name;
+                    return val;
+                } else if (sym->ir_val) {
+                    // 局部变量或全局变量的 ir_val 是指针，使用时需要 load 出来
+                    return ir_build_load(builder, sym->ir_val);
+                }
             }
             break;
         }
@@ -491,7 +503,19 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
     for (int i = 0; i < program->as.program.decl_count; i++) {
         AstNode* decl = program->as.program.declarations[i];
         
-        if (decl->kind == AST_FUNC_DECL) {
+        if (decl->kind == AST_VAR_DECL) {
+            Symbol* sym = decl->resolved_symbol;
+            if (sym) {
+                int size = get_type_size(sym->type);
+                SirGlobalVar* gvar = ir_builder_create_global(builder, sym->name.start, sym->name.length, sym->type, size);
+                
+                SirValue* val = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
+                val->kind = SIR_VAL_GLOBAL;
+                val->type = type_get_via(sym->type);
+                val->as.global_name = gvar->name;
+                sym->ir_val = val;
+            }
+        } else if (decl->kind == AST_FUNC_DECL) {
             Symbol* sym = decl->resolved_symbol;
             if (!sym || sym->type->kind != TY_ACTIO) continue;
 

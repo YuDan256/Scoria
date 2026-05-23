@@ -104,6 +104,16 @@ typedef struct SirFunction {
 } SirFunction;
 
 // =========================================================
+// SIR 全局变量 (Global Variables)
+// =========================================================
+typedef struct SirGlobalVar {
+    const char* name;
+    ScoriaType* type;
+    int size;
+    struct SirGlobalVar* next;
+} SirGlobalVar;
+
+// =========================================================
 // SIR 模块 (Modules)
 // =========================================================
 typedef struct SirModule {
@@ -112,7 +122,8 @@ typedef struct SirModule {
     SirFunction* first_func;
     SirFunction* last_func;
     
-    // TODO: 全局变量链表
+    SirGlobalVar* first_global;
+    SirGlobalVar* last_global;
 } SirModule;
 
 #endif // SCORIA_SIR_H

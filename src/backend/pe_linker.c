@@ -112,12 +112,14 @@ static void buf_append(PeCodeBuffer* cb, uint8_t byte) {
 void pe_linker_init(PeLinker* linker) {
     buf_init(&linker->text_section);
     buf_init(&linker->rdata_section);
+    buf_init(&linker->data_section);
     linker->entry_point_offset = 0;
 }
 
 void pe_linker_free(PeLinker* linker) {
     buf_free(&linker->text_section);
     buf_free(&linker->rdata_section);
+    buf_free(&linker->data_section);
 }
 
 static uint32_t align_up(uint32_t val, uint32_t alignment) {
@@ -211,10 +213,35 @@ static int get_phys_reg(int color) {
     return REG_RAX;
 }
 
-// 智能操作数加载器：处理常量、物理寄存器、栈溢出和字符串 RIP 寻址
-static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, int scratch, 
-                        uint32_t* str_relocs, uint32_t* str_rdata_offs, int* str_reloc_count, 
-                        const char** strings, uint32_t* string_offsets, int string_count) {
+typedef struct {
+    int pass;
+    const char** strings;
+    uint32_t* string_offsets;
+    int string_count;
+    const char** globals;
+    uint32_t* global_offsets;
+    int global_count;
+    const char** funcs;
+    uint32_t* func_offsets;
+    int func_count;
+} LinkCtx;
+
+// 全局重定位表 (用于跨函数回填)
+#define MAX_STR_RELOCS 1024
+uint32_t g_str_relocs[MAX_STR_RELOCS];
+uint32_t g_str_rdata_offs[MAX_STR_RELOCS];
+int g_str_reloc_count = 0;
+
+uint32_t g_data_relocs[1024];
+uint32_t g_data_offs[1024];
+int g_data_reloc_count = 0;
+
+uint32_t g_func_relocs[1024];
+uint32_t g_func_offs[1024];
+int g_func_reloc_count = 0;
+
+// 智能操作数加载器：处理常量、物理寄存器、栈溢出和 RIP 寻址
+static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, int scratch, LinkCtx* ctx) {
     if (!val) return scratch;
     if (val->kind == SIR_VAL_CONST_INT) {
         emit_mov_reg_imm32(cb, scratch, (int32_t)val->as.int_val);
@@ -230,21 +257,57 @@ static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, in
         return scratch;
     } else if (val->kind == SIR_VAL_CONST_STRING) {
         uint32_t rdata_off = 0;
-        for (int i = 0; i < string_count; i++) {
-            if (strcmp(strings[i], val->as.string_val) == 0) {
-                rdata_off = string_offsets[i];
+        for (int i = 0; i < ctx->string_count; i++) {
+            if (strcmp(ctx->strings[i], val->as.string_val) == 0) {
+                rdata_off = ctx->string_offsets[i];
                 break;
             }
         }
         emit_rex(cb, 1, scratch > 7, 0, 0);
         emit8(cb, 0x8D); // lea r64, [rip + rel32]
         emit_modrm(cb, 0, scratch & 7, 5);
-        if (str_relocs && str_rdata_offs && str_reloc_count) {
-            str_relocs[*str_reloc_count] = (uint32_t)cb->size;
-            str_rdata_offs[*str_reloc_count] = rdata_off;
-            (*str_reloc_count)++;
+        if (ctx->pass == 1) {
+            g_str_relocs[g_str_reloc_count] = (uint32_t)cb->size;
+            g_str_rdata_offs[g_str_reloc_count] = rdata_off;
+            g_str_reloc_count++;
         }
         emit32(cb, 0); // 占位符，链接时回填
+        return scratch;
+    } else if (val->kind == SIR_VAL_GLOBAL) {
+        emit_rex(cb, 1, scratch > 7, 0, 0);
+        emit8(cb, 0x8D); // lea r64, [rip + rel32]
+        emit_modrm(cb, 0, scratch & 7, 5);
+        
+        bool is_global = false;
+        uint32_t target_off = 0;
+        for (int i = 0; i < ctx->global_count; i++) {
+            if (strcmp(ctx->globals[i], val->as.global_name) == 0) {
+                is_global = true;
+                target_off = ctx->global_offsets[i];
+                break;
+            }
+        }
+        
+        if (is_global) {
+            if (ctx->pass == 1) {
+                g_data_relocs[g_data_reloc_count] = (uint32_t)cb->size;
+                g_data_offs[g_data_reloc_count] = target_off;
+                g_data_reloc_count++;
+            }
+        } else {
+            for (int i = 0; i < ctx->func_count; i++) {
+                if (strcmp(ctx->funcs[i], val->as.global_name) == 0) {
+                    target_off = ctx->func_offsets[i];
+                    break;
+                }
+            }
+            if (ctx->pass == 1) {
+                g_func_relocs[g_func_reloc_count] = (uint32_t)cb->size;
+                g_func_offs[g_func_reloc_count] = target_off;
+                g_func_reloc_count++;
+            }
+        }
+        emit32(cb, 0);
         return scratch;
     } else if (val->kind == SIR_VAL_VREG) {
         int color = reg_alloc_get_color(alloc, val->as.vreg);
@@ -272,12 +335,6 @@ static void store_result(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, i
         emit_mem(cb, src, REG_RBP, offset);
     }
 }
-
-// 全局重定位表 (用于跨函数回填)
-#define MAX_STR_RELOCS 1024
-uint32_t g_str_relocs[MAX_STR_RELOCS];
-uint32_t g_str_rdata_offs[MAX_STR_RELOCS];
-int g_str_reloc_count = 0;
 
 uint32_t g_print_str_relocs[1024];
 int g_print_str_reloc_count = 0;
@@ -319,6 +376,25 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
     uint32_t* string_offsets = (uint32_t*)malloc(1024 * sizeof(uint32_t));
     int string_count = 0;
     g_str_reloc_count = 0;
+
+    const char** global_names = (const char**)malloc(1024 * sizeof(const char*));
+    uint32_t* global_offsets = (uint32_t*)malloc(1024 * sizeof(uint32_t));
+    int global_count = 0;
+
+    // 预扫描：收集所有全局变量并写入 .data 段
+    for (SirGlobalVar* g = module->first_global; g; g = g->next) {
+        while (linker->data_section.size % 8 != 0) buf_append(&linker->data_section, 0);
+        global_names[global_count] = g->name;
+        global_offsets[global_count] = (uint32_t)linker->data_section.size;
+        global_count++;
+        for (int i = 0; i < g->size; i++) buf_append(&linker->data_section, 0);
+    }
+
+    // 预扫描：收集所有函数名 (解决前向引用问题)
+    for (SirFunction* func = module->first_func; func; func = func->next) {
+        func_names[func_count] = func->name;
+        func_count++;
+    }
 
     // 预扫描：收集所有字符串常量并写入 .rdata 段
     for (SirFunction* func = module->first_func; func; func = func->next) {
@@ -376,12 +452,24 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
         g_str_reloc_count = 0;
         g_crea_reloc_count = 0;
         g_neca_reloc_count = 0;
-        func_count = 0;
+        g_data_reloc_count = 0;
+        g_func_reloc_count = 0;
 
+        LinkCtx ctx;
+        ctx.pass = pass;
+        ctx.strings = strings;
+        ctx.string_offsets = string_offsets;
+        ctx.string_count = string_count;
+        ctx.globals = global_names;
+        ctx.global_offsets = global_offsets;
+        ctx.global_count = global_count;
+        ctx.funcs = func_names;
+        ctx.func_offsets = func_offsets;
+        ctx.func_count = func_count;
+
+        int current_func_idx = 0;
         for (SirFunction* func = module->first_func; func; func = func->next) {
-            func_names[func_count] = func->name;
-            func_offsets[func_count] = (uint32_t)linker->text_section.size;
-            func_count++;
+            func_offsets[current_func_idx++] = (uint32_t)linker->text_section.size;
 
             if (strcmp(func->name, "princeps") == 0) {
                 g_princeps_offset = (uint32_t)linker->text_section.size;
@@ -472,15 +560,15 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             break;
                         }
                         case SIR_STORE: {
-                            int val_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
-                            int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int val_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
+                            int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                             emit_rex(&linker->text_section, 1, val_reg > 7, 0, ptr_reg > 7);
                             emit8(&linker->text_section, 0x89); // mov [ptr_reg], val_reg
                             emit_mem(&linker->text_section, val_reg, ptr_reg, 0);
                             break;
                         }
                         case SIR_LOAD: {
-                            int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RCX, &ctx);
                             emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
                             emit8(&linker->text_section, 0x8B); // mov rax, [ptr_reg]
                             emit_mem(&linker->text_section, REG_RAX, ptr_reg, 0);
@@ -493,7 +581,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             bool src_is_float = (src_type && (src_type->kind == TY_F32 || src_type->kind == TY_F64));
                             bool dst_is_float = (dst_type && (dst_type->kind == TY_F32 || dst_type->kind == TY_F64));
 
-                            int src = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int src = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (src != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, src);
                             
                             if (src_is_float && !dst_is_float) {
@@ -515,7 +603,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_AND:
                         case SIR_OR:
                         case SIR_XOR: {
-                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
                             
                             if (inst->opcode != SIR_MUL && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
@@ -528,7 +616,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 else if (inst->opcode == SIR_XOR) opc_ext = 6;
                                 emit_alu_reg_imm32(&linker->text_section, opc_ext, REG_RAX, imm);
                             } else {
-                                int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                                int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                                 if (inst->opcode == SIR_ADD) emit_alu_reg_reg(&linker->text_section, 0x01, REG_RAX, right);
                                 else if (inst->opcode == SIR_SUB) emit_alu_reg_reg(&linker->text_section, 0x2B, REG_RAX, right);
                                 else if (inst->opcode == SIR_AND) emit_alu_reg_reg(&linker->text_section, 0x23, REG_RAX, right);
@@ -547,9 +635,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_FSUB:
                         case SIR_FMUL:
                         case SIR_FDIV: {
-                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
-                            int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                             if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
                             
                             // movq xmm0, rax
@@ -573,9 +661,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         }
                         case SIR_DIV:
                         case SIR_MOD: {
-                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
-                            int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                             if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
                             
                             emit_rex(&linker->text_section, 1, 0, 0, 0);
@@ -593,9 +681,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         }
                         case SIR_SHL:
                         case SIR_SHR: {
-                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
-                            int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                             if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
                             
                             emit_rex(&linker->text_section, 1, 0, 0, 0);
@@ -606,7 +694,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             break;
                         }
                         case SIR_GEP: {
-                            int ptr = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int ptr = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (ptr != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, ptr);
                             
                             int element_size = (int)inst->operands[2]->as.int_val;
@@ -615,7 +703,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 int32_t offset = (int32_t)(inst->operands[1]->as.int_val * element_size);
                                 if (offset != 0) emit_alu_reg_imm32(&linker->text_section, 0, REG_RAX, offset);
                             } else {
-                                int idx = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                                int idx = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                                 if (idx != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, idx);
                                 
                                 if (element_size > 1) {
@@ -638,12 +726,12 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_ICMP_GE:
                         case SIR_ICMP_EQ:
                         case SIR_ICMP_NE: {
-                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                                 int32_t imm = (int32_t)inst->operands[1]->as.int_val;
                                 emit_alu_reg_imm32(&linker->text_section, 7, left, imm); // cmp left, imm
                             } else {
-                                int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                                int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                                 emit_rex(&linker->text_section, 1, right > 7, 0, left > 7);
                                 emit8(&linker->text_section, 0x39); // cmp left, right
                                 emit_modrm(&linker->text_section, 3, right & 7, left & 7);
@@ -670,9 +758,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_FCMP_GE:
                         case SIR_FCMP_EQ:
                         case SIR_FCMP_NE: {
-                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
-                            int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                             if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
                             
                             // movq xmm0, rax
@@ -716,7 +804,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 bool is_ptr = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_VIA || inst->operands[1]->type->kind == TY_COHORS || inst->operands[1]->type->kind == TY_ACIES));
                                 bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
                                 
-                                int arg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                                int arg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                                 if (arg != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, arg);
                                 
                                 if (is_str) {
@@ -753,7 +841,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 break;
                             }
                             if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "crea") == 0) {
-                                int arg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                                int arg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                                 if (arg != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, arg);
                                 emit8(&linker->text_section, 0xE8); // call rel32
                                 if (pass == 1) g_crea_relocs[g_crea_reloc_count++] = (uint32_t)linker->text_section.size;
@@ -767,7 +855,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 break;
                             }
                             if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "neca") == 0) {
-                                int arg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                                int arg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                                 if (arg != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, arg);
                                 emit8(&linker->text_section, 0xE8); // call rel32
                                 if (pass == 1) g_neca_relocs[g_neca_reloc_count++] = (uint32_t)linker->text_section.size;
@@ -781,7 +869,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
 
                             int arg_regs[] = {REG_RCX, REG_RDX, 8, 9};
                             for (int i = 0; i < inst->num_operands - 1; i++) {
-                                int val = load_operand(&linker->text_section, &allocator, inst->operands[i+1], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                                int val = load_operand(&linker->text_section, &allocator, inst->operands[i+1], REG_RAX, &ctx);
                                 if (i < 4) {
                                     if (val != arg_regs[i]) emit_mov_reg_reg(&linker->text_section, arg_regs[i], val);
                                 } else {
@@ -794,18 +882,22 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             emit8(&linker->text_section, 0x31);
                             emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
                             
-                            uint32_t target_offset = 0;
                             if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
-                                for (int f = 0; f < func_count; f++) {
-                                    if (strcmp(func_names[f], inst->operands[0]->as.global_name) == 0) {
-                                        target_offset = func_offsets[f];
+                                uint32_t target_offset = 0;
+                                for (int f = 0; f < ctx.func_count; f++) {
+                                    if (strcmp(ctx.funcs[f], inst->operands[0]->as.global_name) == 0) {
+                                        target_offset = ctx.func_offsets[f];
                                         break;
                                     }
                                 }
+                                emit8(&linker->text_section, 0xE8); // call rel32
+                                emit32(&linker->text_section, (uint32_t)(target_offset - (linker->text_section.size + 4)));
+                            } else {
+                                int callee_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_R10, &ctx);
+                                emit_rex(&linker->text_section, 1, 0, 0, callee_reg > 7);
+                                emit8(&linker->text_section, 0xFF);
+                                emit_modrm(&linker->text_section, 3, 2, callee_reg & 7); // call r/m64
                             }
-                            
-                            emit8(&linker->text_section, 0xE8); // call rel32
-                            emit32(&linker->text_section, (uint32_t)(target_offset - (linker->text_section.size + 4)));
                             
                             // 恢复 Caller-Saved 寄存器
                             emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit_mem(&linker->text_section, 2, REG_RBP, -64);
@@ -817,7 +909,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             break;
                         }
                         case SIR_BR: {
-                            int cond = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                            int cond = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             emit_alu_reg_imm32(&linker->text_section, 7, cond, 0); // cmp cond, 0
                             
                             uint32_t t_id = inst->operands[1]->as.block->id;
@@ -833,7 +925,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         }
                         case SIR_RET: {
                             if (inst->num_operands > 0) {
-                                int val = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
+                                int val = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                                 if (val != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, val);
                             }
                             // 跋 (Epilogue)
@@ -890,7 +982,7 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     CoffHeader coff = {0};
     coff.Signature = 0x00004550; // "PE\0\0"
     coff.Machine = 0x8664;       // x86_64
-    coff.NumberOfSections = 2;   // .text 和 .rdata
+    coff.NumberOfSections = 3;   // .text, .rdata, .data
     coff.SizeOfOptionalHeader = (uint16_t)sizeof(OptionalHeader64);
     coff.Characteristics = 0x0022;
 
@@ -931,11 +1023,6 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     rdata_sec.SizeOfRawData = align_up((uint32_t)linker->rdata_section.size, file_align);
     rdata_sec.PointerToRawData = text_sec.PointerToRawData + text_sec.SizeOfRawData;
     rdata_sec.Characteristics = 0x40000040; // Initialized Data | Read
-
-    opt.SizeOfCode = text_sec.SizeOfRawData;
-    opt.SizeOfInitializedData = rdata_sec.SizeOfRawData;
-    opt.SizeOfImage = align_up(rdata_sec.VirtualAddress + rdata_sec.VirtualSize, sec_align);
-    opt.SizeOfHeaders = align_up((uint32_t)(sizeof(DosHeader) + sizeof(CoffHeader) + sizeof(OptionalHeader64) + sizeof(SectionHeader) * 2), file_align);
 
     // =========================================================
     // 构建导入表 (Import Directory)
@@ -1034,12 +1121,24 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
 
     rdata_sec.VirtualSize = (uint32_t)linker->rdata_section.size;
     rdata_sec.SizeOfRawData = align_up((uint32_t)linker->rdata_section.size, file_align);
-    opt.SizeOfInitializedData = rdata_sec.SizeOfRawData;
-    opt.SizeOfImage = align_up(rdata_sec.VirtualAddress + rdata_sec.VirtualSize, sec_align);
+    
+    SectionHeader data_sec = {0};
+    memcpy(data_sec.Name, ".data", 5);
+    data_sec.VirtualSize = (uint32_t)linker->data_section.size;
+    data_sec.VirtualAddress = align_up(rdata_sec.VirtualAddress + rdata_sec.VirtualSize, sec_align);
+    data_sec.SizeOfRawData = align_up((uint32_t)linker->data_section.size, file_align);
+    data_sec.PointerToRawData = rdata_sec.PointerToRawData + rdata_sec.SizeOfRawData;
+    data_sec.Characteristics = 0xC0000040; // Initialized Data | Read | Write
+
+    opt.SizeOfCode = text_sec.SizeOfRawData;
+    opt.SizeOfInitializedData = rdata_sec.SizeOfRawData + data_sec.SizeOfRawData;
+    opt.SizeOfImage = align_up(data_sec.VirtualAddress + data_sec.VirtualSize, sec_align);
+    opt.SizeOfHeaders = align_up((uint32_t)(sizeof(DosHeader) + sizeof(CoffHeader) + sizeof(OptionalHeader64) + sizeof(SectionHeader) * 3), file_align);
 
     // 重新修正 PointerToRawData 因为 SizeOfHeaders 可能变了
     text_sec.PointerToRawData = opt.SizeOfHeaders;
     rdata_sec.PointerToRawData = text_sec.PointerToRawData + text_sec.SizeOfRawData;
+    data_sec.PointerToRawData = rdata_sec.PointerToRawData + rdata_sec.SizeOfRawData;
 
     // 写入所有头部
     fwrite(&dos, 1, sizeof(dos), out);
@@ -1047,10 +1146,27 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     fwrite(&opt, 1, sizeof(opt), out);
     fwrite(&text_sec, 1, sizeof(text_sec), out);
     fwrite(&rdata_sec, 1, sizeof(rdata_sec), out);
+    fwrite(&data_sec, 1, sizeof(data_sec), out);
 
     // 填充对齐到代码段起始位置
     uint8_t zero = 0;
     while ((uint32_t)ftell(out) < text_sec.PointerToRawData) fwrite(&zero, 1, 1, out);
+
+    // 回填全局变量 RIP 相对寻址重定位
+    for (int i = 0; i < g_data_reloc_count; i++) {
+        uint32_t text_off = g_data_relocs[i];
+        uint32_t target_rva = data_sec.VirtualAddress + g_data_offs[i];
+        int32_t rel32 = (int32_t)(target_rva - (text_sec.VirtualAddress + text_off + 4));
+        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+    }
+
+    // 回填函数指针 RIP 相对寻址重定位
+    for (int i = 0; i < g_func_reloc_count; i++) {
+        uint32_t text_off = g_func_relocs[i];
+        uint32_t target_rva = text_sec.VirtualAddress + g_func_offs[i];
+        int32_t rel32 = (int32_t)(target_rva - (text_sec.VirtualAddress + text_off + 4));
+        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+    }
 
     // 回填字符串 RIP 相对寻址重定位
     for (int i = 0; i < g_str_reloc_count; i++) {
@@ -1180,7 +1296,11 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
 
     // 写入 .rdata 段
     fwrite(linker->rdata_section.buffer, 1, linker->rdata_section.size, out);
-    while ((uint32_t)ftell(out) < rdata_sec.PointerToRawData + rdata_sec.SizeOfRawData) fwrite(&zero, 1, 1, out);
+    while ((uint32_t)ftell(out) < data_sec.PointerToRawData) fwrite(&zero, 1, 1, out);
+
+    // 写入 .data 段
+    fwrite(linker->data_section.buffer, 1, linker->data_section.size, out);
+    while ((uint32_t)ftell(out) < data_sec.PointerToRawData + data_sec.SizeOfRawData) fwrite(&zero, 1, 1, out);
 
     fclose(out);
     return true;

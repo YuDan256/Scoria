@@ -16,6 +16,7 @@ typedef struct {
 typedef struct {
     PeCodeBuffer text_section;  // .text 段 (存放机器码)
     PeCodeBuffer rdata_section; // .rdata 段 (存放只读数据，如字符串)
+    PeCodeBuffer data_section;  // .data 段 (存放全局变量)
     uint32_t entry_point_offset; // 入口函数 (princeps) 在 .text 段中的偏移
 } PeLinker;
 

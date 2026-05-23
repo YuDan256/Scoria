@@ -411,7 +411,13 @@ static void generate_function(FILE* out, SirFunction* func) {
                     }
                     // 针对可变参数函数 (如 printf/scribe)，清空 %al
                     fprintf(out, "    xorq %%rax, %%rax\n");
-                    fprintf(out, "    call %s\n", inst->operands[0]->as.global_name);
+                    if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                        fprintf(out, "    call %s\n", inst->operands[0]->as.global_name);
+                    } else {
+                        char callee_str[64];
+                        get_operand_str(callee_str, inst->operands[0], &allocator, 8);
+                        fprintf(out, "    call *%s\n", callee_str);
+                    }
                     
                     // 恢复 Caller-Saved 寄存器
                     fprintf(out, "    movq -64(%%rbp), %%r10\n");
@@ -455,6 +461,17 @@ void asm_x86_64_generate(FILE* out, SirModule* module) {
     if (!module) return;
 
     g_string_count = 0;
+
+    if (module->first_global) {
+        fprintf(out, "    .data\n");
+        for (SirGlobalVar* g = module->first_global; g; g = g->next) {
+            fprintf(out, "    .globl %s\n", g->name);
+            fprintf(out, "    .align 8\n");
+            fprintf(out, "%s:\n", g->name);
+            fprintf(out, "    .zero %d\n", g->size);
+        }
+        fprintf(out, "\n");
+    }
 
     // 汇编文件头部
     fprintf(out, "    .text\n\n");
