@@ -182,6 +182,7 @@ struct AstNode {
         } neca_expr;
 
         struct {
+            Token op;
             AstNode* target;
             AstNode* value;
         } assign;

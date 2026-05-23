@@ -212,8 +212,33 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 }
                 return NULL;
             } else {
-                SirValue* val = gen_expression(builder, expr->as.assign.value);
+                // 1. 仅对左值求值一次，获取其内存地址
                 SirValue* lval = gen_lvalue(builder, expr->as.assign.target);
+                // 2. 对右值求值
+                SirValue* val = gen_expression(builder, expr->as.assign.value);
+                
+                // 3. 如果是复合赋值 (+=, -= 等)，执行 Load -> Op
+                if (expr->as.assign.op.kind != TK_ASSIGN) {
+                    SirValue* current_val = ir_build_load(builder, lval);
+                    SirOpcode op = SIR_ADD;
+                    bool is_float = (type && (type->kind == TY_F32 || type->kind == TY_F64));
+                    switch (expr->as.assign.op.kind) {
+                        case TK_PLUS_ASSIGN:  op = is_float ? SIR_FADD : SIR_ADD; break;
+                        case TK_MINUS_ASSIGN: op = is_float ? SIR_FSUB : SIR_SUB; break;
+                        case TK_STAR_ASSIGN:  op = is_float ? SIR_FMUL : SIR_MUL; break;
+                        case TK_SLASH_ASSIGN: op = is_float ? SIR_FDIV : SIR_DIV; break;
+                        case TK_MOD_ASSIGN:   op = SIR_MOD; break;
+                        case TK_AMP_ASSIGN:   op = SIR_AND; break;
+                        case TK_PIPE_ASSIGN:  op = SIR_OR; break;
+                        case TK_CARET_ASSIGN: op = SIR_XOR; break;
+                        case TK_SHL_ASSIGN:   op = SIR_SHL; break;
+                        case TK_SHR_ASSIGN:   op = SIR_SHR; break;
+                        default: break;
+                    }
+                    val = ir_build_binary(builder, op, current_val, val);
+                }
+                
+                // 4. Store 回内存
                 if (lval) {
                     ir_build_store(builder, val, lval);
                 }

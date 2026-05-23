@@ -434,6 +434,7 @@ static AstNode* assignment(Parser* parser) {
         AstNode* value = assignment(parser);
         if (expr && (expr->kind == AST_IDENT_EXPR || expr->kind == AST_MEMBER_EXPR || expr->kind == AST_INDEX_EXPR || expr->kind == AST_UNARY_EXPR)) {
             AstNode* node = ast_create_node(&parser->arena, AST_ASSIGN_EXPR, equals);
+            node->as.assign.op = equals;
             node->as.assign.target = expr;
             node->as.assign.value = value;
             return node;
