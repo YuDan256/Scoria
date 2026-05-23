@@ -174,10 +174,27 @@ static void generate_function(FILE* out, SirFunction* func) {
                     fprintf(out, "    movq %%rcx, %s\n", dest);
                     break;
 
-                case SIR_CAST:
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                case SIR_CAST: {
+                    ScoriaType* src_type = inst->operands[0]->type;
+                    ScoriaType* dst_type = inst->dest->type;
+                    bool src_is_float = (src_type && (src_type->kind == TY_F32 || src_type->kind == TY_F64));
+                    bool dst_is_float = (dst_type && (dst_type->kind == TY_F32 || dst_type->kind == TY_F64));
+                    
+                    if (src_is_float && !dst_is_float) {
+                        fprintf(out, "    movq %s, %%xmm0\n", op0);
+                        fprintf(out, "    cvttsd2si %%xmm0, %%rax\n");
+                        fprintf(out, "    movq %%rax, %s\n", dest);
+                    } else if (!src_is_float && dst_is_float) {
+                        fprintf(out, "    movq %s, %%rax\n", op0);
+                        fprintf(out, "    cvtsi2sd %%rax, %%xmm0\n");
+                        fprintf(out, "    movq %%xmm0, %%rax\n");
+                        fprintf(out, "    movq %%rax, %s\n", dest);
+                    } else {
+                        fprintf(out, "    movq %s, %%rax\n", op0);
+                        fprintf(out, "    movq %%rax, %s\n", dest);
+                    }
                     break;
+                }
 
                 case SIR_ADD:
                     // dest = op0 + op1

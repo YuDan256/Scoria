@@ -154,6 +154,30 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             return val;
         }
         case AST_BINARY_EXPR: {
+            if (expr->as.binary.op.kind == TK_LOGIC_AND || expr->as.binary.op.kind == TK_LOGIC_OR) {
+                // 短路求值 (Short-circuit Evaluation)
+                SirBlock* right_block = ir_builder_create_block(builder, "logic.dextra");
+                SirBlock* merge_block = ir_builder_create_block(builder, "logic.exitus");
+                
+                SirValue* left = gen_expression(builder, expr->as.binary.left);
+                SirValue* result_ptr = ir_build_alloca(builder, type_get_basic(TY_LOGICA), 1);
+                ir_build_store(builder, left, result_ptr);
+                
+                if (expr->as.binary.op.kind == TK_LOGIC_AND) {
+                    ir_build_br(builder, left, right_block, merge_block);
+                } else {
+                    ir_build_br(builder, left, merge_block, right_block);
+                }
+                
+                ir_builder_set_insert_point(builder, right_block);
+                SirValue* right = gen_expression(builder, expr->as.binary.right);
+                ir_build_store(builder, right, result_ptr);
+                ir_build_jmp(builder, merge_block);
+                
+                ir_builder_set_insert_point(builder, merge_block);
+                return ir_build_load(builder, result_ptr);
+            }
+
             SirValue* left = gen_expression(builder, expr->as.binary.left);
             SirValue* right = gen_expression(builder, expr->as.binary.right);
             SirOpcode op = SIR_ADD;
@@ -166,10 +190,8 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 case TK_MOD:   op = SIR_MOD; break;
                 case TK_SHL:   op = SIR_SHL; break;
                 case TK_SHR:   op = SIR_SHR; break;
-                case TK_AMP:
-                case TK_LOGIC_AND: op = SIR_AND; break;
-                case TK_PIPE:
-                case TK_LOGIC_OR:  op = SIR_OR; break;
+                case TK_AMP:   op = SIR_AND; break;
+                case TK_PIPE:  op = SIR_OR; break;
                 case TK_CARET: op = SIR_XOR; break;
                 case TK_EQ:    op = is_float ? SIR_FCMP_EQ : SIR_ICMP_EQ; break;
                 case TK_NEQ:   op = is_float ? SIR_FCMP_NE : SIR_ICMP_NE; break;

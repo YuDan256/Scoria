@@ -488,8 +488,24 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             break;
                         }
                         case SIR_CAST: {
+                            ScoriaType* src_type = inst->operands[0]->type;
+                            ScoriaType* dst_type = inst->dest->type;
+                            bool src_is_float = (src_type && (src_type->kind == TY_F32 || src_type->kind == TY_F64));
+                            bool dst_is_float = (dst_type && (dst_type->kind == TY_F32 || dst_type->kind == TY_F64));
+
                             int src = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
                             if (src != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, src);
+                            
+                            if (src_is_float && !dst_is_float) {
+                                // cvttsd2si rax, xmm0
+                                emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, REG_RAX); // movq xmm0, rax
+                                emit8(&linker->text_section, 0xF2); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x2C); emit_modrm(&linker->text_section, 3, REG_RAX, 0); // cvttsd2si rax, xmm0
+                            } else if (!src_is_float && dst_is_float) {
+                                // cvtsi2sd xmm0, rax
+                                emit8(&linker->text_section, 0xF2); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x2A); emit_modrm(&linker->text_section, 3, 0, REG_RAX); // cvtsi2sd xmm0, rax
+                                emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); emit_modrm(&linker->text_section, 3, 0, REG_RAX); // movq rax, xmm0
+                            }
+                            
                             store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                             break;
                         }
