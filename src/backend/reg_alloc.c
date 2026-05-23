@@ -1,23 +1,29 @@
 #include "reg_alloc.h"
 #include <stdlib.h>
+#include <stdio.h>
 
 void reg_alloc_init(RegAllocator* allocator, uint32_t max_vreg) {
     allocator->current_offset = 0;
     allocator->max_vreg = max_vreg;
     allocator->vreg_offsets = (int*)calloc(max_vreg + 1, sizeof(int));
-    
     allocator->vreg_colors = (int*)calloc(max_vreg + 1, sizeof(int));
-    for (uint32_t i = 0; i <= max_vreg; i++) allocator->vreg_colors[i] = -1;
-
     allocator->live_start = (int*)calloc(max_vreg + 1, sizeof(int));
     allocator->live_end = (int*)calloc(max_vreg + 1, sizeof(int));
+    allocator->adj_matrix = (bool*)calloc((max_vreg + 1) * (max_vreg + 1), sizeof(bool));
+    allocator->degree = (int*)calloc(max_vreg + 1, sizeof(int));
+
+    if (!allocator->vreg_offsets || !allocator->vreg_colors || !allocator->live_start ||
+        !allocator->live_end || !allocator->adj_matrix || !allocator->degree) {
+        fprintf(stderr, "Fatal error: Out of memory in reg_alloc_init\n");
+        exit(1);
+    }
+
+    for (uint32_t i = 0; i <= max_vreg; i++) allocator->vreg_colors[i] = -1;
+
     for (uint32_t i = 0; i <= max_vreg; i++) {
         allocator->live_start[i] = 999999999;
         allocator->live_end[i] = -1;
     }
-
-    allocator->adj_matrix = (bool*)calloc((max_vreg + 1) * (max_vreg + 1), sizeof(bool));
-    allocator->degree = (int*)calloc(max_vreg + 1, sizeof(int));
 }
 
 void reg_alloc_free(RegAllocator* allocator) {
