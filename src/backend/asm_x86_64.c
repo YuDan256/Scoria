@@ -619,6 +619,7 @@ static void generate_function(FILE* out, SirFunction* func) {
 void asm_x86_64_generate(FILE* out, SirModule* module) {
     if (!module) return;
 
+    builtins_analyze_usage(module);
     g_string_count = 0;
 
     if (module->first_global) {
@@ -645,8 +646,6 @@ void asm_x86_64_generate(FILE* out, SirModule* module) {
 
     if (g_string_count > 0) {
         fprintf(out, "    .section .rdata,\"a\"\n");
-        fprintf(out, ".Lstr_verum:\n    .byte 118, 101, 114, 117, 109, 0\n");
-        fprintf(out, ".Lstr_falsum:\n    .byte 102, 97, 108, 115, 117, 109, 0\n");
         for (int i = 0; i < g_string_count; i++) {
             fprintf(out, ".Lstr%d:\n", g_strings[i].id);
             fprintf(out, "    .byte ");

@@ -5,6 +5,16 @@
 #include <stdint.h>
 #include "pe_linker.h"
 
+extern bool g_use_print_str;
+extern bool g_use_print_int;
+extern bool g_use_print_float;
+extern bool g_use_print_bool;
+extern bool g_use_print_hex;
+extern bool g_use_crea;
+extern bool g_use_neca;
+
+void builtins_analyze_usage(SirModule* module);
+
 // 汇编后端内置例程
 void asm_builtins_generate(FILE* out);
 

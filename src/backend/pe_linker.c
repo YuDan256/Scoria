@@ -424,6 +424,7 @@ uint32_t g_neca_relocs[1024];
 int g_neca_reloc_count = 0;
 
 static void generate_machine_code(PeLinker* linker, SirModule* module) {
+    builtins_analyze_usage(module);
     uint32_t* block_offsets = (uint32_t*)calloc(1024, sizeof(uint32_t)); // 记录基本块的机器码偏移量
     
     const char** func_names = (const char**)malloc(256 * sizeof(const char*));
@@ -479,25 +480,28 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
         }
     }
 
-    // 强制添加 verum 和 falsum 到 rdata
-    g_verum_rdata_off = (uint32_t)linker->rdata_section.size;
-    const char* str_verum = "verum";
-    for (size_t k = 0; k <= strlen(str_verum); k++) buf_append(&linker->rdata_section, (uint8_t)str_verum[k]);
-    
-    g_falsum_rdata_off = (uint32_t)linker->rdata_section.size;
-    const char* str_falsum = "falsum";
-    for (size_t k = 0; k <= strlen(str_falsum); k++) buf_append(&linker->rdata_section, (uint8_t)str_falsum[k]);
+    if (g_use_print_bool) {
+        g_verum_rdata_off = (uint32_t)linker->rdata_section.size;
+        const char* str_verum = "verum";
+        for (size_t k = 0; k <= strlen(str_verum); k++) buf_append(&linker->rdata_section, (uint8_t)str_verum[k]);
+        
+        g_falsum_rdata_off = (uint32_t)linker->rdata_section.size;
+        const char* str_falsum = "falsum";
+        for (size_t k = 0; k <= strlen(str_falsum); k++) buf_append(&linker->rdata_section, (uint8_t)str_falsum[k]);
+    }
 
-    g_dot_rdata_off = (uint32_t)linker->rdata_section.size;
-    buf_append(&linker->rdata_section, '.'); buf_append(&linker->rdata_section, 0);
+    if (g_use_print_float) {
+        g_dot_rdata_off = (uint32_t)linker->rdata_section.size;
+        buf_append(&linker->rdata_section, '.'); buf_append(&linker->rdata_section, 0);
 
-    g_minus_rdata_off = (uint32_t)linker->rdata_section.size;
-    buf_append(&linker->rdata_section, '-'); buf_append(&linker->rdata_section, 0);
+        g_minus_rdata_off = (uint32_t)linker->rdata_section.size;
+        buf_append(&linker->rdata_section, '-'); buf_append(&linker->rdata_section, 0);
 
-    while (linker->rdata_section.size % 8 != 0) buf_append(&linker->rdata_section, 0);
-    g_float_10_rdata_off = (uint32_t)linker->rdata_section.size;
-    uint64_t float_10_bits = 4621819117588971520ULL; // 10.0
-    for (int i = 0; i < 8; i++) buf_append(&linker->rdata_section, (uint8_t)(float_10_bits >> (i * 8)));
+        while (linker->rdata_section.size % 8 != 0) buf_append(&linker->rdata_section, 0);
+        g_float_10_rdata_off = (uint32_t)linker->rdata_section.size;
+        uint64_t float_10_bits = 4621819117588971520ULL; // 10.0
+        for (int i = 0; i < 8; i++) buf_append(&linker->rdata_section, (uint8_t)(float_10_bits >> (i * 8)));
+    }
 
     // 两遍汇编 (Two-Pass Assembly)：第一遍计算跳转偏移，第二遍真正写入
     for (int pass = 0; pass < 2; pass++) {
@@ -1285,7 +1289,7 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     CoffHeader coff = {0};
     coff.Signature = 0x00004550; // "PE\0\0"
     coff.Machine = 0x8664;       // x86_64
-    coff.NumberOfSections = num_sections;
+    coff.NumberOfSections = (uint16_t)num_sections;
     coff.SizeOfOptionalHeader = (uint16_t)sizeof(OptionalHeader64);
     coff.Characteristics = 0x0022;
 
@@ -1333,12 +1337,16 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     uint32_t rdata_rva = align_up(text_sec.VirtualAddress + text_sec.VirtualSize, sec_align);
     
     PeImportTable* idata = pe_idata_create();
-    pe_idata_add_import(idata, "kernel32.dll", "GetStdHandle");
-    pe_idata_add_import(idata, "kernel32.dll", "WriteFile");
+    if (g_use_print_str || g_use_print_int) {
+        pe_idata_add_import(idata, "kernel32.dll", "GetStdHandle");
+        pe_idata_add_import(idata, "kernel32.dll", "WriteFile");
+    }
     pe_idata_add_import(idata, "kernel32.dll", "ExitProcess");
-    pe_idata_add_import(idata, "kernel32.dll", "GetProcessHeap");
-    pe_idata_add_import(idata, "kernel32.dll", "HeapAlloc");
-    pe_idata_add_import(idata, "kernel32.dll", "HeapFree");
+    if (g_use_crea || g_use_neca) {
+        pe_idata_add_import(idata, "kernel32.dll", "GetProcessHeap");
+    }
+    if (g_use_crea) pe_idata_add_import(idata, "kernel32.dll", "HeapAlloc");
+    if (g_use_neca) pe_idata_add_import(idata, "kernel32.dll", "HeapFree");
     
     for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) {
         pe_idata_add_import(idata, ext->dll_name, ext->name);
@@ -1419,89 +1427,103 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     }
 
     // 回填 __print_str 调用重定位
-    for (int i = 0; i < g_print_str_reloc_count; i++) {
-        uint32_t text_off = g_print_str_relocs[i];
-        int32_t rel32 = (int32_t)(g_print_str_offset - (text_off + 4));
-        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+    if (g_use_print_str) {
+        for (int i = 0; i < g_print_str_reloc_count; i++) {
+            uint32_t text_off = g_print_str_relocs[i];
+            int32_t rel32 = (int32_t)(g_print_str_offset - (text_off + 4));
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        }
     }
 
     // 回填 __print_int 调用重定位
-    for (int i = 0; i < g_print_int_reloc_count; i++) {
-        uint32_t text_off = g_print_int_relocs[i];
-        int32_t rel32 = (int32_t)(g_print_int_offset - (text_off + 4));
-        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+    if (g_use_print_int) {
+        for (int i = 0; i < g_print_int_reloc_count; i++) {
+            uint32_t text_off = g_print_int_relocs[i];
+            int32_t rel32 = (int32_t)(g_print_int_offset - (text_off + 4));
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        }
     }
 
     // 回填 __print_float 调用重定位
-    for (int i = 0; i < g_print_float_reloc_count; i++) {
-        uint32_t text_off = g_print_float_relocs[i];
-        int32_t rel32 = (int32_t)(g_print_float_offset - (text_off + 4));
-        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+    if (g_use_print_float) {
+        for (int i = 0; i < g_print_float_reloc_count; i++) {
+            uint32_t text_off = g_print_float_relocs[i];
+            int32_t rel32 = (int32_t)(g_print_float_offset - (text_off + 4));
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        }
+
+        // 回填 __print_float 内部的调用和数据引用
+        int32_t rel_float_minus = (int32_t)((rdata_sec.VirtualAddress + g_minus_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 23 + 4));
+        memcpy(linker->text_section.buffer + g_print_float_offset + 23, &rel_float_minus, 4);
+
+        int32_t rel_float_print_str1 = (int32_t)(g_print_str_offset - (g_print_float_offset + 35 + 4));
+        memcpy(linker->text_section.buffer + g_print_float_offset + 35, &rel_float_print_str1, 4);
+
+        int32_t rel_float_print_int1 = (int32_t)(g_print_int_offset - (g_print_float_offset + 67 + 4));
+        memcpy(linker->text_section.buffer + g_print_float_offset + 67, &rel_float_print_int1, 4);
+        
+        int32_t rel_float_dot = (int32_t)((rdata_sec.VirtualAddress + g_dot_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 74 + 4));
+        memcpy(linker->text_section.buffer + g_print_float_offset + 74, &rel_float_dot, 4);
+        
+        int32_t rel_float_print_str2 = (int32_t)(g_print_str_offset - (g_print_float_offset + 86 + 4));
+        memcpy(linker->text_section.buffer + g_print_float_offset + 86, &rel_float_print_str2, 4);
+        
+        int32_t rel_float_10 = (int32_t)((rdata_sec.VirtualAddress + g_float_10_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 115 + 4));
+        memcpy(linker->text_section.buffer + g_print_float_offset + 115, &rel_float_10, 4);
+        
+        int32_t rel_float_print_int2 = (int32_t)(g_print_int_offset - (g_print_float_offset + 138 + 4));
+        memcpy(linker->text_section.buffer + g_print_float_offset + 138, &rel_float_print_int2, 4);
     }
 
     // 回填 __print_hex 调用重定位
-    for (int i = 0; i < g_print_hex_reloc_count; i++) {
-        uint32_t text_off = g_print_hex_relocs[i];
-        int32_t rel32 = (int32_t)(g_print_hex_offset - (text_off + 4));
-        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+    if (g_use_print_hex) {
+        for (int i = 0; i < g_print_hex_reloc_count; i++) {
+            uint32_t text_off = g_print_hex_relocs[i];
+            int32_t rel32 = (int32_t)(g_print_hex_offset - (text_off + 4));
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        }
+
+        // 回填 __print_hex 内部的 __print_str 调用
+        int32_t rel_hex_print_str = (int32_t)(g_print_str_offset - (g_print_hex_offset + 74 + 4));
+        memcpy(linker->text_section.buffer + g_print_hex_offset + 74, &rel_hex_print_str, 4);
     }
-
-    // 回填 __print_float 内部的调用和数据引用
-    int32_t rel_float_minus = (int32_t)((rdata_sec.VirtualAddress + g_minus_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 23 + 4));
-    memcpy(linker->text_section.buffer + g_print_float_offset + 23, &rel_float_minus, 4);
-
-    int32_t rel_float_print_str1 = (int32_t)(g_print_str_offset - (g_print_float_offset + 35 + 4));
-    memcpy(linker->text_section.buffer + g_print_float_offset + 35, &rel_float_print_str1, 4);
-
-    int32_t rel_float_print_int1 = (int32_t)(g_print_int_offset - (g_print_float_offset + 67 + 4));
-    memcpy(linker->text_section.buffer + g_print_float_offset + 67, &rel_float_print_int1, 4);
-    
-    int32_t rel_float_dot = (int32_t)((rdata_sec.VirtualAddress + g_dot_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 74 + 4));
-    memcpy(linker->text_section.buffer + g_print_float_offset + 74, &rel_float_dot, 4);
-    
-    int32_t rel_float_print_str2 = (int32_t)(g_print_str_offset - (g_print_float_offset + 86 + 4));
-    memcpy(linker->text_section.buffer + g_print_float_offset + 86, &rel_float_print_str2, 4);
-    
-    int32_t rel_float_10 = (int32_t)((rdata_sec.VirtualAddress + g_float_10_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 115 + 4));
-    memcpy(linker->text_section.buffer + g_print_float_offset + 115, &rel_float_10, 4);
-    
-    int32_t rel_float_print_int2 = (int32_t)(g_print_int_offset - (g_print_float_offset + 138 + 4));
-    memcpy(linker->text_section.buffer + g_print_float_offset + 138, &rel_float_print_int2, 4);
 
     // 回填 __print_bool 调用重定位
-    for (int i = 0; i < g_print_bool_reloc_count; i++) {
-        uint32_t text_off = g_print_bool_relocs[i];
-        int32_t rel32 = (int32_t)(g_print_bool_offset - (text_off + 4));
-        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+    if (g_use_print_bool) {
+        for (int i = 0; i < g_print_bool_reloc_count; i++) {
+            uint32_t text_off = g_print_bool_relocs[i];
+            int32_t rel32 = (int32_t)(g_print_bool_offset - (text_off + 4));
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        }
+
+        // 回填 __print_bool 内部的 __print_str 调用
+        int32_t rel_bool_print_str = (int32_t)(g_print_str_offset - (g_print_bool_offset + 32 + 4));
+        memcpy(linker->text_section.buffer + g_print_bool_offset + 32, &rel_bool_print_str, 4);
+
+        // 回填 __print_bool 内部的 lea rcx, [rip + verum/falsum]
+        int32_t rel_verum = (int32_t)((rdata_sec.VirtualAddress + g_verum_rdata_off) - (text_sec.VirtualAddress + g_print_bool_offset + 8 + 4));
+        memcpy(linker->text_section.buffer + g_print_bool_offset + 8, &rel_verum, 4);
+        
+        int32_t rel_falsum = (int32_t)((rdata_sec.VirtualAddress + g_falsum_rdata_off) - (text_sec.VirtualAddress + g_print_bool_offset + 22 + 4));
+        memcpy(linker->text_section.buffer + g_print_bool_offset + 22, &rel_falsum, 4);
     }
 
-    // 回填 __print_hex 内部的 __print_str 调用
-    int32_t rel_hex_print_str = (int32_t)(g_print_str_offset - (g_print_hex_offset + 74 + 4));
-    memcpy(linker->text_section.buffer + g_print_hex_offset + 74, &rel_hex_print_str, 4);
-
-    // 回填 __print_bool 内部的 __print_str 调用
-    int32_t rel_bool_print_str = (int32_t)(g_print_str_offset - (g_print_bool_offset + 32 + 4));
-    memcpy(linker->text_section.buffer + g_print_bool_offset + 32, &rel_bool_print_str, 4);
-
-    // 回填 __print_bool 内部的 lea rcx, [rip + verum/falsum]
-    int32_t rel_verum = (int32_t)((rdata_sec.VirtualAddress + g_verum_rdata_off) - (text_sec.VirtualAddress + g_print_bool_offset + 8 + 4));
-    memcpy(linker->text_section.buffer + g_print_bool_offset + 8, &rel_verum, 4);
-    
-    int32_t rel_falsum = (int32_t)((rdata_sec.VirtualAddress + g_falsum_rdata_off) - (text_sec.VirtualAddress + g_print_bool_offset + 22 + 4));
-    memcpy(linker->text_section.buffer + g_print_bool_offset + 22, &rel_falsum, 4);
-
     // 回填 __crea 调用重定位
-    for (int i = 0; i < g_crea_reloc_count; i++) {
-        uint32_t text_off = g_crea_relocs[i];
-        int32_t rel32 = (int32_t)(g_crea_offset - (text_off + 4));
-        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+    if (g_use_crea) {
+        for (int i = 0; i < g_crea_reloc_count; i++) {
+            uint32_t text_off = g_crea_relocs[i];
+            int32_t rel32 = (int32_t)(g_crea_offset - (text_off + 4));
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        }
     }
 
     // 回填 __neca 调用重定位
-    for (int i = 0; i < g_neca_reloc_count; i++) {
-        uint32_t text_off = g_neca_relocs[i];
-        int32_t rel32 = (int32_t)(g_neca_offset - (text_off + 4));
-        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+    if (g_use_neca) {
+        for (int i = 0; i < g_neca_reloc_count; i++) {
+            uint32_t text_off = g_neca_relocs[i];
+            int32_t rel32 = (int32_t)(g_neca_offset - (text_off + 4));
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        }
     }
 
     // 回填 IAT 调用重定位 (Builtins)
@@ -1512,15 +1534,23 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
             memcpy(linker->text_section.buffer + reloc_var, &rel32, 4); \
         } while(0)
 
-    RELOC_IAT(g_call_getstdhandle_reloc, "kernel32.dll", "GetStdHandle");
-    RELOC_IAT(g_call_writeconsolea_reloc, "kernel32.dll", "WriteFile");
-    RELOC_IAT(g_call_getstdhandle_reloc2, "kernel32.dll", "GetStdHandle");
-    RELOC_IAT(g_call_writeconsolea_reloc2, "kernel32.dll", "WriteFile");
+    if (g_use_print_str) {
+        RELOC_IAT(g_call_getstdhandle_reloc, "kernel32.dll", "GetStdHandle");
+        RELOC_IAT(g_call_writeconsolea_reloc, "kernel32.dll", "WriteFile");
+    }
+    if (g_use_print_int) {
+        RELOC_IAT(g_call_getstdhandle_reloc2, "kernel32.dll", "GetStdHandle");
+        RELOC_IAT(g_call_writeconsolea_reloc2, "kernel32.dll", "WriteFile");
+    }
     RELOC_IAT(g_call_exitprocess_reloc, "kernel32.dll", "ExitProcess");
-    RELOC_IAT(g_call_getprocessheap_reloc1, "kernel32.dll", "GetProcessHeap");
-    RELOC_IAT(g_call_getprocessheap_reloc2, "kernel32.dll", "GetProcessHeap");
-    RELOC_IAT(g_call_heapalloc_reloc, "kernel32.dll", "HeapAlloc");
-    RELOC_IAT(g_call_heapfree_reloc, "kernel32.dll", "HeapFree");
+    if (g_use_crea) {
+        RELOC_IAT(g_call_getprocessheap_reloc1, "kernel32.dll", "GetProcessHeap");
+        RELOC_IAT(g_call_heapalloc_reloc, "kernel32.dll", "HeapAlloc");
+    }
+    if (g_use_neca) {
+        RELOC_IAT(g_call_getprocessheap_reloc2, "kernel32.dll", "GetProcessHeap");
+        RELOC_IAT(g_call_heapfree_reloc, "kernel32.dll", "HeapFree");
+    }
 
     // 回填外部函数 (Externs) 调用重定位
     for (int i = 0; i < g_extern_reloc_count; i++) {

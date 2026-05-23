@@ -1,4 +1,54 @@
 #include "builtins.h"
+#include <string.h>
+
+bool g_use_print_str = false;
+bool g_use_print_int = false;
+bool g_use_print_float = false;
+bool g_use_print_bool = false;
+bool g_use_print_hex = false;
+bool g_use_crea = false;
+bool g_use_neca = false;
+
+void builtins_analyze_usage(SirModule* module) {
+    g_use_print_str = false;
+    g_use_print_int = false;
+    g_use_print_float = false;
+    g_use_print_bool = false;
+    g_use_print_hex = false;
+    g_use_crea = false;
+    g_use_neca = false;
+
+    for (SirFunction* func = module->first_func; func; func = func->next) {
+        for (SirBlock* block = func->first_block; block; block = block->next) {
+            for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                if (inst->opcode == SIR_CALL && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                    const char* callee = inst->operands[0]->as.global_name;
+                    if (strcmp(callee, "scribe") == 0) {
+                        bool is_str = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_COHORS && inst->operands[1]->type->as.inner->kind == TY_LITTERA);
+                        bool is_bool = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_LOGICA) || (inst->operands[1]->kind == SIR_VAL_CONST_BOOL);
+                        bool is_ptr = !is_str && (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_VIA || inst->operands[1]->type->kind == TY_COHORS || inst->operands[1]->type->kind == TY_ACIES));
+                        bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
+
+                        if (is_str) g_use_print_str = true;
+                        else if (is_bool) g_use_print_bool = true;
+                        else if (is_ptr) g_use_print_hex = true;
+                        else if (is_float) g_use_print_float = true;
+                        else g_use_print_int = true;
+                    } else if (strcmp(callee, "crea") == 0) {
+                        g_use_crea = true;
+                    } else if (strcmp(callee, "neca") == 0) {
+                        g_use_neca = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // 解决内部依赖
+    if (g_use_print_float) { g_use_print_int = true; g_use_print_str = true; }
+    if (g_use_print_bool) { g_use_print_str = true; }
+    if (g_use_print_hex) { g_use_print_str = true; }
+}
 
 uint32_t g_print_str_offset = 0;
 uint32_t g_print_int_offset = 0;
@@ -20,6 +70,7 @@ uint32_t g_call_heapalloc_reloc = 0;
 uint32_t g_call_heapfree_reloc = 0;
 
 void asm_builtins_generate(FILE* out) {
+    if (g_use_print_str) {
     fprintf(out, "__print_str:\n");
     fprintf(out, "    testq %%rdx, %%rdx\n");
     fprintf(out, "    jnz .Lprint_str_len_ok\n");
@@ -46,7 +97,9 @@ void asm_builtins_generate(FILE* out) {
     fprintf(out, "    call WriteFile\n");
     fprintf(out, "    addq $72, %%rsp\n");
     fprintf(out, "    ret\n\n");
+    }
 
+    if (g_use_print_int) {
     fprintf(out, "__print_int:\n");
     fprintf(out, "    subq $104, %%rsp\n");
     fprintf(out, "    movq %%rcx, %%r10\n");
@@ -89,7 +142,9 @@ void asm_builtins_generate(FILE* out) {
     fprintf(out, "    call WriteFile\n");
     fprintf(out, "    addq $104, %%rsp\n");
     fprintf(out, "    ret\n\n");
+    }
 
+    if (g_use_print_float) {
     fprintf(out, "__print_float:\n");
     fprintf(out, "    pushq %%rbp\n");
     fprintf(out, "    movq %%rsp, %%rbp\n");
@@ -132,7 +187,9 @@ void asm_builtins_generate(FILE* out) {
     fprintf(out, "    movq %%rbp, %%rsp\n");
     fprintf(out, "    popq %%rbp\n");
     fprintf(out, "    ret\n\n");
+    }
 
+    if (g_use_print_bool) {
     fprintf(out, "__print_bool:\n");
     fprintf(out, "    testq %%rcx, %%rcx\n");
     fprintf(out, "    jz .Lbool_false\n");
@@ -143,7 +200,9 @@ void asm_builtins_generate(FILE* out) {
     fprintf(out, "    leaq .Lstr_falsum(%%rip), %%rcx\n");
     fprintf(out, "    movq $6, %%rdx\n");
     fprintf(out, "    jmp __print_str\n\n");
+    }
 
+    if (g_use_print_hex) {
     fprintf(out, "__print_hex:\n");
     fprintf(out, "    subq $56, %%rsp\n");
     fprintf(out, "    movq %%rcx, %%r10\n");
@@ -173,13 +232,22 @@ void asm_builtins_generate(FILE* out) {
     fprintf(out, "    call __print_str\n");
     fprintf(out, "    addq $56, %%rsp\n");
     fprintf(out, "    ret\n\n");
+    }
 
-    fprintf(out, "    .section .rdata,\"a\"\n");
-    fprintf(out, ".Lstr_minus:\n    .byte 45, 0\n");
-    fprintf(out, ".Lstr_dot:\n    .byte 46, 0\n");
-    fprintf(out, "    .align 8\n");
-    fprintf(out, ".Lfloat_10:\n    .quad 4621819117588971520\n"); // 10.0 in IEEE 754 double
-    fprintf(out, "    .text\n\n");
+    if (g_use_print_float || g_use_print_bool) {
+        fprintf(out, "    .section .rdata,\"a\"\n");
+        if (g_use_print_float) {
+            fprintf(out, ".Lstr_minus:\n    .byte 45, 0\n");
+            fprintf(out, ".Lstr_dot:\n    .byte 46, 0\n");
+            fprintf(out, "    .align 8\n");
+            fprintf(out, ".Lfloat_10:\n    .quad 4621819117588971520\n");
+        }
+        if (g_use_print_bool) {
+            fprintf(out, ".Lstr_verum:\n    .byte 118, 101, 114, 117, 109, 0\n");
+            fprintf(out, ".Lstr_falsum:\n    .byte 102, 97, 108, 115, 117, 109, 0\n");
+        }
+        fprintf(out, "    .text\n\n");
+    }
 
     fprintf(out, "    .globl main\n");
     fprintf(out, "main:\n");
@@ -198,6 +266,7 @@ void asm_builtins_generate(FILE* out) {
 }
 
 void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t init_offset) {
+    if (g_use_print_str) {
     // 追加内置汇编例程: __print_str
     g_print_str_offset = (uint32_t)linker->text_section.size;
     
@@ -254,7 +323,9 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xC4); emit8(&linker->text_section, 0x48);
     // ret
     emit8(&linker->text_section, 0xC3);
+    }
 
+    if (g_use_print_int) {
     // 追加内置汇编例程: __print_int
     g_print_int_offset = (uint32_t)linker->text_section.size;
     uint8_t print_int_code[] = {
@@ -272,7 +343,9 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
     for (size_t i = 0; i < sizeof(print_int_code); i++) emit8(&linker->text_section, print_int_code[i]);
     g_call_getstdhandle_reloc2 = g_print_int_offset + 107;
     g_call_writeconsolea_reloc2 = g_print_int_offset + 140;
+    }
 
+    if (g_use_print_float) {
     // 追加内置汇编例程: __print_float
     g_print_float_offset = (uint32_t)linker->text_section.size;
     uint8_t print_float_code[] = {
@@ -289,7 +362,9 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
         0xC1, 0xFF, 0x4D, 0xEC, 0x75, 0xCA, 0x48, 0x89, 0xEC, 0x5D, 0xC3
     };
     for (size_t i = 0; i < sizeof(print_float_code); i++) emit8(&linker->text_section, print_float_code[i]);
+    }
 
+    if (g_use_print_hex) {
     // 追加内置汇编例程: __print_hex
     g_print_hex_offset = (uint32_t)linker->text_section.size;
     uint8_t print_hex_code[] = {
@@ -301,7 +376,9 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
         0x00, 0x00, 0x48, 0x83, 0xC4, 0x38, 0xC3
     };
     for (size_t i = 0; i < sizeof(print_hex_code); i++) emit8(&linker->text_section, print_hex_code[i]);
+    }
     
+    if (g_use_print_bool) {
     // 追加内置汇编例程: __print_bool
     g_print_bool_offset = (uint32_t)linker->text_section.size;
     uint8_t print_bool_code[] = {
@@ -310,7 +387,9 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
         0x00, 0x00, 0x00, 0x00, 0xC3
     };
     for (size_t i = 0; i < sizeof(print_bool_code); i++) emit8(&linker->text_section, print_bool_code[i]);
+    }
 
+    if (g_use_crea) {
     // 追加内置汇编例程: __crea
     g_crea_offset = (uint32_t)linker->text_section.size;
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x28); // sub rsp, 40
@@ -326,7 +405,9 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
     emit32(&linker->text_section, 0);
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xC4); emit8(&linker->text_section, 0x28); // add rsp, 40
     emit8(&linker->text_section, 0xC3); // ret
+    }
 
+    if (g_use_neca) {
     // 追加内置汇编例程: __neca
     g_neca_offset = (uint32_t)linker->text_section.size;
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x28); // sub rsp, 40
@@ -342,6 +423,7 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
     emit32(&linker->text_section, 0);
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xC4); emit8(&linker->text_section, 0x28); // add rsp, 40
     emit8(&linker->text_section, 0xC3); // ret
+    }
 
     // 追加内置汇编例程: _start (真正的入口点)
     linker->entry_point_offset = (uint32_t)linker->text_section.size;
