@@ -431,20 +431,20 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
     linker->entry_point_offset = (uint32_t)linker->text_section.size;
     // sub rsp, 56 (32 bytes shadow space + 16 bytes local + 8 bytes alignment)
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x38);
-    // mov [rsp+48], rcx (保存 argc)
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30);
-    // mov [rsp+56], rdx (保存 argv)
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0x54); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x38);
+    // mov [rsp+32], rcx (保存 argc 到安全的 local 区域)
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x20);
+    // mov [rsp+40], rdx (保存 argv 到安全的 local 区域)
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0x54); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x28);
     
     // call __scoria_init
     emit8(&linker->text_section, 0xE8);
     int32_t rel_init = (int32_t)(init_offset - (linker->text_section.size + 4));
     emit32(&linker->text_section, (uint32_t)rel_init);
     
-    // mov rcx, [rsp+48] (恢复 argc)
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x8B); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30);
-    // mov rdx, [rsp+56] (恢复 argv)
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x8B); emit8(&linker->text_section, 0x54); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x38);
+    // mov rcx, [rsp+32] (恢复 argc)
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x8B); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x20);
+    // mov rdx, [rsp+40] (恢复 argv)
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x8B); emit8(&linker->text_section, 0x54); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x28);
     
     // call princeps
     emit8(&linker->text_section, 0xE8);

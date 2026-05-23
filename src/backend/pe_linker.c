@@ -675,7 +675,8 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_STORE: {
                             int size = type_get_size(inst->operands[0]->type);
                             int val_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                            int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
+                            int ptr_scratch = (val_reg == REG_RCX) ? REG_RDX : REG_RCX;
+                            int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], ptr_scratch, &ctx);
                             
                             if (size == 1) {
                                 emit_rex(&linker->text_section, 0, val_reg > 7, 0, ptr_reg > 7);
@@ -908,7 +909,8 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             emit8(&linker->text_section, 0x51); // push rcx
                             
                             int dst_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                            int src_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RDX, &ctx);
+                            int src_scratch = (dst_reg == REG_RDX) ? REG_RCX : REG_RDX;
+                            int src_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], src_scratch, &ctx);
                             
                             // 压栈以防止寄存器互相覆盖 (Swap Bug)
                             emit_rex(&linker->text_section, 0, 0, 0, dst_reg > 7);
@@ -969,7 +971,8 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 int32_t imm = (int32_t)inst->operands[1]->as.int_val;
                                 emit_alu_reg_imm32(&linker->text_section, 7, left, imm); // cmp left, imm
                             } else {
-                                int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
+                                int right_scratch = (left == REG_RCX) ? REG_RDX : REG_RCX;
+                                int right = load_operand(&linker->text_section, &allocator, inst->operands[1], right_scratch, &ctx);
                                 emit_rex(&linker->text_section, 1, right > 7, 0, left > 7);
                                 emit8(&linker->text_section, 0x39); // cmp left, right
                                 emit_modrm(&linker->text_section, 3, right & 7, left & 7);
@@ -1127,7 +1130,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             }
 
                             int arg_regs[] = {REG_RCX, REG_RDX, 8, 9};
-                            for (int i = 0; i < inst->num_operands - 1; i++) {
+                            // 倒序加载参数，防止前面的参数被后面的 load_operand 破坏 (特别是当它们都在物理寄存器中时)
+                            for (int i = inst->num_operands - 2; i >= 0; i--) {
+                                // 使用 RAX 作为暂存，避免直接覆盖目标参数寄存器
                                 int val = load_operand(&linker->text_section, &allocator, inst->operands[i+1], REG_RAX, &ctx);
                                 if (i < 4) {
                                     if (val != arg_regs[i]) emit_mov_reg_reg(&linker->text_section, arg_regs[i], val);
