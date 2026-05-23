@@ -1279,11 +1279,13 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     dos.e_magic = 0x5A4D; // "MZ"
     dos.e_lfanew = (uint32_t)sizeof(DosHeader);
 
+    int num_sections = linker->data_section.size > 0 ? 3 : 2;
+
     // 2. COFF Header
     CoffHeader coff = {0};
     coff.Signature = 0x00004550; // "PE\0\0"
     coff.Machine = 0x8664;       // x86_64
-    coff.NumberOfSections = 3;   // .text, .rdata, .data
+    coff.NumberOfSections = num_sections;
     coff.SizeOfOptionalHeader = (uint16_t)sizeof(OptionalHeader64);
     coff.Characteristics = 0x0022;
 
@@ -1357,22 +1359,26 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     rdata_sec.SizeOfRawData = align_up((uint32_t)linker->rdata_section.size, file_align);
     
     SectionHeader data_sec = {0};
-    memcpy(data_sec.Name, ".data", 5);
-    data_sec.VirtualSize = (uint32_t)linker->data_section.size;
-    data_sec.VirtualAddress = align_up(rdata_sec.VirtualAddress + rdata_sec.VirtualSize, sec_align);
-    data_sec.SizeOfRawData = align_up((uint32_t)linker->data_section.size, file_align);
-    data_sec.PointerToRawData = rdata_sec.PointerToRawData + rdata_sec.SizeOfRawData;
-    data_sec.Characteristics = 0xC0000040; // Initialized Data | Read | Write
+    if (num_sections == 3) {
+        memcpy(data_sec.Name, ".data", 5);
+        data_sec.VirtualSize = (uint32_t)linker->data_section.size;
+        data_sec.VirtualAddress = align_up(rdata_sec.VirtualAddress + rdata_sec.VirtualSize, sec_align);
+        data_sec.SizeOfRawData = align_up((uint32_t)linker->data_section.size, file_align);
+        data_sec.PointerToRawData = rdata_sec.PointerToRawData + rdata_sec.SizeOfRawData;
+        data_sec.Characteristics = 0xC0000040; // Initialized Data | Read | Write
+    }
 
     opt.SizeOfCode = text_sec.SizeOfRawData;
-    opt.SizeOfInitializedData = rdata_sec.SizeOfRawData + data_sec.SizeOfRawData;
-    opt.SizeOfImage = align_up(data_sec.VirtualAddress + data_sec.VirtualSize, sec_align);
-    opt.SizeOfHeaders = align_up((uint32_t)(sizeof(DosHeader) + sizeof(CoffHeader) + sizeof(OptionalHeader64) + sizeof(SectionHeader) * 3), file_align);
+    opt.SizeOfInitializedData = rdata_sec.SizeOfRawData + (num_sections == 3 ? data_sec.SizeOfRawData : 0);
+    opt.SizeOfImage = align_up(num_sections == 3 ? data_sec.VirtualAddress + data_sec.VirtualSize : rdata_sec.VirtualAddress + rdata_sec.VirtualSize, sec_align);
+    opt.SizeOfHeaders = align_up((uint32_t)(sizeof(DosHeader) + sizeof(CoffHeader) + sizeof(OptionalHeader64) + sizeof(SectionHeader) * num_sections), file_align);
 
     // 重新修正 PointerToRawData 因为 SizeOfHeaders 可能变了
     text_sec.PointerToRawData = opt.SizeOfHeaders;
     rdata_sec.PointerToRawData = text_sec.PointerToRawData + text_sec.SizeOfRawData;
-    data_sec.PointerToRawData = rdata_sec.PointerToRawData + rdata_sec.SizeOfRawData;
+    if (num_sections == 3) {
+        data_sec.PointerToRawData = rdata_sec.PointerToRawData + rdata_sec.SizeOfRawData;
+    }
 
     // 写入所有头部
     fwrite(&dos, 1, sizeof(dos), out);
@@ -1380,7 +1386,9 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     fwrite(&opt, 1, sizeof(opt), out);
     fwrite(&text_sec, 1, sizeof(text_sec), out);
     fwrite(&rdata_sec, 1, sizeof(rdata_sec), out);
-    fwrite(&data_sec, 1, sizeof(data_sec), out);
+    if (num_sections == 3) {
+        fwrite(&data_sec, 1, sizeof(data_sec), out);
+    }
 
     // 填充对齐到代码段起始位置
     uint8_t zero = 0;
@@ -1534,11 +1542,15 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
 
     // 写入 .rdata 段
     fwrite(linker->rdata_section.buffer, 1, linker->rdata_section.size, out);
-    while ((uint32_t)ftell(out) < data_sec.PointerToRawData) fwrite(&zero, 1, 1, out);
+    if (num_sections == 3) {
+        while ((uint32_t)ftell(out) < data_sec.PointerToRawData) fwrite(&zero, 1, 1, out);
 
-    // 写入 .data 段
-    fwrite(linker->data_section.buffer, 1, linker->data_section.size, out);
-    while ((uint32_t)ftell(out) < data_sec.PointerToRawData + data_sec.SizeOfRawData) fwrite(&zero, 1, 1, out);
+        // 写入 .data 段
+        fwrite(linker->data_section.buffer, 1, linker->data_section.size, out);
+        while ((uint32_t)ftell(out) < data_sec.PointerToRawData + data_sec.SizeOfRawData) fwrite(&zero, 1, 1, out);
+    } else {
+        while ((uint32_t)ftell(out) < rdata_sec.PointerToRawData + rdata_sec.SizeOfRawData) fwrite(&zero, 1, 1, out);
+    }
 
     fclose(out);
     return true;
