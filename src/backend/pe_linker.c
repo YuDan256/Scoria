@@ -472,7 +472,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             string_offsets[string_count] = (uint32_t)linker->rdata_section.size;
                             string_count++;
                             const char* str = inst->operands[i]->as.string_val;
-                            for (size_t k = 0; k <= strlen(str); k++) buf_append(&linker->rdata_section, (uint8_t)str[k]);
+                            for (size_t k = 0; k < strlen(str); k++) buf_append(&linker->rdata_section, (uint8_t)str[k]);
                         }
                     }
                 }
@@ -483,19 +483,19 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
     if (g_use_print_bool) {
         g_verum_rdata_off = (uint32_t)linker->rdata_section.size;
         const char* str_verum = "verum";
-        for (size_t k = 0; k <= strlen(str_verum); k++) buf_append(&linker->rdata_section, (uint8_t)str_verum[k]);
+        for (size_t k = 0; k < strlen(str_verum); k++) buf_append(&linker->rdata_section, (uint8_t)str_verum[k]);
         
         g_falsum_rdata_off = (uint32_t)linker->rdata_section.size;
         const char* str_falsum = "falsum";
-        for (size_t k = 0; k <= strlen(str_falsum); k++) buf_append(&linker->rdata_section, (uint8_t)str_falsum[k]);
+        for (size_t k = 0; k < strlen(str_falsum); k++) buf_append(&linker->rdata_section, (uint8_t)str_falsum[k]);
     }
 
     if (g_use_print_float) {
         g_dot_rdata_off = (uint32_t)linker->rdata_section.size;
-        buf_append(&linker->rdata_section, '.'); buf_append(&linker->rdata_section, 0);
+        buf_append(&linker->rdata_section, '.');
 
         g_minus_rdata_off = (uint32_t)linker->rdata_section.size;
-        buf_append(&linker->rdata_section, '-'); buf_append(&linker->rdata_section, 0);
+        buf_append(&linker->rdata_section, '-');
 
         while (linker->rdata_section.size % 8 != 0) buf_append(&linker->rdata_section, 0);
         g_float_10_rdata_off = (uint32_t)linker->rdata_section.size;

@@ -74,18 +74,6 @@ uint32_t g_call_heapfree_reloc = 0;
 void asm_builtins_generate(FILE* out) {
     if (g_use_print_str) {
     fprintf(out, "__print_str:\n");
-    fprintf(out, "    testq %%rdx, %%rdx\n");
-    fprintf(out, "    jnz .Lprint_str_len_ok\n");
-    fprintf(out, "    movq %%rcx, %%rax\n");
-    fprintf(out, ".Lprint_str_len_loop:\n");
-    fprintf(out, "    cmpb $0, (%%rax)\n");
-    fprintf(out, "    jz .Lprint_str_len_done\n");
-    fprintf(out, "    incq %%rax\n");
-    fprintf(out, "    jmp .Lprint_str_len_loop\n");
-    fprintf(out, ".Lprint_str_len_done:\n");
-    fprintf(out, "    subq %%rcx, %%rax\n");
-    fprintf(out, "    movq %%rax, %%rdx\n");
-    fprintf(out, ".Lprint_str_len_ok:\n");
     fprintf(out, "    subq $72, %%rsp\n");
     fprintf(out, "    movq %%rcx, 48(%%rsp)\n");
     fprintf(out, "    movq %%rdx, 56(%%rsp)\n");
@@ -267,14 +255,14 @@ void asm_builtins_generate(FILE* out) {
     if (g_use_print_float || g_use_print_bool) {
         fprintf(out, "    .section .rdata,\"a\"\n");
         if (g_use_print_float) {
-            fprintf(out, ".Lstr_minus:\n    .byte 45, 0\n");
-            fprintf(out, ".Lstr_dot:\n    .byte 46, 0\n");
+            fprintf(out, ".Lstr_minus:\n    .byte 45\n");
+            fprintf(out, ".Lstr_dot:\n    .byte 46\n");
             fprintf(out, "    .align 8\n");
             fprintf(out, ".Lfloat_10:\n    .quad 4621819117588971520\n");
         }
         if (g_use_print_bool) {
-            fprintf(out, ".Lstr_verum:\n    .byte 118, 101, 114, 117, 109, 0\n");
-            fprintf(out, ".Lstr_falsum:\n    .byte 102, 97, 108, 115, 117, 109, 0\n");
+            fprintf(out, ".Lstr_verum:\n    .byte 118, 101, 114, 117, 109\n");
+            fprintf(out, ".Lstr_falsum:\n    .byte 102, 97, 108, 115, 117, 109\n");
         }
         fprintf(out, "    .text\n\n");
     }
@@ -300,29 +288,6 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
     // 追加内置汇编例程: __print_str
     g_print_str_offset = (uint32_t)linker->text_section.size;
     
-    // test rdx, rdx
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x85); emit8(&linker->text_section, 0xD2);
-    // jnz .Lprint_str_len_ok
-    emit8(&linker->text_section, 0x75); emit8(&linker->text_section, 0x13); // 19 bytes forward
-    
-    // mov rax, rcx
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xC8);
-    // .Lprint_str_len_loop:
-    // cmp byte ptr [rax], 0
-    emit8(&linker->text_section, 0x80); emit8(&linker->text_section, 0x38); emit8(&linker->text_section, 0x00);
-    // jz .Lprint_str_len_done
-    emit8(&linker->text_section, 0x74); emit8(&linker->text_section, 0x05); // 5 bytes forward
-    // inc rax
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0xC0);
-    // jmp .Lprint_str_len_loop
-    emit8(&linker->text_section, 0xEB); emit8(&linker->text_section, 0xF6); // -10 bytes backward
-    // .Lprint_str_len_done:
-    // sub rax, rcx
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x2B); emit8(&linker->text_section, 0xC1);
-    // mov rdx, rax
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xC2);
-    
-    // .Lprint_str_len_ok:
     // sub rsp, 72
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x48);
     // mov [rsp+48], rcx (save string address)

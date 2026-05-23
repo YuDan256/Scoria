@@ -650,13 +650,15 @@ void asm_x86_64_generate(FILE* out, SirModule* module) {
         fprintf(out, "    .section .rdata,\"a\"\n");
         for (int i = 0; i < g_string_count; i++) {
             fprintf(out, ".Lstr%d:\n", g_strings[i].id);
-            fprintf(out, "    .byte ");
             const char* s = g_strings[i].str;
             size_t len = strlen(s);
-            for (size_t j = 0; j <= len; j++) {
-                fprintf(out, "%d%s", (unsigned char)s[j], j == len ? "" : ", ");
+            if (len > 0) {
+                fprintf(out, "    .byte ");
+                for (size_t j = 0; j < len; j++) {
+                    fprintf(out, "%d%s", (unsigned char)s[j], j == len - 1 ? "" : ", ");
+                }
+                fprintf(out, "\n");
             }
-            fprintf(out, "\n");
         }
     }
 }
