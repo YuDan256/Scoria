@@ -66,9 +66,9 @@ static AstNode* expression(Parser* parser);
 static AstNode* statement(Parser* parser);
 static AstNode* declaration(Parser* parser);
 static AstNode* parse_type(Parser* parser);
-static AstNode* var_declaration(Parser* parser, bool is_editus, bool is_const);
-static AstNode* func_declaration(Parser* parser, bool is_editus, bool is_barbarus);
-static AstNode* struct_declaration(Parser* parser, bool is_editus);
+static AstNode* var_declaration(Parser* parser, bool is_const);
+static AstNode* func_declaration(Parser* parser);
+static AstNode* struct_declaration(Parser* parser);
 
 // ---------------------------------------------------------
 // 类型解析 (Type Parsing)
@@ -532,7 +532,7 @@ static AstNode* statement(Parser* parser) {
         if (match(parser, TK_SEMI)) {
             // 空初始化
         } else if (match(parser, TK_KW_SIT)) {
-            initializer = var_declaration(parser, false, false);
+            initializer = var_declaration(parser, false);
         } else {
             initializer = expression_statement(parser);
         }
@@ -595,8 +595,9 @@ static AstNode* statement(Parser* parser) {
 // ---------------------------------------------------------
 // 声明解析 (Declaration Parsing)
 // ---------------------------------------------------------
-static AstNode* var_declaration(Parser* parser, bool is_editus, bool is_const) {
+static AstNode* var_declaration(Parser* parser, bool is_const) {
     Token keyword = parser->previous;
+    bool is_edita = match(parser, TK_KW_EDITA);
     consume(parser, TK_IDENTIFIER, "Nomen variabilis exspectatur.");
     Token name = parser->previous;
 
@@ -622,12 +623,19 @@ static AstNode* var_declaration(Parser* parser, bool is_editus, bool is_const) {
     node->as.var_decl.name = name;
     node->as.var_decl.type = type;
     node->as.var_decl.initializer = initializer;
-    node->as.var_decl.is_editus = is_editus;
+    node->as.var_decl.is_editus = is_edita;
     return node;
 }
 
-static AstNode* func_declaration(Parser* parser, bool is_editus, bool is_barbarus) {
+static AstNode* func_declaration(Parser* parser) {
     Token keyword = parser->previous;
+    bool is_edita = false;
+    bool is_barbara = false;
+    while (true) {
+        if (match(parser, TK_KW_EDITA)) is_edita = true;
+        else if (match(parser, TK_KW_BARBARA)) is_barbara = true;
+        else break;
+    }
     consume(parser, TK_IDENTIFIER, "Nomen actionis exspectatur.");
     Token name = parser->previous;
 
@@ -678,16 +686,19 @@ static AstNode* func_declaration(Parser* parser, bool is_editus, bool is_barbaru
     node->as.func_decl.params = params;
     node->as.func_decl.param_count = param_count;
     node->as.func_decl.body = body;
-    node->as.func_decl.is_editus = is_editus;
-    node->as.func_decl.is_barbarus = is_barbarus;
+    node->as.func_decl.is_editus = is_edita;
+    node->as.func_decl.is_barbarus = is_barbara;
     return node;
 }
 
-static AstNode* struct_declaration(Parser* parser, bool is_editus) {
+static AstNode* struct_declaration(Parser* parser) {
     Token keyword = parser->previous;
     bool is_densa = false;
-    if (match(parser, TK_TY_DENSA)) {
-        is_densa = true;
+    bool is_edita = false;
+    while (true) {
+        if (match(parser, TK_TY_DENSA)) is_densa = true;
+        else if (match(parser, TK_KW_EDITA)) is_edita = true;
+        else break;
     }
     
     consume(parser, TK_IDENTIFIER, "Nomen formae exspectatur.");
@@ -706,7 +717,7 @@ static AstNode* struct_declaration(Parser* parser, bool is_editus) {
                 capacity = capacity < 8 ? 8 : capacity * 2;
                 fields = arena_realloc(&parser->arena, fields, sizeof(AstNode*) * old_capacity, sizeof(AstNode*) * capacity);
             }
-            fields[field_count++] = var_declaration(parser, false, false);
+            fields[field_count++] = var_declaration(parser, false);
         } else {
             error(parser, "Pro declaratione campi formae 'sit' exspectatur.");
             advance(parser);
@@ -717,7 +728,7 @@ static AstNode* struct_declaration(Parser* parser, bool is_editus) {
     
     AstNode* node = ast_create_node(&parser->arena, AST_STRUCT_DECL, keyword);
     node->as.struct_decl.name = name;
-    node->as.struct_decl.is_editus = is_editus;
+    node->as.struct_decl.is_editus = is_edita;
     node->as.struct_decl.is_densa = is_densa;
     node->as.struct_decl.fields = fields;
     node->as.struct_decl.field_count = field_count;
@@ -798,21 +809,15 @@ static AstNode* declaration(Parser* parser) {
         decl->as.import_decl.items = items;
         decl->as.import_decl.item_count = item_count;
     } else {
-        bool is_editus = match(parser, TK_KW_EDITUS);
-        bool is_barbarus = match(parser, TK_KW_BARBARUS);
-        
         if (match(parser, TK_KW_ACTIO)) {
-            decl = func_declaration(parser, is_editus, is_barbarus);
+            decl = func_declaration(parser);
         } else if (match(parser, TK_KW_SIT)) {
-            decl = var_declaration(parser, is_editus, false);
+            decl = var_declaration(parser, false);
         } else if (match(parser, TK_KW_LEX)) {
-            decl = var_declaration(parser, is_editus, true);
+            decl = var_declaration(parser, true);
         } else if (match(parser, TK_TY_FORMA)) {
-            decl = struct_declaration(parser, is_editus);
+            decl = struct_declaration(parser);
         } else {
-            if (is_editus || is_barbarus) {
-                error(parser, "Usus modificationis 'editus' vel 'barbarus' invalidus est.");
-            }
             decl = statement(parser);
         }
     }

@@ -98,8 +98,8 @@ static TokenKind identifier_type(Lexer* lexer) {
     if (len == 3 && memcmp(lexer->start, "f32", 3) == 0) return TK_TY_F32;
     if (len == 3 && memcmp(lexer->start, "f64", 3) == 0) return TK_TY_F64;
 
-    if (len == 3 && memcmp(lexer->start, "edt", 3) == 0) return TK_KW_EDITUS;
-    if (len == 3 && memcmp(lexer->start, "bbr", 3) == 0) return TK_KW_BARBARUS;
+    if (len == 3 && memcmp(lexer->start, "edt", 3) == 0) return TK_KW_EDITA;
+    if (len == 3 && memcmp(lexer->start, "bbr", 3) == 0) return TK_KW_BARBARA;
     if (len == 3 && memcmp(lexer->start, "lgc", 3) == 0) return TK_TY_LOGICA;
     if (len == 3 && memcmp(lexer->start, "ltr", 3) == 0) return TK_TY_LITTERA;
     if (len == 3 && memcmp(lexer->start, "txt", 3) == 0) return TK_TY_TEXTUS;
@@ -123,7 +123,7 @@ static TokenKind identifier_type(Lexer* lexer) {
         break;
     case 'b':
         if (len == 6) return check_keyword(lexer, 1, 5, "revis", TK_TY_I16);
-        if (len == 8) return check_keyword(lexer, 1, 7, "arbarus", TK_KW_BARBARUS);
+        if (len == 7) return check_keyword(lexer, 1, 6, "arbara", TK_KW_BARBARA);
         break;
     case 'c':
         if (len == 7) return check_keyword(lexer, 1, 6, "onsule", TK_KW_CONSULE);
@@ -137,7 +137,7 @@ static TokenKind identifier_type(Lexer* lexer) {
         break;
     case 'e':
         if (len == 7) return check_keyword(lexer, 1, 6, "xcerpe", TK_KW_EXCERPE);
-        if (len == 6) return check_keyword(lexer, 1, 5, "ditus", TK_KW_EDITUS);
+        if (len == 5) return check_keyword(lexer, 1, 4, "dita", TK_KW_EDITA);
         break;
     case 'f':
         if (len == 6 && lexer->start[1] == 'a') return check_keyword(lexer, 2, 4, "lsum", TK_BOOL_CONST);

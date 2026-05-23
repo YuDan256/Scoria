@@ -52,7 +52,7 @@ typedef enum {
 
     // ================= [语言关键字 : 模块与边界] =================
     TK_KW_LIBER, TK_KW_CONSULE, TK_KW_DE, TK_KW_EXCERPE,
-    TK_KW_EDITUS, TK_KW_BARBARUS,
+    TK_KW_EDITA, TK_KW_BARBARA,
 
     // ================= [语言关键字 : 流程与指令] =================
     TK_KW_ACTIO, TK_KW_REDDE, TK_KW_SIT, TK_KW_LEX,
