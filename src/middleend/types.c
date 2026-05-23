@@ -116,6 +116,36 @@ void type_forma_add_field(ScoriaType* forma_type, Token name, ScoriaType* field_
     forma_type->as.struct_type.field_count++;
 }
 
+int type_get_size(ScoriaType* type) {
+    if (!type) return 0;
+    switch (type->kind) {
+        case TY_I8: case TY_P8: case TY_LITTERA: case TY_LOGICA: return 1;
+        case TY_I16: case TY_P16: return 2;
+        case TY_I32: case TY_P32: case TY_F32: return 4;
+        case TY_I64: case TY_P64: case TY_F64: case TY_VIA: return 8;
+        case TY_COHORS: return 16;
+        case TY_ACIES: return type->as.array.length * type_get_size(type->as.array.inner);
+        case TY_FORMA: {
+            int size = 0;
+            int max_align = 1;
+            for (int i = 0; i < type->as.struct_type.field_count; i++) {
+                int field_size = type_get_size(type->as.struct_type.fields[i].type);
+                int field_align = type->as.struct_type.is_densa ? 1 : (field_size > 8 ? 8 : field_size);
+                if (field_align > max_align) max_align = field_align;
+                if (!type->as.struct_type.is_densa) {
+                    size = (size + field_align - 1) & ~(field_align - 1);
+                }
+                size += field_size;
+            }
+            if (!type->as.struct_type.is_densa) {
+                size = (size + max_align - 1) & ~(max_align - 1);
+            }
+            return size;
+        }
+        default: return 8;
+    }
+}
+
 ScoriaType* type_create_actio(ScoriaType* return_type, ScoriaType** param_types, int param_count) {
     ScoriaType* t = (ScoriaType*)malloc(sizeof(ScoriaType));
     t->kind = TY_ACTIO;

@@ -160,19 +160,27 @@ static void generate_function(FILE* out, SirFunction* func) {
                     break;
                 }
 
-                case SIR_STORE:
-                    // store val(op0), ptr(op1)
+                case SIR_STORE: {
+                    int size = type_get_size(inst->operands[0]->type);
                     fprintf(out, "    movq %s, %%rax\n", op0);
                     fprintf(out, "    movq %s, %%rcx\n", op1);
-                    fprintf(out, "    movq %%rax, (%%rcx)\n");
+                    if (size == 1) fprintf(out, "    movb %%al, (%%rcx)\n");
+                    else if (size == 2) fprintf(out, "    movw %%ax, (%%rcx)\n");
+                    else if (size == 4) fprintf(out, "    movl %%eax, (%%rcx)\n");
+                    else fprintf(out, "    movq %%rax, (%%rcx)\n");
                     break;
+                }
 
-                case SIR_LOAD:
-                    // dest = load ptr(op0)
+                case SIR_LOAD: {
+                    int size = type_get_size(inst->dest->type);
                     fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    movq (%%rax), %%rcx\n");
+                    if (size == 1) fprintf(out, "    movzbq (%%rax), %%rcx\n");
+                    else if (size == 2) fprintf(out, "    movzwq (%%rax), %%rcx\n");
+                    else if (size == 4) fprintf(out, "    movl (%%rax), %%ecx\n");
+                    else fprintf(out, "    movq (%%rax), %%rcx\n");
                     fprintf(out, "    movq %%rcx, %s\n", dest);
                     break;
+                }
 
                 case SIR_CAST: {
                     ScoriaType* src_type = inst->operands[0]->type;

@@ -7,37 +7,6 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr);
 static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr);
 static void gen_statement(IrBuilder* builder, AstNode* stmt);
 
-// 计算类型在内存中的实际字节大小 (支持 C ABI 对齐与 densa 紧凑布局)
-static int get_type_size(ScoriaType* type) {
-    if (!type) return 0;
-    switch (type->kind) {
-        case TY_I8: case TY_P8: case TY_LITTERA: case TY_LOGICA: return 1;
-        case TY_I16: case TY_P16: return 2;
-        case TY_I32: case TY_P32: case TY_F32: return 4;
-        case TY_I64: case TY_P64: case TY_F64: case TY_VIA: return 8;
-        case TY_COHORS: return 16;
-        case TY_ACIES: return type->as.array.length * get_type_size(type->as.array.inner);
-        case TY_FORMA: {
-            int size = 0;
-            int max_align = 1;
-            for (int i = 0; i < type->as.struct_type.field_count; i++) {
-                int field_size = get_type_size(type->as.struct_type.fields[i].type);
-                int field_align = type->as.struct_type.is_densa ? 1 : (field_size > 8 ? 8 : field_size);
-                if (field_align > max_align) max_align = field_align;
-                if (!type->as.struct_type.is_densa) {
-                    size = (size + field_align - 1) & ~(field_align - 1);
-                }
-                size += field_size;
-            }
-            if (!type->as.struct_type.is_densa) {
-                size = (size + max_align - 1) & ~(max_align - 1);
-            }
-            return size;
-        }
-        default: return 8;
-    }
-}
-
 // 获取左值 (L-value) 的内存地址指针
 static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
     if (!expr) return NULL;
@@ -65,7 +34,7 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
                 ptr = gen_expression(builder, expr->as.index_expr.target);
             }
             SirValue* index = gen_expression(builder, expr->as.index_expr.index);
-            int element_size = get_type_size(expr->expr_type);
+            int element_size = type_get_size(expr->expr_type);
             return ir_build_gep(builder, ptr, index, element_size, type_get_via(expr->expr_type));
         }
         case AST_MEMBER_EXPR: {
@@ -84,7 +53,7 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
             
             for (int i = 0; i < obj_type->as.struct_type.field_count; i++) {
                 StructField field = obj_type->as.struct_type.fields[i];
-                int field_size = get_type_size(field.type);
+                int field_size = type_get_size(field.type);
                 int field_align = obj_type->as.struct_type.is_densa ? 1 : (field_size > 8 ? 8 : field_size);
                 
                 if (!obj_type->as.struct_type.is_densa) {
@@ -286,7 +255,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             }
             ScoriaType* element_type = expr->expr_type;
             if (element_type->kind == TY_VIA) element_type = element_type->as.inner;
-            int element_size = get_type_size(element_type);
+            int element_size = type_get_size(element_type);
             return ir_build_gep(builder, ptr, offset, element_size, expr->expr_type);
         }
         case AST_CREA_EXPR: {
@@ -300,7 +269,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             if (allocated_type->kind == TY_VIA) {
                 allocated_type = allocated_type->as.inner;
             }
-            int element_size = get_type_size(allocated_type);
+            int element_size = type_get_size(allocated_type);
             
             SirValue* count_val;
             if (expr->as.crea_expr.count) {
@@ -373,7 +342,7 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
             Symbol* sym = stmt->resolved_symbol;
             if (sym) {
                 // 1. 在当前函数的栈帧上分配内存 (Alloca)
-                int type_size = get_type_size(sym->type);
+                int type_size = type_get_size(sym->type);
                 sym->ir_val = ir_build_alloca(builder, sym->type, type_size);
                 
                 // 2. 如果有初始值，生成 Store 指令写入栈内存
@@ -512,7 +481,7 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
         if (decl->kind == AST_VAR_DECL) {
             Symbol* sym = decl->resolved_symbol;
             if (sym) {
-                int size = get_type_size(sym->type);
+                int size = type_get_size(sym->type);
                 SirGlobalVar* gvar = ir_builder_create_global(builder, sym->name.start, sym->name.length, sym->type, size);
                 
                 SirValue* val = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
@@ -557,7 +526,7 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
                 AstNode* param_node = decl->as.func_decl.params[j];
                 Symbol* param_sym = param_node->resolved_symbol;
                 if (param_sym) {
-                    int param_size = get_type_size(param_sym->type);
+                    int param_size = type_get_size(param_sym->type);
                     param_sym->ir_val = ir_build_alloca(builder, param_sym->type, param_size);
                     SirValue* arg_val = ir_get_param(builder, j, param_sym->type);
                     ir_build_store(builder, arg_val, param_sym->ir_val);

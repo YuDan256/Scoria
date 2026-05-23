@@ -79,4 +79,7 @@ ScoriaType* type_create_actio(ScoriaType* return_type, ScoriaType** param_types,
 // 类型比较 (因为使用了 Interning，大部分情况下可以直接比较指针)
 bool type_equals(ScoriaType* a, ScoriaType* b);
 
+// 获取类型在内存中的实际字节大小
+int type_get_size(ScoriaType* type);
+
 #endif // SCORIA_TYPES_H

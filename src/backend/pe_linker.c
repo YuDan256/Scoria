@@ -563,17 +563,44 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             break;
                         }
                         case SIR_STORE: {
+                            int size = type_get_size(inst->operands[0]->type);
                             int val_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
-                            emit_rex(&linker->text_section, 1, val_reg > 7, 0, ptr_reg > 7);
-                            emit8(&linker->text_section, 0x89); // mov [ptr_reg], val_reg
+                            
+                            if (size == 1) {
+                                emit_rex(&linker->text_section, 0, val_reg > 7, 0, ptr_reg > 7);
+                                emit8(&linker->text_section, 0x88); // mov [ptr_reg], val_reg (8-bit)
+                            } else if (size == 2) {
+                                emit8(&linker->text_section, 0x66);
+                                emit_rex(&linker->text_section, 0, val_reg > 7, 0, ptr_reg > 7);
+                                emit8(&linker->text_section, 0x89); // mov [ptr_reg], val_reg (16-bit)
+                            } else if (size == 4) {
+                                emit_rex(&linker->text_section, 0, val_reg > 7, 0, ptr_reg > 7);
+                                emit8(&linker->text_section, 0x89); // mov [ptr_reg], val_reg (32-bit)
+                            } else {
+                                emit_rex(&linker->text_section, 1, val_reg > 7, 0, ptr_reg > 7);
+                                emit8(&linker->text_section, 0x89); // mov [ptr_reg], val_reg (64-bit)
+                            }
                             emit_mem(&linker->text_section, val_reg, ptr_reg, 0);
                             break;
                         }
                         case SIR_LOAD: {
+                            int size = type_get_size(inst->dest->type);
                             int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RCX, &ctx);
-                            emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
-                            emit8(&linker->text_section, 0x8B); // mov rax, [ptr_reg]
+                            
+                            if (size == 1) {
+                                emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
+                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB6); // movzx rax, byte ptr
+                            } else if (size == 2) {
+                                emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
+                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB7); // movzx rax, word ptr
+                            } else if (size == 4) {
+                                emit_rex(&linker->text_section, 0, 0, 0, ptr_reg > 7);
+                                emit8(&linker->text_section, 0x8B); // mov eax, dword ptr
+                            } else {
+                                emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
+                                emit8(&linker->text_section, 0x8B); // mov rax, qword ptr
+                            }
                             emit_mem(&linker->text_section, REG_RAX, ptr_reg, 0);
                             store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                             break;
