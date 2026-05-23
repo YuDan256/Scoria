@@ -918,6 +918,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             
                             emit_mov_reg_imm32(&linker->text_section, REG_RCX, size);
                             
+                            emit8(&linker->text_section, 0xFC); // cld
                             emit8(&linker->text_section, 0xF3); // rep
                             emit8(&linker->text_section, 0xA4); // movsb
                             

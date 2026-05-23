@@ -371,6 +371,7 @@ static void generate_function(FILE* out, SirFunction* func) {
                     fprintf(out, "    popq %%rsi\n");
                     fprintf(out, "    popq %%rdi\n");
                     fprintf(out, "    movq $%d, %%rcx\n", size);
+                    fprintf(out, "    cld\n");
                     fprintf(out, "    rep movsb\n");
                     fprintf(out, "    popq %%rcx\n");
                     fprintf(out, "    popq %%rdi\n");

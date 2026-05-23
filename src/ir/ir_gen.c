@@ -30,9 +30,11 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
                 // 数组退化为指针：直接取数组的左值地址，不进行 Load
                 ptr = gen_lvalue(builder, expr->as.index_expr.target);
             } else if (target_type->kind == TY_COHORS) {
-                // 切片：先取切片的左值地址，然后 Load 出内部的游标 (前 8 字节)
+                // 切片：先取切片的左值地址，然后 GEP 取出内部的游标 (前 8 字节)
                 SirValue* slice_ptr = gen_lvalue(builder, expr->as.index_expr.target);
-                ptr = ir_build_load(builder, slice_ptr);
+                SirValue* zero_offset = ir_const_int(builder, type_get_basic(TY_I32), 0);
+                SirValue* raw_ptr_ptr = ir_build_gep(builder, slice_ptr, zero_offset, 1, type_get_via(type_get_via(expr->expr_type)));
+                ptr = ir_build_load(builder, raw_ptr_ptr);
             } else {
                 // 裸指针：正常求值得到指针本身
                 ptr = gen_expression(builder, expr->as.index_expr.target);
@@ -400,7 +402,9 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             SirValue* ptr_val = gen_expression(builder, expr->as.neca_expr.pointer);
             if (expr->as.neca_expr.pointer->expr_type->kind == TY_COHORS) {
                 // 如果是切片，提取内部的游标 (前 8 字节)
-                ptr_val = ir_build_load(builder, ptr_val);
+                SirValue* zero_offset = ir_const_int(builder, type_get_basic(TY_I32), 0);
+                SirValue* raw_ptr_ptr = ir_build_gep(builder, ptr_val, zero_offset, 1, type_get_via(type_get_via(type_get_basic(TY_I8))));
+                ptr_val = ir_build_load(builder, raw_ptr_ptr);
             }
             
             SirValue** args = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * 1);
