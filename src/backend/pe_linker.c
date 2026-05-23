@@ -564,14 +564,22 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                 emit32(&linker->text_section, (uint32_t)stack_size);
             }
             
-            // 将前 4 个参数寄存器保存到 Shadow Space (支持浮点数)
-            int param_count = func->type->as.func_type.param_count;
-            for (int i = 0; i < param_count && i < 4; i++) {
-                ScoriaType* ptype = func->type->as.func_type.param_types[i];
-                bool is_float = (ptype && (ptype->kind == TY_F32 || ptype->kind == TY_F64));
-                bool is_f32 = (ptype && ptype->kind == TY_F32);
-                int offset = 16 + i * 8;
+            // 将前 4 个参数寄存器保存到 Shadow Space (支持浮点数与隐藏返回指针)
+            bool hidden_ret = type_get_size(func->type->as.func_type.return_type) > 8;
+            int explicit_param_count = func->type->as.func_type.param_count;
+            int total_phys_params = hidden_ret ? explicit_param_count + 1 : explicit_param_count;
+            
+            for (int i = 0; i < total_phys_params && i < 4; i++) {
+                bool is_float = false;
+                bool is_f32 = false;
+                if (!hidden_ret || i > 0) {
+                    int explicit_idx = hidden_ret ? i - 1 : i;
+                    ScoriaType* ptype = func->type->as.func_type.param_types[explicit_idx];
+                    is_float = (ptype && (ptype->kind == TY_F32 || ptype->kind == TY_F64));
+                    is_f32 = (ptype && ptype->kind == TY_F32);
+                }
                 
+                int offset = 16 + i * 8;
                 if (is_float) {
                     // movss/movsd [rbp+offset], xmmI
                     emit8(&linker->text_section, is_f32 ? 0xF3 : 0xF2);
@@ -1016,6 +1024,14 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                     if (pass == 1) g_print_hex_relocs[g_print_hex_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0);
                                 } else if (is_float) {
+                                    if (inst->operands[1]->type && inst->operands[1]->type->kind == TY_F32) {
+                                        // movd xmm0, ecx
+                                        emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 0, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, REG_RCX);
+                                        // cvtss2sd xmm0, xmm0
+                                        emit8(&linker->text_section, 0xF3); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x5A); emit_modrm(&linker->text_section, 3, 0, 0);
+                                        // movq rcx, xmm0
+                                        emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); emit_modrm(&linker->text_section, 3, 0, REG_RCX);
+                                    }
                                     emit8(&linker->text_section, 0xE8); // call rel32
                                     if (pass == 1) g_print_float_relocs[g_print_float_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0);

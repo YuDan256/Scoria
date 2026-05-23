@@ -21,6 +21,7 @@ void ir_builder_init(IrBuilder* builder, const char* module_name) {
     builder->current_block = NULL;
     builder->current_loop_cond = NULL;
     builder->current_loop_exit = NULL;
+    builder->current_hidden_ret_ptr = NULL;
     builder->next_vreg = 1; // 虚拟寄存器从 %1 开始
     builder->next_block_id = 1;
 }

@@ -99,12 +99,21 @@ static void generate_function(FILE* out, SirFunction* func) {
     fprintf(out, "    pushq %%r14\n");
     fprintf(out, "    pushq %%r15\n");
     
-    // 将前 4 个参数寄存器保存到 Shadow Space (支持浮点数)
-    int param_count = func->type->as.func_type.param_count;
-    for (int i = 0; i < param_count && i < 4; i++) {
-        ScoriaType* ptype = func->type->as.func_type.param_types[i];
-        bool is_float = (ptype && (ptype->kind == TY_F32 || ptype->kind == TY_F64));
-        bool is_f32 = (ptype && ptype->kind == TY_F32);
+    // 将前 4 个参数寄存器保存到 Shadow Space (支持浮点数与隐藏返回指针)
+    bool hidden_ret = type_get_size(func->type->as.func_type.return_type) > 8;
+    int explicit_param_count = func->type->as.func_type.param_count;
+    int total_phys_params = hidden_ret ? explicit_param_count + 1 : explicit_param_count;
+    
+    for (int i = 0; i < total_phys_params && i < 4; i++) {
+        bool is_float = false;
+        bool is_f32 = false;
+        if (!hidden_ret || i > 0) {
+            int explicit_idx = hidden_ret ? i - 1 : i;
+            ScoriaType* ptype = func->type->as.func_type.param_types[explicit_idx];
+            is_float = (ptype && (ptype->kind == TY_F32 || ptype->kind == TY_F64));
+            is_f32 = (ptype && ptype->kind == TY_F32);
+        }
+        
         int offset = 16 + i * 8;
         if (is_float) {
             if (is_f32) fprintf(out, "    movss %%xmm%d, %d(%%rbp)\n", i, offset);
@@ -519,6 +528,11 @@ static void generate_function(FILE* out, SirFunction* func) {
                         } else if (is_ptr) {
                             fprintf(out, "    call __print_hex\n");
                         } else if (is_float) {
+                            if (inst->operands[1]->type && inst->operands[1]->type->kind == TY_F32) {
+                                fprintf(out, "    movd %%ecx, %%xmm0\n");
+                                fprintf(out, "    cvtss2sd %%xmm0, %%xmm0\n");
+                                fprintf(out, "    movq %%xmm0, %%rcx\n");
+                            }
                             fprintf(out, "    call __print_float\n");
                         } else {
                             fprintf(out, "    call __print_int\n");
