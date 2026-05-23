@@ -508,7 +508,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             reg_alloc_build_and_color(&allocator, func);
 
             int stack_size = allocator.current_offset + 32; // 预留 32 字节 Shadow Space (Windows ABI)
-            if (stack_size % 16 != 0) stack_size += 16 - (stack_size % 16);
+            // 保持 16 字节对齐，并补偿 9 个 push (1 个 ret addr + 8 个 rbp/rbx 等) 造成的 8 字节偏移
+            stack_size = (stack_size + 15) & ~15;
+            stack_size += 8;
 
             // 序言 (Prologue)
             emit8(&linker->text_section, 0x55); // push rbp
@@ -902,6 +904,14 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 int val = load_operand(&linker->text_section, &allocator, inst->operands[i+1], REG_RAX, &ctx);
                                 if (i < 4) {
                                     if (val != arg_regs[i]) emit_mov_reg_reg(&linker->text_section, arg_regs[i], val);
+                                    
+                                    bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
+                                    if (is_float) {
+                                        // movq xmmX, arg_regs[i]
+                                        emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, arg_regs[i] > 7); 
+                                        emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); 
+                                        emit_modrm(&linker->text_section, 3, i, arg_regs[i] & 7);
+                                    }
                                 } else {
                                     emit_rex(&linker->text_section, 1, val > 7, 0, 0);
                                     emit8(&linker->text_section, 0x89);
@@ -934,6 +944,13 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit_mem(&linker->text_section, 3, REG_RBP, -72);
                             
                             if (inst->dest) {
+                                bool ret_is_float = (inst->dest->type && (inst->dest->type->kind == TY_F32 || inst->dest->type->kind == TY_F64));
+                                if (ret_is_float) {
+                                    // movq rax, xmm0
+                                    emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); 
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); 
+                                    emit_modrm(&linker->text_section, 3, 0, REG_RAX);
+                                }
                                 store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                             }
                             break;
@@ -957,6 +974,14 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             if (inst->num_operands > 0) {
                                 int val = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                                 if (val != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, val);
+                                
+                                bool ret_is_float = (inst->operands[0]->type && (inst->operands[0]->type->kind == TY_F32 || inst->operands[0]->type->kind == TY_F64));
+                                if (ret_is_float) {
+                                    // movq xmm0, rax
+                                    emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 1, 0, 0, 0); 
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); 
+                                    emit_modrm(&linker->text_section, 3, 0, REG_RAX);
+                                }
                             }
                             // 跋 (Epilogue)
                             emit_rex(&linker->text_section, 1, 0, 0, 0);

@@ -134,8 +134,9 @@ static void generate_function(FILE* out, SirFunction* func) {
     }
     
     int stack_size = allocator.current_offset + 32; // 预留 32 字节 Shadow Space (Windows ABI)
-    // 保持 16 字节对齐
-    if (stack_size % 16 != 0) stack_size += 16 - (stack_size % 16);
+    // 保持 16 字节对齐，并补偿 9 个 push (1 个 ret addr + 8 个 rbp/rbx 等) 造成的 8 字节偏移
+    stack_size = (stack_size + 15) & ~15;
+    stack_size += 8;
     if (stack_size > 0) {
         fprintf(out, "    subq $%d, %%rsp\n", stack_size);
     }
@@ -412,6 +413,11 @@ static void generate_function(FILE* out, SirFunction* func) {
                         if (i < 4) {
                             const char* arg_regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
                             fprintf(out, "    movq %s, %s\n", arg_str, arg_regs[i]);
+                            
+                            bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
+                            if (is_float) {
+                                fprintf(out, "    movq %s, %%xmm%d\n", arg_regs[i], i);
+                            }
                         } else {
                             fprintf(out, "    movq %s, %%rax\n", arg_str);
                             fprintf(out, "    movq %%rax, %d(%%rsp)\n", 32 + (i - 4) * 8);
@@ -432,6 +438,10 @@ static void generate_function(FILE* out, SirFunction* func) {
                     fprintf(out, "    movq -72(%%rbp), %%r11\n");
                     
                     if (inst->dest) {
+                        bool ret_is_float = (inst->dest->type && (inst->dest->type->kind == TY_F32 || inst->dest->type->kind == TY_F64));
+                        if (ret_is_float) {
+                            fprintf(out, "    movq %%xmm0, %%rax\n");
+                        }
                         fprintf(out, "    movq %%rax, %s\n", dest);
                     }
                     break;
@@ -439,6 +449,10 @@ static void generate_function(FILE* out, SirFunction* func) {
                 case SIR_RET:
                     if (inst->num_operands > 0) {
                         fprintf(out, "    movq %s, %%rax\n", op0);
+                        bool ret_is_float = (inst->operands[0]->type && (inst->operands[0]->type->kind == TY_F32 || inst->operands[0]->type->kind == TY_F64));
+                        if (ret_is_float) {
+                            fprintf(out, "    movq %%rax, %%xmm0\n");
+                        }
                     }
                     // 5. 函数跋 (Epilogue)
                     fprintf(out, "    leaq -56(%%rbp), %%rsp\n");
