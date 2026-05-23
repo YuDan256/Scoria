@@ -185,10 +185,14 @@ void asm_builtins_generate(FILE* out) {
     fprintf(out, "main:\n");
     fprintf(out, "    pushq %%rbp\n");
     fprintf(out, "    movq %%rsp, %%rbp\n");
-    fprintf(out, "    subq $32, %%rsp\n");
+    fprintf(out, "    subq $48, %%rsp\n");
+    fprintf(out, "    movq %%rcx, -8(%%rbp)\n");
+    fprintf(out, "    movq %%rdx, -16(%%rbp)\n");
     fprintf(out, "    call __scoria_init\n");
+    fprintf(out, "    movq -8(%%rbp), %%rcx\n");
+    fprintf(out, "    movq -16(%%rbp), %%rdx\n");
     fprintf(out, "    call princeps\n");
-    fprintf(out, "    addq $32, %%rsp\n");
+    fprintf(out, "    addq $48, %%rsp\n");
     fprintf(out, "    popq %%rbp\n");
     fprintf(out, "    ret\n\n");
 }
@@ -341,16 +345,28 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
 
     // 追加内置汇编例程: _start (真正的入口点)
     linker->entry_point_offset = (uint32_t)linker->text_section.size;
-    // sub rsp, 40 (32 bytes shadow space + 8 bytes alignment)
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x28);
+    // sub rsp, 56 (32 bytes shadow space + 16 bytes local + 8 bytes alignment)
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x38);
+    // mov [rsp+48], rcx (保存 argc)
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30);
+    // mov [rsp+56], rdx (保存 argv)
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0x54); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x38);
+    
     // call __scoria_init
     emit8(&linker->text_section, 0xE8);
     int32_t rel_init = (int32_t)(init_offset - (linker->text_section.size + 4));
     emit32(&linker->text_section, (uint32_t)rel_init);
+    
+    // mov rcx, [rsp+48] (恢复 argc)
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x8B); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30);
+    // mov rdx, [rsp+56] (恢复 argv)
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x8B); emit8(&linker->text_section, 0x54); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x38);
+    
     // call princeps
     emit8(&linker->text_section, 0xE8);
     int32_t rel_princeps = (int32_t)(princeps_offset - (linker->text_section.size + 4));
     emit32(&linker->text_section, (uint32_t)rel_princeps);
+    
     // mov rcx, rax (exit code)
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xC1);
     // call [rip + IAT_ExitProcess]

@@ -107,6 +107,12 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             break;
         }
         case AST_IDENT_EXPR: {
+            if (expr->token.length == 5 && strncmp(expr->token.start, "nihil", 5) == 0) {
+                return ir_const_int(builder, expr->expr_type, 0);
+            }
+            if (expr->token.length == 3 && strncmp(expr->token.start, "nhl", 3) == 0) {
+                return ir_const_int(builder, expr->expr_type, 0);
+            }
             Symbol* sym = expr->resolved_symbol;
             if (sym) {
                 if (sym->type && sym->type->kind == TY_ACTIO) {
@@ -127,12 +133,23 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             break;
         }
         case AST_ASSIGN_EXPR: {
-            SirValue* val = gen_expression(builder, expr->as.assign.value);
-            SirValue* lval = gen_lvalue(builder, expr->as.assign.target);
-            if (lval) {
-                ir_build_store(builder, val, lval);
+            int size = type_get_size(expr->expr_type);
+            if (size > 8) {
+                // 大型结构体赋值：使用 memcpy 拷贝内存块
+                SirValue* dst_ptr = gen_lvalue(builder, expr->as.assign.target);
+                SirValue* src_ptr = gen_lvalue(builder, expr->as.assign.value);
+                if (dst_ptr && src_ptr) {
+                    ir_build_memcpy(builder, dst_ptr, src_ptr, size);
+                }
+                return NULL;
+            } else {
+                SirValue* val = gen_expression(builder, expr->as.assign.value);
+                SirValue* lval = gen_lvalue(builder, expr->as.assign.target);
+                if (lval) {
+                    ir_build_store(builder, val, lval);
+                }
+                return val;
             }
-            return val;
         }
         case AST_BINARY_EXPR: {
             if (expr->as.binary.op.kind == TK_LOGIC_AND || expr->as.binary.op.kind == TK_LOGIC_OR) {

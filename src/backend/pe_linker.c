@@ -798,6 +798,29 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                             break;
                         }
+                        case SIR_MEMCPY: {
+                            int size = (int)inst->operands[2]->as.int_val;
+                            
+                            // 保护 rep movsb 会破坏的寄存器
+                            emit8(&linker->text_section, 0x56); // push rsi
+                            emit8(&linker->text_section, 0x57); // push rdi
+                            emit8(&linker->text_section, 0x51); // push rcx
+                            
+                            int dst_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
+                            int src_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RDX, &ctx);
+                            
+                            if (dst_reg != REG_RDI) emit_mov_reg_reg(&linker->text_section, REG_RDI, dst_reg);
+                            if (src_reg != REG_RSI) emit_mov_reg_reg(&linker->text_section, REG_RSI, src_reg);
+                            emit_mov_reg_imm32(&linker->text_section, REG_RCX, size);
+                            
+                            emit8(&linker->text_section, 0xF3); // rep
+                            emit8(&linker->text_section, 0xA4); // movsb
+                            
+                            emit8(&linker->text_section, 0x59); // pop rcx
+                            emit8(&linker->text_section, 0x5F); // pop rdi
+                            emit8(&linker->text_section, 0x5E); // pop rsi
+                            break;
+                        }
                         case SIR_GEP: {
                             int ptr = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (ptr != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, ptr);

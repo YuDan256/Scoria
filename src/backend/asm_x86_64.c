@@ -283,6 +283,21 @@ static void generate_function(FILE* out, SirFunction* func) {
                     break;
                 }
 
+                case SIR_MEMCPY: {
+                    int size = (int)inst->operands[2]->as.int_val;
+                    fprintf(out, "    pushq %%rsi\n");
+                    fprintf(out, "    pushq %%rdi\n");
+                    fprintf(out, "    pushq %%rcx\n");
+                    fprintf(out, "    movq %s, %%rdi\n", op0);
+                    fprintf(out, "    movq %s, %%rsi\n", op1);
+                    fprintf(out, "    movq $%d, %%rcx\n", size);
+                    fprintf(out, "    rep movsb\n");
+                    fprintf(out, "    popq %%rcx\n");
+                    fprintf(out, "    popq %%rdi\n");
+                    fprintf(out, "    popq %%rsi\n");
+                    break;
+                }
+
                 case SIR_GEP: {
                     int element_size = (int)inst->operands[2]->as.int_val;
                     fprintf(out, "    movq %s, %%rax\n", op0);

@@ -48,6 +48,7 @@ SirValue* ir_build_alloca(IrBuilder* builder, ScoriaType* type, int size);
 SirValue* ir_build_load(IrBuilder* builder, SirValue* ptr);
 void ir_build_store(IrBuilder* builder, SirValue* val, SirValue* ptr);
 SirValue* ir_build_gep(IrBuilder* builder, SirValue* ptr, SirValue* index, int element_size, ScoriaType* res_type);
+void ir_build_memcpy(IrBuilder* builder, SirValue* dest_ptr, SirValue* src_ptr, int size);
 SirValue* ir_build_cast(IrBuilder* builder, SirValue* val, ScoriaType* target_type);
 SirValue* ir_build_call(IrBuilder* builder, SirValue* callee, SirValue** args, int arg_count, ScoriaType* ret_type);
 void ir_build_jmp(IrBuilder* builder, SirBlock* target);

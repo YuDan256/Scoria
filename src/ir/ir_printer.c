@@ -105,6 +105,7 @@ static void print_inst(FILE* out, SirInst* inst) {
         case SIR_LOAD: fprintf(out, "load "); break;
         case SIR_STORE: fprintf(out, "store "); break;
         case SIR_GEP: fprintf(out, "gep "); break;
+        case SIR_MEMCPY: fprintf(out, "memcpy "); break;
         case SIR_JMP: fprintf(out, "jmp "); break;
         case SIR_BR: fprintf(out, "br "); break;
         case SIR_CALL: fprintf(out, "call "); break;

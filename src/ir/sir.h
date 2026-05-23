@@ -23,6 +23,7 @@ typedef enum {
     SIR_LOAD,    // 读内存
     SIR_STORE,   // 写内存
     SIR_GEP,     // 计算元素指针 (Get Element Pointer)
+    SIR_MEMCPY,  // 内存拷贝 (dest_ptr, src_ptr, size)
     
     // 控制流
     SIR_JMP,     // 无条件跳转

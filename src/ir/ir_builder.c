@@ -225,6 +225,13 @@ SirValue* ir_build_gep(IrBuilder* builder, SirValue* ptr, SirValue* index, int e
     return inst->dest;
 }
 
+void ir_build_memcpy(IrBuilder* builder, SirValue* dest_ptr, SirValue* src_ptr, int size) {
+    SirInst* inst = create_inst(builder, SIR_MEMCPY, 3);
+    inst->operands[0] = dest_ptr;
+    inst->operands[1] = src_ptr;
+    inst->operands[2] = ir_const_int(builder, type_get_basic(TY_I32), size);
+}
+
 SirValue* ir_build_cast(IrBuilder* builder, SirValue* val, ScoriaType* target_type) {
     SirInst* inst = create_inst(builder, SIR_CAST, 1);
     inst->operands[0] = val;
