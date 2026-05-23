@@ -38,10 +38,10 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
         case AST_INDEX_EXPR: {
             SirValue* ptr = NULL;
             ScoriaType* target_type = expr->as.index_expr.target->expr_type;
-            if (target_type->kind == TY_ACIES) {
+            if (target_type && target_type->kind == TY_ACIES) {
                 // 数组退化为指针：直接取数组的左值地址，不进行 Load
                 ptr = gen_lvalue(builder, expr->as.index_expr.target);
-            } else if (target_type->kind == TY_COHORS) {
+            } else if (target_type && target_type->kind == TY_COHORS) {
                 // 切片：先取切片的左值地址，然后 GEP 取出内部的游标 (前 8 字节)
                 SirValue* slice_ptr = gen_lvalue(builder, expr->as.index_expr.target);
                 SirValue* zero_offset = ir_const_int(builder, type_get_basic(TY_I32), 0);
@@ -67,15 +67,15 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
             
             int byte_offset = 0;
             ScoriaType* obj_type = expr->as.member_expr.object->expr_type;
-            if (obj_type->kind == TY_VIA) obj_type = obj_type->as.inner;
+            if (obj_type && obj_type->kind == TY_VIA) obj_type = obj_type->as.inner;
             
-            if (obj_type->kind == TY_COHORS) {
+            if (obj_type && obj_type->kind == TY_COHORS) {
                 if (expr->as.member_expr.property.length == 6 && strncmp(expr->as.member_expr.property.start, "length", 6) == 0) {
                     byte_offset = 8;
                 } else if (expr->as.member_expr.property.length == 5 && strncmp(expr->as.member_expr.property.start, "locus", 5) == 0) {
                     byte_offset = 0;
                 }
-            } else {
+            } else if (obj_type && obj_type->kind == TY_FORMA) {
                 for (int i = 0; i < obj_type->as.struct_type.field_count; i++) {
                     StructField field = obj_type->as.struct_type.fields[i];
                     int field_size = type_get_size(field.type);
@@ -202,8 +202,8 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             break;
         }
         case AST_ASSIGN_EXPR: {
-            ScoriaType* type = expr->expr_type;
-            if (type->kind == TY_FORMA || type->kind == TY_ACIES || type->kind == TY_COHORS) {
+            ScoriaType* type = expr->expr_type ? expr->expr_type : expr->as.assign.target->expr_type;
+            if (type && (type->kind == TY_FORMA || type->kind == TY_ACIES || type->kind == TY_COHORS)) {
                 // 结构体、数组和切片赋值：使用 memcpy 拷贝内存块
                 SirValue* dst_ptr = gen_lvalue(builder, expr->as.assign.target);
                 SirValue* src_ptr = gen_expression(builder, expr->as.assign.value); // 右值已退化为指针
@@ -218,7 +218,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 SirValue* val = gen_expression(builder, expr->as.assign.value);
                 
                 // 3. 如果是复合赋值 (+=, -= 等)，执行 Load -> Op
-                if (expr->as.assign.op.kind != TK_ASSIGN) {
+                if (expr->as.assign.op.kind != TK_ASSIGN && lval) {
                     SirValue* current_val = ir_build_load(builder, lval);
                     SirOpcode op = SIR_ADD;
                     bool is_float = (type && (type->kind == TY_F32 || type->kind == TY_F64));
@@ -301,7 +301,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             } else if (expr->as.unary.op.kind == TK_KW_TENE) {
                 SirValue* ptr = gen_expression(builder, expr->as.unary.operand);
                 ScoriaType* target_type = expr->expr_type;
-                if (target_type->kind == TY_FORMA || target_type->kind == TY_ACIES || target_type->kind == TY_COHORS) {
+                if (target_type && (target_type->kind == TY_FORMA || target_type->kind == TY_ACIES || target_type->kind == TY_COHORS)) {
                     return ptr; // 结构体/数组/切片退化为指针
                 }
                 return ir_build_load(builder, ptr);
@@ -369,7 +369,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 return gen_expression(builder, expr->as.cast_expr.value);
             }
             
-            if (src_type->kind == TY_ACIES && target_type->kind == TY_COHORS) {
+            if (src_type && target_type && src_type->kind == TY_ACIES && target_type->kind == TY_COHORS) {
                 // 数组转切片 (胖指针构造)
                 SirValue* slice_ptr = ir_build_alloca(builder, target_type, 16);
                 SirValue* arr_ptr = gen_lvalue(builder, expr->as.cast_expr.value);
@@ -395,7 +395,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 offset = ir_build_binary(builder, SIR_SUB, zero, offset);
             }
             ScoriaType* element_type = expr->expr_type;
-            if (element_type->kind == TY_VIA) element_type = element_type->as.inner;
+            if (element_type && element_type->kind == TY_VIA) element_type = element_type->as.inner;
             int element_size = type_get_size(element_type);
             return ir_build_gep(builder, ptr, offset, element_size, expr->expr_type);
         }
@@ -408,11 +408,13 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             // 动态计算分配类型的实际大小
             ScoriaType* allocated_type = expr->expr_type;
             bool is_slice = false;
-            if (allocated_type->kind == TY_VIA) {
-                allocated_type = allocated_type->as.inner;
-            } else if (allocated_type->kind == TY_COHORS) {
-                allocated_type = allocated_type->as.inner;
-                is_slice = true;
+            if (allocated_type) {
+                if (allocated_type->kind == TY_VIA) {
+                    allocated_type = allocated_type->as.inner;
+                } else if (allocated_type->kind == TY_COHORS) {
+                    allocated_type = allocated_type->as.inner;
+                    is_slice = true;
+                }
             }
             int element_size = type_get_size(allocated_type);
             
@@ -455,7 +457,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             callee->as.global_name = "neca";
             
             SirValue* ptr_val = gen_expression(builder, expr->as.neca_expr.pointer);
-            if (expr->as.neca_expr.pointer->expr_type->kind == TY_COHORS) {
+            if (expr->as.neca_expr.pointer->expr_type && expr->as.neca_expr.pointer->expr_type->kind == TY_COHORS) {
                 // 如果是切片，提取内部的游标 (前 8 字节)
                 SirValue* zero_offset = ir_const_int(builder, type_get_basic(TY_I32), 0);
                 SirValue* raw_ptr_ptr = ir_build_gep(builder, ptr_val, zero_offset, 1, type_get_via(type_get_via(type_get_basic(TY_I8))));
@@ -473,7 +475,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             SirValue* lval = gen_lvalue(builder, expr);
             if (lval) {
                 // 结构体、数组和切片退化为指针
-                if (expr->expr_type->kind == TY_FORMA || expr->expr_type->kind == TY_ACIES || expr->expr_type->kind == TY_COHORS) {
+                if (expr->expr_type && (expr->expr_type->kind == TY_FORMA || expr->expr_type->kind == TY_ACIES || expr->expr_type->kind == TY_COHORS)) {
                     return lval;
                 }
                 return ir_build_load(builder, lval);
