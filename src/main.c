@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "frontend/parser.h"
 #include "middleend/type_checker.h"
 #include "ir/ir_gen.h"
@@ -42,13 +43,33 @@ int main(int argc, char** argv) {
     logger_init();
     LOG_INFO("Roma Invicta! Cor compilatoris Scoriae spirat.");
 
-    if (argc < 2) {
+    const char* source_path = NULL;
+    const char* output_path = "scoria_out.exe";
+    bool emit_ir = false;
+    bool emit_asm = false;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+            output_path = argv[++i];
+        } else if (strcmp(argv[i], "--emit-ir") == 0) {
+            emit_ir = true;
+        } else if (strcmp(argv[i], "--emit-asm") == 0) {
+            emit_asm = true;
+        } else if (argv[i][0] != '-') {
+            source_path = argv[i];
+        } else {
+            LOG_ERROR("Argumentum ignotum: %s", argv[i]);
+            printf("Usus: scoria <fasciculus.sco> [-o <output.exe>] [--emit-ir] [--emit-asm]\n");
+            return 1;
+        }
+    }
+
+    if (!source_path) {
         LOG_ERROR("Nullus fasciculus datus est.");
-        printf("Usus: scoria <fasciculus.sco>\n");
+        printf("Usus: scoria <fasciculus.sco> [-o <output.exe>] [--emit-ir] [--emit-asm]\n");
         return 1;
     }
 
-    const char* source_path = argv[1];
     char* source = read_file(source_path);
     if (!source) {
         return 1;
@@ -86,21 +107,25 @@ int main(int argc, char** argv) {
     ir_builder_init(&builder, "TestModule");
     ir_gen_generate(&builder, program);
     
-    LOG_INFO("--- [4] SIR (Scoria IR) ---");
-    sir_print_module(stdout, builder.module);
-    printf("\n");
+    if (emit_ir) {
+        LOG_INFO("--- [4] SIR (Scoria IR) ---");
+        sir_print_module(stdout, builder.module);
+        printf("\n");
+    }
 
     // 4. 后端：生成汇编代码 (Assembly Generation)
-    LOG_INFO("--- [5] Assembly (x86_64) ---");
-    asm_x86_64_generate(stdout, builder.module);
-    printf("\n");
+    if (emit_asm) {
+        LOG_INFO("--- [5] Assembly (x86_64) ---");
+        asm_x86_64_generate(stdout, builder.module);
+        printf("\n");
+    }
 
     // 5. 生成 Windows 原生可执行文件 (.exe)
     PeLinker pe_linker;
     pe_linker_init(&pe_linker);
-    if (pe_linker_generate_executable(&pe_linker, builder.module, "scoria_out.exe")) {
-        LOG_INFO("--- [6] Executable Generated: scoria_out.exe ---");
-        LOG_INFO("Potes nunc currere: scoria_out.exe");
+    if (pe_linker_generate_executable(&pe_linker, builder.module, output_path)) {
+        LOG_INFO("--- [6] Executable Generated: %s ---", output_path);
+        LOG_INFO("Potes nunc currere: %s", output_path);
     } else {
         LOG_ERROR("Erratum in generatione PE.");
     }
