@@ -13,7 +13,19 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
     switch (expr->kind) {
         case AST_IDENT_EXPR: {
             Symbol* sym = expr->resolved_symbol;
-            if (sym && sym->ir_val) return sym->ir_val;
+            if (sym) {
+                if (sym->type && sym->type->kind == TY_ACTIO) {
+                    SirValue* val = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
+                    val->kind = SIR_VAL_GLOBAL;
+                    val->type = type_get_via(sym->type);
+                    char* name = (char*)arena_alloc(&builder->arena, sym->name.length + 1);
+                    strncpy(name, sym->name.start, sym->name.length);
+                    name[sym->name.length] = '\0';
+                    val->as.global_name = name;
+                    return val;
+                }
+                if (sym->ir_val) return sym->ir_val;
+            }
             break;
         }
         case AST_UNARY_EXPR: {
@@ -137,8 +149,26 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 ir_build_store(builder, len_val, len_ptr);
                 
                 return slice_ptr;
+            } else if (expr->token.kind == TK_CHAR_CONST) {
+                char c = 0;
+                if (expr->token.length >= 3) {
+                    if (expr->token.start[1] == '\\') {
+                        switch (expr->token.start[2]) {
+                            case 'n': c = '\n'; break;
+                            case 't': c = '\t'; break;
+                            case 'r': c = '\r'; break;
+                            case '0': c = '\0'; break;
+                            case '\\': c = '\\'; break;
+                            case '\'': c = '\''; break;
+                            case '\"': c = '\"'; break;
+                            default: c = expr->token.start[2]; break;
+                        }
+                    } else {
+                        c = expr->token.start[1];
+                    }
+                }
+                return ir_const_int(builder, expr->expr_type, (int64_t)c);
             }
-            // TODO: 处理字符字面量
             break;
         }
         case AST_IDENT_EXPR: {

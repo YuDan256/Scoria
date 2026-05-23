@@ -1557,11 +1557,13 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
         uint32_t text_off = g_extern_relocs[i];
         int target_idx = g_extern_idxs[i];
         SirExternFunc* ext = module->first_extern;
-        for (int j = 0; j < target_idx; j++) ext = ext->next;
+        for (int j = 0; j < target_idx && ext; j++) ext = ext->next;
         
-        uint32_t iat_off = pe_idata_get_iat_offset(idata, ext->dll_name, ext->name);
-        int32_t rel32 = (int32_t)((rdata_sec.VirtualAddress + iat_off) - (text_sec.VirtualAddress + text_off + 4));
-        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        if (ext) {
+            uint32_t iat_off = pe_idata_get_iat_offset(idata, ext->dll_name, ext->name);
+            int32_t rel32 = (int32_t)((rdata_sec.VirtualAddress + iat_off) - (text_sec.VirtualAddress + text_off + 4));
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        }
     }
     
     pe_idata_free(idata);
