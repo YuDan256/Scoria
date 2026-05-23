@@ -366,10 +366,10 @@ static void generate_function(FILE* out, SirFunction* func) {
                     fprintf(out, "    pushq %%rsi\n");
                     fprintf(out, "    pushq %%rdi\n");
                     fprintf(out, "    pushq %%rcx\n");
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    movq %s, %%rcx\n", op1);
-                    fprintf(out, "    movq %%rax, %%rdi\n");
-                    fprintf(out, "    movq %%rcx, %%rsi\n");
+                    fprintf(out, "    pushq %s\n", op0);
+                    fprintf(out, "    pushq %s\n", op1);
+                    fprintf(out, "    popq %%rsi\n");
+                    fprintf(out, "    popq %%rdi\n");
                     fprintf(out, "    movq $%d, %%rcx\n", size);
                     fprintf(out, "    rep movsb\n");
                     fprintf(out, "    popq %%rcx\n");

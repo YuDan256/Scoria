@@ -58,6 +58,8 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
             if (obj_type->kind == TY_COHORS) {
                 if (expr->as.member_expr.property.length == 6 && strncmp(expr->as.member_expr.property.start, "length", 6) == 0) {
                     byte_offset = 8;
+                } else if (expr->as.member_expr.property.length == 5 && strncmp(expr->as.member_expr.property.start, "locus", 5) == 0) {
+                    byte_offset = 0;
                 }
             } else {
                 for (int i = 0; i < obj_type->as.struct_type.field_count; i++) {
@@ -238,14 +240,13 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
         }
         case AST_UNARY_EXPR: {
             if (expr->as.unary.op.kind == TK_KW_LOCUS) {
-                // locus x: 如果 x 是局部变量，它的 ir_val 就是栈指针，直接返回
-                if (expr->as.unary.operand->kind == AST_IDENT_EXPR) {
-                    Symbol* sym = expr->as.unary.operand->resolved_symbol;
-                    if (sym && sym->ir_val) return sym->ir_val;
-                }
+                return gen_lvalue(builder, expr->as.unary.operand);
             } else if (expr->as.unary.op.kind == TK_KW_TENE) {
-                // tene p: 生成 LOAD 指令
                 SirValue* ptr = gen_expression(builder, expr->as.unary.operand);
+                ScoriaType* target_type = expr->expr_type;
+                if (target_type->kind == TY_FORMA || target_type->kind == TY_ACIES || target_type->kind == TY_COHORS) {
+                    return ptr; // 结构体/数组/切片退化为指针
+                }
                 return ir_build_load(builder, ptr);
             } else if (expr->as.unary.op.kind == TK_LOGIC_NOT) {
                 SirValue* operand = gen_expression(builder, expr->as.unary.operand);

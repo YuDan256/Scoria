@@ -871,13 +871,18 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             emit8(&linker->text_section, 0x51); // push rcx
                             
                             int dst_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                            if (dst_reg != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, dst_reg);
-                            
                             int src_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RDX, &ctx);
-                            if (src_reg != REG_RDX) emit_mov_reg_reg(&linker->text_section, REG_RDX, src_reg);
                             
-                            emit_mov_reg_reg(&linker->text_section, REG_RDI, REG_RAX);
-                            emit_mov_reg_reg(&linker->text_section, REG_RSI, REG_RDX);
+                            // 压栈以防止寄存器互相覆盖 (Swap Bug)
+                            emit_rex(&linker->text_section, 0, 0, 0, dst_reg > 7);
+                            emit8(&linker->text_section, 0x50 + (dst_reg & 7)); // push dst_reg
+                            
+                            emit_rex(&linker->text_section, 0, 0, 0, src_reg > 7);
+                            emit8(&linker->text_section, 0x50 + (src_reg & 7)); // push src_reg
+                            
+                            emit8(&linker->text_section, 0x5E); // pop rsi (src)
+                            emit8(&linker->text_section, 0x5F); // pop rdi (dst)
+                            
                             emit_mov_reg_imm32(&linker->text_section, REG_RCX, size);
                             
                             emit8(&linker->text_section, 0xF3); // rep
