@@ -1,5 +1,6 @@
 #include "asm_x86_64.h"
 #include "reg_alloc.h"
+#include "builtins.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -7,6 +8,23 @@
 static const char* phys_regs64[] = {"%rbx", "%rsi", "%rdi", "%r12", "%r13", "%r14"};
 static const char* phys_regs32[] = {"%ebx", "%esi", "%edi", "%r12d", "%r13d", "%r14d"};
 static const char* phys_regs8[]  = {"%bl", "%sil", "%dil", "%r12b", "%r13b", "%r14b"};
+
+typedef struct {
+    const char* str;
+    int id;
+} StringConst;
+
+static StringConst g_strings[1024];
+static int g_string_count = 0;
+
+static int get_string_id(const char* str) {
+    for (int i = 0; i < g_string_count; i++) {
+        if (strcmp(g_strings[i].str, str) == 0) return g_strings[i].id;
+    }
+    g_strings[g_string_count].str = str;
+    g_strings[g_string_count].id = g_string_count;
+    return g_string_count++;
+}
 
 // 辅助函数：将 SirValue 转换为 x86_64 汇编操作数格式
 static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int size) {
@@ -18,6 +36,13 @@ static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int s
         case SIR_VAL_CONST_INT:
             sprintf(buf, "$%lld", (long long)val->as.int_val);
             break;
+        case SIR_VAL_CONST_FLOAT: {
+            uint64_t bits;
+            double d = val->as.float_val;
+            memcpy(&bits, &d, 8);
+            sprintf(buf, "$%llu", (unsigned long long)bits);
+            break;
+        }
         case SIR_VAL_CONST_BOOL:
             sprintf(buf, "$%d", val->as.bool_val ? 1 : 0);
             break;
@@ -25,7 +50,7 @@ static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int s
             sprintf(buf, "%s(%%rip)", val->as.global_name);
             break;
         case SIR_VAL_CONST_STRING:
-            sprintf(buf, "$.Lstr"); // 仅用于调试输出
+            sprintf(buf, "$.Lstr%d", get_string_id(val->as.string_val));
             break;
         case SIR_VAL_VREG: {
             int color = reg_alloc_get_color(alloc, val->as.vreg);
@@ -55,6 +80,12 @@ static void generate_function(FILE* out, SirFunction* func) {
     // 1. 函数序言 (Prologue)
     fprintf(out, "    pushq %%rbp\n");
     fprintf(out, "    movq %%rsp, %%rbp\n");
+    
+    // 将前 4 个参数寄存器保存到 Shadow Space
+    fprintf(out, "    movq %%rcx, 16(%%rbp)\n");
+    fprintf(out, "    movq %%rdx, 24(%%rbp)\n");
+    fprintf(out, "    movq %%r8, 32(%%rbp)\n");
+    fprintf(out, "    movq %%r9, 40(%%rbp)\n");
 
     // 2. 扫描函数，找到最大的虚拟寄存器 ID 和 ALLOCA 空间
     uint32_t max_vreg = 0;
@@ -72,7 +103,9 @@ static void generate_function(FILE* out, SirFunction* func) {
                 }
             }
             if (inst->opcode == SIR_ALLOCA) {
-                local_stack_size += 8;
+                int alloc_size = (int)inst->operands[0]->as.int_val;
+                alloc_size = (alloc_size + 7) & ~7; // 保持 8 字节对齐
+                local_stack_size += alloc_size;
                 alloca_offsets[inst->dest->as.vreg] = -local_stack_size;
             }
         }
@@ -167,23 +200,31 @@ static void generate_function(FILE* out, SirFunction* func) {
                     fprintf(out, "    jmp .L%s_%u\n", inst->operands[2]->as.block->name, inst->operands[2]->as.block->id);
                     break;
 
-                case SIR_GET_PARAM:
-                    fprintf(out, "    # get_param %d\n", (int)inst->operands[0]->as.int_val);
+                case SIR_GET_PARAM: {
+                    int param_idx = (int)inst->operands[0]->as.int_val;
+                    int offset = 16 + param_idx * 8;
+                    fprintf(out, "    movq %d(%%rbp), %%rax\n", offset);
+                    fprintf(out, "    movq %%rax, %s\n", dest);
                     break;
+                }
 
-                case SIR_GEP:
+                case SIR_GEP: {
+                    int element_size = (int)inst->operands[2]->as.int_val;
                     fprintf(out, "    movq %s, %%rax\n", op0);
                     if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                         if (inst->operands[1]->as.int_val != 0) {
-                            fprintf(out, "    addq $%lld, %%rax\n", (long long)(inst->operands[1]->as.int_val * 8));
+                            fprintf(out, "    addq $%lld, %%rax\n", (long long)(inst->operands[1]->as.int_val * element_size));
                         }
                     } else {
                         fprintf(out, "    movq %s, %%rcx\n", op1);
-                        fprintf(out, "    shlq $3, %%rcx\n");
+                        if (element_size > 1) {
+                            fprintf(out, "    imulq $%d, %%rcx\n", element_size);
+                        }
                         fprintf(out, "    addq %%rcx, %%rax\n");
                     }
                     fprintf(out, "    movq %%rax, %s\n", dest);
                     break;
+                }
 
                 case SIR_DIV:
                     fprintf(out, "    movq %s, %%rax\n", op0);
@@ -257,7 +298,12 @@ static void generate_function(FILE* out, SirFunction* func) {
                         char arg_str[64];
                         get_operand_str(arg_str, inst->operands[1], &allocator, 8);
                         fprintf(out, "    movq %s, %%rcx\n", arg_str);
+                        
                         bool is_str = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_TEXTUS) || (inst->operands[1]->kind == SIR_VAL_CONST_STRING);
+                        bool is_bool = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_LOGICA) || (inst->operands[1]->kind == SIR_VAL_CONST_BOOL);
+                        bool is_ptr = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_VIA || inst->operands[1]->type->kind == TY_COHORS || inst->operands[1]->type->kind == TY_ACIES));
+                        bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
+                        
                         if (is_str) {
                             int str_len = 0;
                             if (inst->operands[1]->kind == SIR_VAL_CONST_STRING) {
@@ -265,6 +311,12 @@ static void generate_function(FILE* out, SirFunction* func) {
                             }
                             fprintf(out, "    movq $%d, %%rdx\n", str_len);
                             fprintf(out, "    call __print_str\n");
+                        } else if (is_bool) {
+                            fprintf(out, "    call __print_bool\n");
+                        } else if (is_ptr) {
+                            fprintf(out, "    call __print_hex\n");
+                        } else if (is_float) {
+                            fprintf(out, "    call __print_float\n");
                         } else {
                             fprintf(out, "    call __print_int\n");
                         }
@@ -316,6 +368,8 @@ static void generate_function(FILE* out, SirFunction* func) {
 void asm_x86_64_generate(FILE* out, SirModule* module) {
     if (!module) return;
 
+    g_string_count = 0;
+
     // 汇编文件头部
     fprintf(out, "    .text\n\n");
 
@@ -325,61 +379,21 @@ void asm_x86_64_generate(FILE* out, SirModule* module) {
     }
 
     // 追加内置汇编例程
-    fprintf(out, "__print_str:\n");
-    fprintf(out, "    subq $72, %%rsp\n");
-    fprintf(out, "    movq %%rcx, 48(%%rsp)\n");
-    fprintf(out, "    movq %%rdx, 56(%%rsp)\n");
-    fprintf(out, "    movl $-11, %%ecx\n");
-    fprintf(out, "    call GetStdHandle\n");
-    fprintf(out, "    movq %%rax, %%rcx\n");
-    fprintf(out, "    movq 48(%%rsp), %%rdx\n");
-    fprintf(out, "    movq 56(%%rsp), %%r8\n");
-    fprintf(out, "    leaq 40(%%rsp), %%r9\n");
-    fprintf(out, "    movq $0, 32(%%rsp)\n");
-    fprintf(out, "    call WriteFile\n");
-    fprintf(out, "    addq $72, %%rsp\n");
-    fprintf(out, "    ret\n\n");
+    asm_builtins_generate(out);
 
-    fprintf(out, "__print_int:\n");
-    fprintf(out, "    subq $104, %%rsp\n");
-    fprintf(out, "    movq %%rcx, %%r10\n");
-    fprintf(out, "    xorq %%r11, %%r11\n");
-    fprintf(out, "    testq %%rcx, %%rcx\n");
-    fprintf(out, "    jns .Lpos\n");
-    fprintf(out, "    negq %%r10\n");
-    fprintf(out, "    movq $1, %%r11\n");
-    fprintf(out, ".Lpos:\n");
-    fprintf(out, "    leaq 79(%%rsp), %%r8\n");
-    fprintf(out, "    movb $10, (%%r8)\n");
-    fprintf(out, "    decq %%r8\n");
-    fprintf(out, "    movq %%r10, %%rax\n");
-    fprintf(out, "    movq $10, %%r9\n");
-    fprintf(out, ".Lloop:\n");
-    fprintf(out, "    xorq %%rdx, %%rdx\n");
-    fprintf(out, "    divq %%r9\n");
-    fprintf(out, "    addb $'0', %%dl\n");
-    fprintf(out, "    movb %%dl, (%%r8)\n");
-    fprintf(out, "    decq %%r8\n");
-    fprintf(out, "    testq %%rax, %%rax\n");
-    fprintf(out, "    jnz .Lloop\n");
-    fprintf(out, "    testq %%r11, %%r11\n");
-    fprintf(out, "    jz .Ldone\n");
-    fprintf(out, "    movb $'-', (%%r8)\n");
-    fprintf(out, "    decq %%r8\n");
-    fprintf(out, ".Ldone:\n");
-    fprintf(out, "    incq %%r8\n");
-    fprintf(out, "    leaq 80(%%rsp), %%r10\n");
-    fprintf(out, "    subq %%r8, %%r10\n");
-    fprintf(out, "    movq %%r8, 88(%%rsp)\n");
-    fprintf(out, "    movq %%r10, 96(%%rsp)\n");
-    fprintf(out, "    movl $-11, %%ecx\n");
-    fprintf(out, "    call GetStdHandle\n");
-    fprintf(out, "    movq %%rax, %%rcx\n");
-    fprintf(out, "    movq 88(%%rsp), %%rdx\n");
-    fprintf(out, "    movq 96(%%rsp), %%r8\n");
-    fprintf(out, "    leaq 40(%%rsp), %%r9\n");
-    fprintf(out, "    movq $0, 32(%%rsp)\n");
-    fprintf(out, "    call WriteFile\n");
-    fprintf(out, "    addq $104, %%rsp\n");
-    fprintf(out, "    ret\n");
+    if (g_string_count > 0) {
+        fprintf(out, "    .section .rdata,\"a\"\n");
+        fprintf(out, ".Lstr_verum:\n    .byte 118, 101, 114, 117, 109, 0\n");
+        fprintf(out, ".Lstr_falsum:\n    .byte 102, 97, 108, 115, 117, 109, 0\n");
+        for (int i = 0; i < g_string_count; i++) {
+            fprintf(out, ".Lstr%d:\n", g_strings[i].id);
+            fprintf(out, "    .byte ");
+            const char* s = g_strings[i].str;
+            size_t len = strlen(s);
+            for (size_t j = 0; j <= len; j++) {
+                fprintf(out, "%d%s", (unsigned char)s[j], j == len ? "" : ", ");
+            }
+            fprintf(out, "\n");
+        }
+    }
 }

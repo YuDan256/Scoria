@@ -19,6 +19,25 @@ typedef struct {
     uint32_t entry_point_offset; // 入口函数 (princeps) 在 .text 段中的偏移
 } PeLinker;
 
+#define REG_RAX 0
+#define REG_RCX 1
+#define REG_RDX 2
+#define REG_RBX 3
+#define REG_RSP 4
+#define REG_RBP 5
+#define REG_RSI 6
+#define REG_RDI 7
+#define REG_R12 12
+#define REG_R13 13
+#define REG_R14 14
+
+void emit8(PeCodeBuffer* cb, uint8_t b);
+void emit32(PeCodeBuffer* cb, uint32_t v);
+void emit_rex(PeCodeBuffer* cb, int w, int r, int x, int b);
+void emit_modrm(PeCodeBuffer* cb, int mod, int reg, int rm);
+void emit_mov_reg_imm32(PeCodeBuffer* cb, int reg, int32_t imm);
+void emit_mov_reg_imm64(PeCodeBuffer* cb, int reg, uint64_t imm);
+
 void pe_linker_init(PeLinker* linker);
 void pe_linker_free(PeLinker* linker);
 

@@ -7,6 +7,37 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr);
 static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr);
 static void gen_statement(IrBuilder* builder, AstNode* stmt);
 
+// 计算类型在内存中的实际字节大小 (支持 C ABI 对齐与 densa 紧凑布局)
+static int get_type_size(ScoriaType* type) {
+    if (!type) return 0;
+    switch (type->kind) {
+        case TY_I8: case TY_P8: case TY_LITTERA: case TY_LOGICA: return 1;
+        case TY_I16: case TY_P16: return 2;
+        case TY_I32: case TY_P32: case TY_F32: return 4;
+        case TY_I64: case TY_P64: case TY_F64: case TY_VIA: return 8;
+        case TY_COHORS: return 16;
+        case TY_ACIES: return type->as.array.length * get_type_size(type->as.array.inner);
+        case TY_FORMA: {
+            int size = 0;
+            int max_align = 1;
+            for (int i = 0; i < type->as.struct_type.field_count; i++) {
+                int field_size = get_type_size(type->as.struct_type.fields[i].type);
+                int field_align = type->as.struct_type.is_packed ? 1 : (field_size > 8 ? 8 : field_size);
+                if (field_align > max_align) max_align = field_align;
+                if (!type->as.struct_type.is_packed) {
+                    size = (size + field_align - 1) & ~(field_align - 1);
+                }
+                size += field_size;
+            }
+            if (!type->as.struct_type.is_packed) {
+                size = (size + max_align - 1) & ~(max_align - 1);
+            }
+            return size;
+        }
+        default: return 8;
+    }
+}
+
 // 获取左值 (L-value) 的内存地址指针
 static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
     if (!expr) return NULL;
@@ -34,7 +65,8 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
                 ptr = gen_expression(builder, expr->as.index_expr.target);
             }
             SirValue* index = gen_expression(builder, expr->as.index_expr.index);
-            return ir_build_gep(builder, ptr, index, type_get_via(expr->expr_type));
+            int element_size = get_type_size(expr->expr_type);
+            return ir_build_gep(builder, ptr, index, element_size, type_get_via(expr->expr_type));
         }
         case AST_MEMBER_EXPR: {
             SirValue* obj_ptr = NULL;
@@ -46,20 +78,27 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
                 obj_ptr = gen_lvalue(builder, expr->as.member_expr.object);
             }
             
-            int field_idx = 0;
+            int byte_offset = 0;
             ScoriaType* obj_type = expr->as.member_expr.object->expr_type;
             if (obj_type->kind == TY_VIA) obj_type = obj_type->as.inner;
             
             for (int i = 0; i < obj_type->as.struct_type.field_count; i++) {
                 StructField field = obj_type->as.struct_type.fields[i];
+                int field_size = get_type_size(field.type);
+                int field_align = obj_type->as.struct_type.is_packed ? 1 : (field_size > 8 ? 8 : field_size);
+                
+                if (!obj_type->as.struct_type.is_packed) {
+                    byte_offset = (byte_offset + field_align - 1) & ~(field_align - 1);
+                }
+                
                 if (field.name.length == expr->as.member_expr.property.length &&
                     memcmp(field.name.start, expr->as.member_expr.property.start, field.name.length) == 0) {
-                    field_idx = i;
                     break;
                 }
+                byte_offset += field_size;
             }
-            SirValue* index_val = ir_const_int(builder, type_get_basic(TY_I32), field_idx);
-            return ir_build_gep(builder, obj_ptr, index_val, type_get_via(expr->expr_type));
+            SirValue* index_val = ir_const_int(builder, type_get_basic(TY_I32), byte_offset);
+            return ir_build_gep(builder, obj_ptr, index_val, 1, type_get_via(expr->expr_type));
         }
         default: break;
     }
@@ -168,9 +207,9 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             break;
         }
         case AST_CALL_EXPR: {
-            // 简化处理：假设 callee 是一个全局函数名
             SirValue* callee = NULL;
-            if (expr->as.call.callee->kind == AST_IDENT_EXPR) {
+            if (expr->as.call.callee->kind == AST_IDENT_EXPR && (!expr->as.call.callee->resolved_symbol || !expr->as.call.callee->resolved_symbol->ir_val)) {
+                // 全局函数调用
                 Symbol* sym = expr->as.call.callee->resolved_symbol;
                 if (sym) {
                     callee = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
@@ -181,6 +220,9 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                     name[sym->name.length] = '\0';
                     callee->as.global_name = name;
                 }
+            } else {
+                // 函数指针调用 (通过表达式求值获取指针)
+                callee = gen_expression(builder, expr->as.call.callee);
             }
             
             int arg_count = expr->as.call.arg_count;
@@ -206,7 +248,10 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 SirValue* zero = ir_const_int(builder, offset->type, 0);
                 offset = ir_build_binary(builder, SIR_SUB, zero, offset);
             }
-            return ir_build_gep(builder, ptr, offset, expr->expr_type);
+            ScoriaType* element_type = expr->expr_type;
+            if (element_type->kind == TY_VIA) element_type = element_type->as.inner;
+            int element_size = get_type_size(element_type);
+            return ir_build_gep(builder, ptr, offset, element_size, expr->expr_type);
         }
         case AST_CREA_EXPR: {
             SirValue* callee = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
@@ -214,7 +259,13 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             callee->type = type_get_basic(TY_ACTIO);
             callee->as.global_name = "crea";
             
-            int element_size = 8; // 简化：假设所有元素大小为 8 字节
+            // 动态计算分配类型的实际大小
+            ScoriaType* allocated_type = expr->expr_type;
+            if (allocated_type->kind == TY_VIA) {
+                allocated_type = allocated_type->as.inner;
+            }
+            int element_size = get_type_size(allocated_type);
+            
             SirValue* count_val;
             if (expr->as.crea_expr.count) {
                 count_val = gen_expression(builder, expr->as.crea_expr.count);
@@ -248,22 +299,22 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             return NULL;
         }
         case AST_SCRIBE_EXPR: {
-            // 将 scribe 转换为对全局内置函数 "scribe" 的调用
+            // 将 scribe(a, b, c) 拆分为多个独立的单参数 scribe 调用
             SirValue* callee = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
             callee->kind = SIR_VAL_GLOBAL;
             callee->type = type_get_basic(TY_ACTIO);
             callee->as.global_name = "scribe";
             
             int arg_count = expr->as.scribe_expr.arg_count;
-            SirValue** args = NULL;
-            if (arg_count > 0) {
-                args = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * arg_count);
-                for (int i = 0; i < arg_count; i++) {
-                    args[i] = gen_expression(builder, expr->as.scribe_expr.args[i]);
-                }
-            }
+            if (arg_count == 0) return NULL;
             
-            return ir_build_call(builder, callee, args, arg_count, type_get_basic(TY_NIHIL));
+            SirValue* last_val = NULL;
+            for (int i = 0; i < arg_count; i++) {
+                SirValue** args = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * 1);
+                args[0] = gen_expression(builder, expr->as.scribe_expr.args[i]);
+                last_val = ir_build_call(builder, callee, args, 1, type_get_basic(TY_NIHIL));
+            }
+            return last_val;
         }
         default: break;
     }
@@ -286,7 +337,8 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
             Symbol* sym = stmt->resolved_symbol;
             if (sym) {
                 // 1. 在当前函数的栈帧上分配内存 (Alloca)
-                sym->ir_val = ir_build_alloca(builder, sym->type);
+                int type_size = get_type_size(sym->type);
+                sym->ir_val = ir_build_alloca(builder, sym->type, type_size);
                 
                 // 2. 如果有初始值，生成 Store 指令写入栈内存
                 if (stmt->as.var_decl.initializer) {
@@ -435,7 +487,8 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
                 AstNode* param_node = decl->as.func_decl.params[j];
                 Symbol* param_sym = param_node->resolved_symbol;
                 if (param_sym) {
-                    param_sym->ir_val = ir_build_alloca(builder, param_sym->type);
+                    int param_size = get_type_size(param_sym->type);
+                    param_sym->ir_val = ir_build_alloca(builder, param_sym->type, param_size);
                     SirValue* arg_val = ir_get_param(builder, j, param_sym->type);
                     ir_build_store(builder, arg_val, param_sym->ir_val);
                 }

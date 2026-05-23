@@ -43,10 +43,10 @@ SirValue* ir_const_string(IrBuilder* builder, const char* val);
 // ---------------------------------------------------------
 SirValue* ir_build_binary(IrBuilder* builder, SirOpcode op, SirValue* left, SirValue* right);
 SirValue* ir_build_unary(IrBuilder* builder, SirOpcode op, SirValue* operand);
-SirValue* ir_build_alloca(IrBuilder* builder, ScoriaType* type);
+SirValue* ir_build_alloca(IrBuilder* builder, ScoriaType* type, int size);
 SirValue* ir_build_load(IrBuilder* builder, SirValue* ptr);
 void ir_build_store(IrBuilder* builder, SirValue* val, SirValue* ptr);
-SirValue* ir_build_gep(IrBuilder* builder, SirValue* ptr, SirValue* index, ScoriaType* res_type);
+SirValue* ir_build_gep(IrBuilder* builder, SirValue* ptr, SirValue* index, int element_size, ScoriaType* res_type);
 SirValue* ir_build_cast(IrBuilder* builder, SirValue* val, ScoriaType* target_type);
 SirValue* ir_build_call(IrBuilder* builder, SirValue* callee, SirValue** args, int arg_count, ScoriaType* ret_type);
 void ir_build_jmp(IrBuilder* builder, SirBlock* target);

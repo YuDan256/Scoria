@@ -1,5 +1,6 @@
 #include "pe_linker.h"
 #include "reg_alloc.h"
+#include "builtins.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -98,7 +99,12 @@ static void buf_free(PeCodeBuffer* cb) {
 static void buf_append(PeCodeBuffer* cb, uint8_t byte) {
     if (cb->size >= cb->capacity) {
         cb->capacity *= 2;
-        cb->buffer = (uint8_t*)realloc(cb->buffer, cb->capacity);
+        uint8_t* new_buf = (uint8_t*)realloc(cb->buffer, cb->capacity);
+        if (!new_buf) {
+            fprintf(stderr, "Fatal error: Out of memory in pe_linker\n");
+            exit(1);
+        }
+        cb->buffer = new_buf;
     }
     cb->buffer[cb->size++] = byte;
 }
@@ -121,30 +127,19 @@ static uint32_t align_up(uint32_t val, uint32_t alignment) {
 // =========================================================
 // 工业级 x86_64 机器码发射器 (Machine Code Emitter)
 // =========================================================
-#define REG_RAX 0
-#define REG_RCX 1
-#define REG_RDX 2
-#define REG_RBX 3
-#define REG_RSP 4
-#define REG_RBP 5
-#define REG_RSI 6
-#define REG_RDI 7
-#define REG_R12 12
-#define REG_R13 13
-#define REG_R14 14
 
-static void emit8(PeCodeBuffer* cb, uint8_t b) { buf_append(cb, b); }
-static void emit32(PeCodeBuffer* cb, uint32_t v) {
+void emit8(PeCodeBuffer* cb, uint8_t b) { buf_append(cb, b); }
+void emit32(PeCodeBuffer* cb, uint32_t v) {
     emit8(cb, (uint8_t)(v & 0xFF)); emit8(cb, (uint8_t)((v >> 8) & 0xFF));
     emit8(cb, (uint8_t)((v >> 16) & 0xFF)); emit8(cb, (uint8_t)((v >> 24) & 0xFF));
 }
 
-static void emit_rex(PeCodeBuffer* cb, int w, int r, int x, int b) {
+void emit_rex(PeCodeBuffer* cb, int w, int r, int x, int b) {
     uint8_t rex = 0x40 | (w ? 8 : 0) | (r ? 4 : 0) | (x ? 2 : 0) | (b ? 1 : 0);
     emit8(cb, rex);
 }
 
-static void emit_modrm(PeCodeBuffer* cb, int mod, int reg, int rm) {
+void emit_modrm(PeCodeBuffer* cb, int mod, int reg, int rm) {
     emit8(cb, (uint8_t)(((mod & 3) << 6) | ((reg & 7) << 3) | (rm & 7)));
 }
 
@@ -170,11 +165,18 @@ static void emit_mem(PeCodeBuffer* cb, int reg, int base, int32_t offset) {
     }
 }
 
-static void emit_mov_reg_imm32(PeCodeBuffer* cb, int reg, int32_t imm) {
+void emit_mov_reg_imm32(PeCodeBuffer* cb, int reg, int32_t imm) {
     emit_rex(cb, 1, 0, 0, reg > 7);
     emit8(cb, 0xC7);
     emit_modrm(cb, 3, 0, reg & 7);
     emit32(cb, (uint32_t)imm);
+}
+
+void emit_mov_reg_imm64(PeCodeBuffer* cb, int reg, uint64_t imm) {
+    emit_rex(cb, 1, 0, 0, reg > 7);
+    emit8(cb, 0xB8 | (reg & 7));
+    emit32(cb, (uint32_t)(imm & 0xFFFFFFFF));
+    emit32(cb, (uint32_t)(imm >> 32));
 }
 
 static void emit_mov_reg_reg(PeCodeBuffer* cb, int dst, int src) {
@@ -216,6 +218,12 @@ static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, in
     if (!val) return scratch;
     if (val->kind == SIR_VAL_CONST_INT) {
         emit_mov_reg_imm32(cb, scratch, (int32_t)val->as.int_val);
+        return scratch;
+    } else if (val->kind == SIR_VAL_CONST_FLOAT) {
+        uint64_t bits;
+        double d = val->as.float_val;
+        memcpy(&bits, &d, 8);
+        emit_mov_reg_imm64(cb, scratch, bits);
         return scratch;
     } else if (val->kind == SIR_VAL_CONST_BOOL) {
         emit_mov_reg_imm32(cb, scratch, val->as.bool_val ? 1 : 0);
@@ -273,41 +281,42 @@ int g_str_reloc_count = 0;
 
 uint32_t g_print_str_relocs[1024];
 int g_print_str_reloc_count = 0;
-uint32_t g_print_str_offset = 0;
 
 uint32_t g_print_int_relocs[1024];
 int g_print_int_reloc_count = 0;
-uint32_t g_print_int_offset = 0;
 
-uint32_t g_call_getstdhandle_reloc = 0;
-uint32_t g_call_writeconsolea_reloc = 0;
-uint32_t g_call_getstdhandle_reloc2 = 0;
-uint32_t g_call_writeconsolea_reloc2 = 0;
-uint32_t g_call_exitprocess_reloc = 0;
+uint32_t g_print_hex_relocs[1024];
+int g_print_hex_reloc_count = 0;
+
+uint32_t g_print_float_relocs[1024];
+int g_print_float_reloc_count = 0;
+
+uint32_t g_print_bool_relocs[1024];
+int g_print_bool_reloc_count = 0;
+
+uint32_t g_verum_rdata_off = 0;
+uint32_t g_falsum_rdata_off = 0;
+uint32_t g_dot_rdata_off = 0;
+uint32_t g_minus_rdata_off = 0;
+uint32_t g_float_10_rdata_off = 0;
+
 uint32_t g_princeps_offset = 0;
 
 uint32_t g_crea_relocs[1024];
 int g_crea_reloc_count = 0;
-uint32_t g_crea_offset = 0;
 
 uint32_t g_neca_relocs[1024];
 int g_neca_reloc_count = 0;
-uint32_t g_neca_offset = 0;
-
-uint32_t g_call_getprocessheap_reloc1 = 0;
-uint32_t g_call_getprocessheap_reloc2 = 0;
-uint32_t g_call_heapalloc_reloc = 0;
-uint32_t g_call_heapfree_reloc = 0;
 
 static void generate_machine_code(PeLinker* linker, SirModule* module) {
-    uint32_t block_offsets[1024] = {0}; // 记录基本块的机器码偏移量
+    uint32_t* block_offsets = (uint32_t*)calloc(1024, sizeof(uint32_t)); // 记录基本块的机器码偏移量
     
-    const char* func_names[256];
-    uint32_t func_offsets[256];
+    const char** func_names = (const char**)malloc(256 * sizeof(const char*));
+    uint32_t* func_offsets = (uint32_t*)malloc(256 * sizeof(uint32_t));
     int func_count = 0;
 
-    const char* strings[1024];
-    uint32_t string_offsets[1024];
+    const char** strings = (const char**)malloc(1024 * sizeof(const char*));
+    uint32_t* string_offsets = (uint32_t*)malloc(1024 * sizeof(uint32_t));
     int string_count = 0;
     g_str_reloc_count = 0;
 
@@ -336,11 +345,34 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
         }
     }
 
+    // 强制添加 verum 和 falsum 到 rdata
+    g_verum_rdata_off = (uint32_t)linker->rdata_section.size;
+    const char* str_verum = "verum";
+    for (size_t k = 0; k <= strlen(str_verum); k++) buf_append(&linker->rdata_section, (uint8_t)str_verum[k]);
+    
+    g_falsum_rdata_off = (uint32_t)linker->rdata_section.size;
+    const char* str_falsum = "falsum";
+    for (size_t k = 0; k <= strlen(str_falsum); k++) buf_append(&linker->rdata_section, (uint8_t)str_falsum[k]);
+
+    g_dot_rdata_off = (uint32_t)linker->rdata_section.size;
+    buf_append(&linker->rdata_section, '.'); buf_append(&linker->rdata_section, 0);
+
+    g_minus_rdata_off = (uint32_t)linker->rdata_section.size;
+    buf_append(&linker->rdata_section, '-'); buf_append(&linker->rdata_section, 0);
+
+    while (linker->rdata_section.size % 8 != 0) buf_append(&linker->rdata_section, 0);
+    g_float_10_rdata_off = (uint32_t)linker->rdata_section.size;
+    uint64_t float_10_bits = 4621819117588971520ULL; // 10.0
+    for (int i = 0; i < 8; i++) buf_append(&linker->rdata_section, (uint8_t)(float_10_bits >> (i * 8)));
+
     // 两遍汇编 (Two-Pass Assembly)：第一遍计算跳转偏移，第二遍真正写入
     for (int pass = 0; pass < 2; pass++) {
         linker->text_section.size = 0;
         g_print_str_reloc_count = 0;
         g_print_int_reloc_count = 0;
+        g_print_hex_reloc_count = 0;
+        g_print_float_reloc_count = 0;
+        g_print_bool_reloc_count = 0;
         g_str_reloc_count = 0;
         g_crea_reloc_count = 0;
         g_neca_reloc_count = 0;
@@ -371,7 +403,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         }
                     }
                     if (inst->opcode == SIR_ALLOCA) {
-                        local_stack_size += 8;
+                        int alloc_size = (int)inst->operands[0]->as.int_val;
+                        alloc_size = (alloc_size + 7) & ~7; // 保持 8 字节对齐
+                        local_stack_size += alloc_size;
                         alloca_offsets[inst->dest->as.vreg] = -local_stack_size;
                     }
                 }
@@ -394,6 +428,16 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                 emit_modrm(&linker->text_section, 3, 5, REG_RSP);
                 emit32(&linker->text_section, (uint32_t)stack_size);
             }
+            
+            // 将前 4 个参数寄存器保存到 Shadow Space
+            // mov [rbp+16], rcx
+            emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit_mem(&linker->text_section, REG_RCX, REG_RBP, 16);
+            // mov [rbp+24], rdx
+            emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit_mem(&linker->text_section, REG_RDX, REG_RBP, 24);
+            // mov [rbp+32], r8
+            emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x89); emit_mem(&linker->text_section, 0, REG_RBP, 32); // r8 is reg 0 with REX.R
+            // mov [rbp+40], r9
+            emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x89); emit_mem(&linker->text_section, 1, REG_RBP, 40); // r9 is reg 1 with REX.R
 
             for (SirBlock* block = func->first_block; block; block = block->next) {
                 if (block->id < 1024) block_offsets[block->id] = (uint32_t)linker->text_section.size;
@@ -402,20 +446,11 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                     switch (inst->opcode) {
                         case SIR_GET_PARAM: {
                             int param_idx = (int)inst->operands[0]->as.int_val;
-                            int dst = REG_RAX;
-                            if (param_idx == 0) dst = REG_RCX;
-                            else if (param_idx == 1) dst = REG_RDX;
-                            else if (param_idx == 2) dst = 8; // R8
-                            else if (param_idx == 3) dst = 9; // R9
-                            else {
-                                // 从栈中读取参数: [rbp + 48 + (param_idx - 4) * 8]
-                                // 48 = 16 (rbp+ret) + 32 (shadow space)
-                                int offset = 48 + (param_idx - 4) * 8;
-                                emit_rex(&linker->text_section, 1, 0, 0, 0);
-                                emit8(&linker->text_section, 0x8B); // mov rax, [rbp + offset]
-                                emit_mem(&linker->text_section, REG_RAX, REG_RBP, offset);
-                            }
-                            store_result(&linker->text_section, &allocator, inst->dest, dst);
+                            int offset = 16 + param_idx * 8; // 前4个在 shadow space (16~40)，后面的紧跟其后 (48+)
+                            emit_rex(&linker->text_section, 1, 0, 0, 0);
+                            emit8(&linker->text_section, 0x8B); // mov rax, [rbp + offset]
+                            emit_mem(&linker->text_section, REG_RAX, REG_RBP, offset);
+                            store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                             break;
                         }
                         case SIR_ALLOCA: {
@@ -520,17 +555,23 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             int ptr = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
                             if (ptr != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, ptr);
                             
+                            int element_size = (int)inst->operands[2]->as.int_val;
+
                             if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
-                                int32_t offset = (int32_t)(inst->operands[1]->as.int_val * 8);
+                                int32_t offset = (int32_t)(inst->operands[1]->as.int_val * element_size);
                                 if (offset != 0) emit_alu_reg_imm32(&linker->text_section, 0, REG_RAX, offset);
                             } else {
                                 int idx = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
                                 if (idx != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, idx);
-                                // shl rcx, 3 (乘以 8 字节对齐)
-                                emit_rex(&linker->text_section, 1, 0, 0, 0);
-                                emit8(&linker->text_section, 0xC1);
-                                emit_modrm(&linker->text_section, 3, 4, REG_RCX);
-                                emit8(&linker->text_section, 3);
+                                
+                                if (element_size > 1) {
+                                    // imul rcx, element_size
+                                    emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                    emit8(&linker->text_section, 0x69);
+                                    emit_modrm(&linker->text_section, 3, REG_RCX, REG_RCX);
+                                    emit32(&linker->text_section, element_size);
+                                }
+                                
                                 // add rax, rcx
                                 emit_alu_reg_reg(&linker->text_section, 0x01, REG_RAX, REG_RCX);
                             }
@@ -579,6 +620,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_CALL: {
                             if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "scribe") == 0) {
                                 bool is_str = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_TEXTUS) || (inst->operands[1]->kind == SIR_VAL_CONST_STRING);
+                                bool is_bool = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_LOGICA) || (inst->operands[1]->kind == SIR_VAL_CONST_BOOL);
+                                bool is_ptr = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_VIA || inst->operands[1]->type->kind == TY_COHORS || inst->operands[1]->type->kind == TY_ACIES));
+                                bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
                                 
                                 int arg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, pass == 1 ? g_str_relocs : NULL, g_str_rdata_offs, &g_str_reloc_count, strings, string_offsets, string_count);
                                 if (arg != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, arg);
@@ -593,6 +637,18 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                     emit8(&linker->text_section, 0xE8); // call rel32
                                     if (pass == 1) g_print_str_relocs[g_print_str_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0); // 占位符
+                                } else if (is_bool) {
+                                    emit8(&linker->text_section, 0xE8); // call rel32
+                                    if (pass == 1) g_print_bool_relocs[g_print_bool_reloc_count++] = (uint32_t)linker->text_section.size;
+                                    emit32(&linker->text_section, 0);
+                                } else if (is_ptr) {
+                                    emit8(&linker->text_section, 0xE8); // call rel32
+                                    if (pass == 1) g_print_hex_relocs[g_print_hex_reloc_count++] = (uint32_t)linker->text_section.size;
+                                    emit32(&linker->text_section, 0);
+                                } else if (is_float) {
+                                    emit8(&linker->text_section, 0xE8); // call rel32
+                                    if (pass == 1) g_print_float_relocs[g_print_float_reloc_count++] = (uint32_t)linker->text_section.size;
+                                    emit32(&linker->text_section, 0);
                                 } else {
                                     emit8(&linker->text_section, 0xE8); // call rel32
                                     if (pass == 1) g_print_int_relocs[g_print_int_reloc_count++] = (uint32_t)linker->text_section.size;
@@ -685,104 +741,15 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             reg_alloc_free(&allocator);
         }
 
-        // 追加内置汇编例程: __print_str
-        g_print_str_offset = (uint32_t)linker->text_section.size;
-        // sub rsp, 72
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x48);
-        // mov [rsp+48], rcx (save string address)
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30);
-        // mov [rsp+56], rdx (save string length)
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0x54); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x38);
-        // mov ecx, -11 (STD_OUTPUT_HANDLE)
-        emit8(&linker->text_section, 0xB9); emit32(&linker->text_section, (uint32_t)-11);
-        // call [rip + IAT_GetStdHandle]
-        emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15);
-        g_call_getstdhandle_reloc = (uint32_t)linker->text_section.size;
-        emit32(&linker->text_section, 0);
-        // mov rcx, rax (hFile)
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xC1);
-        // mov rdx, [rsp+48] (lpBuffer)
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x8B); emit8(&linker->text_section, 0x54); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30);
-        // mov r8, [rsp+56] (nNumberOfBytesToWrite)
-        emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit8(&linker->text_section, 0x44); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x38);
-        // lea r9, [rsp+40] (lpNumberOfBytesWritten)
-        emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8D); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x28);
-        // mov qword ptr [rsp+32], 0 (lpOverlapped)
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0xC7); emit8(&linker->text_section, 0x44); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x20); emit32(&linker->text_section, 0);
-        // call [rip + IAT_WriteFile]
-        emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15);
-        g_call_writeconsolea_reloc = (uint32_t)linker->text_section.size;
-        emit32(&linker->text_section, 0);
-        // add rsp, 72
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xC4); emit8(&linker->text_section, 0x48);
-        // ret
-        emit8(&linker->text_section, 0xC3);
-
-        // 追加内置汇编例程: __print_int
-        g_print_int_offset = (uint32_t)linker->text_section.size;
-        uint8_t print_int_code[] = {
-            0x48, 0x83, 0xEC, 0x68, 0x49, 0x89, 0xCA, 0x4D, 0x31, 0xDB, 0x48, 0x85, 0xC9, 0x79, 0x0A, 0x49,
-            0xF7, 0xDA, 0x49, 0xC7, 0xC3, 0x01, 0x00, 0x00, 0x00, 0x4C, 0x8D, 0x44, 0x24, 0x4F, 0x41, 0xC6,
-            0x00, 0x0A, 0x49, 0xFF, 0xC8, 0x4C, 0x89, 0xD0, 0x49, 0xC7, 0xC1, 0x0A, 0x00, 0x00, 0x00, 0x48,
-            0x31, 0xD2, 0x49, 0xF7, 0xF1, 0x80, 0xC2, 0x30, 0x41, 0x88, 0x10, 0x49, 0xFF, 0xC8, 0x48, 0x85,
-            0xC0, 0x75, 0xEC, 0x4D, 0x85, 0xDB, 0x74, 0x07, 0x41, 0xC6, 0x00, 0x2D, 0x49, 0xFF, 0xC8, 0x49,
-            0xFF, 0xC0, 0x4C, 0x8D, 0x54, 0x24, 0x50, 0x4D, 0x29, 0xC2, 0x4C, 0x89, 0x44, 0x24, 0x58, 0x4C,
-            0x89, 0x54, 0x24, 0x60, 0xB9, 0xF5, 0xFF, 0xFF, 0xFF, 0xFF, 0x15, 0x00, 0x00, 0x00, 0x00, 0x48,
-            0x89, 0xC1, 0x48, 0x8B, 0x54, 0x24, 0x58, 0x4C, 0x8B, 0x44, 0x24, 0x60, 0x4C, 0x8D, 0x4C, 0x24,
-            0x28, 0x48, 0xC7, 0x44, 0x24, 0x20, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x15, 0x00, 0x00, 0x00, 0x00,
-            0x48, 0x83, 0xC4, 0x68, 0xC3
-        };
-        for (size_t i = 0; i < sizeof(print_int_code); i++) buf_append(&linker->text_section, print_int_code[i]);
-        g_call_getstdhandle_reloc2 = g_print_int_offset + 107;
-        g_call_writeconsolea_reloc2 = g_print_int_offset + 140;
-
-        // 追加内置汇编例程: __crea
-        g_crea_offset = (uint32_t)linker->text_section.size;
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x28); // sub rsp, 40
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30); // mov [rsp+48], rcx
-        emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15); // call GetProcessHeap
-        g_call_getprocessheap_reloc1 = (uint32_t)linker->text_section.size;
-        emit32(&linker->text_section, 0);
-        emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit8(&linker->text_section, 0x44); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30); // mov r8, [rsp+48]
-        emit_mov_reg_imm32(&linker->text_section, REG_RDX, 8); // mov rdx, 8 (HEAP_ZERO_MEMORY)
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xC1); // mov rcx, rax
-        emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15); // call HeapAlloc
-        g_call_heapalloc_reloc = (uint32_t)linker->text_section.size;
-        emit32(&linker->text_section, 0);
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xC4); emit8(&linker->text_section, 0x28); // add rsp, 40
-        emit8(&linker->text_section, 0xC3); // ret
-
-        // 追加内置汇编例程: __neca
-        g_neca_offset = (uint32_t)linker->text_section.size;
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x28); // sub rsp, 40
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30); // mov [rsp+48], rcx
-        emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15); // call GetProcessHeap
-        g_call_getprocessheap_reloc2 = (uint32_t)linker->text_section.size;
-        emit32(&linker->text_section, 0);
-        emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit8(&linker->text_section, 0x44); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30); // mov r8, [rsp+48]
-        emit_mov_reg_imm32(&linker->text_section, REG_RDX, 0); // mov rdx, 0
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xC1); // mov rcx, rax
-        emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15); // call HeapFree
-        g_call_heapfree_reloc = (uint32_t)linker->text_section.size;
-        emit32(&linker->text_section, 0);
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xC4); emit8(&linker->text_section, 0x28); // add rsp, 40
-        emit8(&linker->text_section, 0xC3); // ret
-
-        // 追加内置汇编例程: _start (真正的入口点)
-        linker->entry_point_offset = (uint32_t)linker->text_section.size;
-        // sub rsp, 40 (32 bytes shadow space + 8 bytes alignment)
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x28);
-        // call princeps
-        emit8(&linker->text_section, 0xE8);
-        int32_t rel_princeps = (int32_t)(g_princeps_offset - (linker->text_section.size + 4));
-        emit32(&linker->text_section, (uint32_t)rel_princeps);
-        // mov rcx, rax (exit code)
-        emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xC1);
-        // call [rip + IAT_ExitProcess]
-        emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15);
-        g_call_exitprocess_reloc = (uint32_t)linker->text_section.size;
-        emit32(&linker->text_section, 0);
+        // 追加内置汇编例程
+        pe_builtins_generate(linker, g_princeps_offset);
     }
+
+    free(block_offsets);
+    free(func_names);
+    free(func_offsets);
+    free(strings);
+    free(string_offsets);
 }
 
 bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const char* output_filename) {
@@ -986,6 +953,64 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
         int32_t rel32 = (int32_t)(g_print_int_offset - (text_off + 4));
         memcpy(linker->text_section.buffer + text_off, &rel32, 4);
     }
+
+    // 回填 __print_float 调用重定位
+    for (int i = 0; i < g_print_float_reloc_count; i++) {
+        uint32_t text_off = g_print_float_relocs[i];
+        int32_t rel32 = (int32_t)(g_print_float_offset - (text_off + 4));
+        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+    }
+
+    // 回填 __print_hex 调用重定位
+    for (int i = 0; i < g_print_hex_reloc_count; i++) {
+        uint32_t text_off = g_print_hex_relocs[i];
+        int32_t rel32 = (int32_t)(g_print_hex_offset - (text_off + 4));
+        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+    }
+
+    // 回填 __print_float 内部的调用和数据引用
+    int32_t rel_float_minus = (int32_t)((rdata_sec.VirtualAddress + g_minus_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 23 + 4));
+    memcpy(linker->text_section.buffer + g_print_float_offset + 23, &rel_float_minus, 4);
+
+    int32_t rel_float_print_str1 = (int32_t)(g_print_str_offset - (g_print_float_offset + 35 + 4));
+    memcpy(linker->text_section.buffer + g_print_float_offset + 35, &rel_float_print_str1, 4);
+
+    int32_t rel_float_print_int1 = (int32_t)(g_print_int_offset - (g_print_float_offset + 67 + 4));
+    memcpy(linker->text_section.buffer + g_print_float_offset + 67, &rel_float_print_int1, 4);
+    
+    int32_t rel_float_dot = (int32_t)((rdata_sec.VirtualAddress + g_dot_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 74 + 4));
+    memcpy(linker->text_section.buffer + g_print_float_offset + 74, &rel_float_dot, 4);
+    
+    int32_t rel_float_print_str2 = (int32_t)(g_print_str_offset - (g_print_float_offset + 86 + 4));
+    memcpy(linker->text_section.buffer + g_print_float_offset + 86, &rel_float_print_str2, 4);
+    
+    int32_t rel_float_10 = (int32_t)((rdata_sec.VirtualAddress + g_float_10_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 115 + 4));
+    memcpy(linker->text_section.buffer + g_print_float_offset + 115, &rel_float_10, 4);
+    
+    int32_t rel_float_print_int2 = (int32_t)(g_print_int_offset - (g_print_float_offset + 138 + 4));
+    memcpy(linker->text_section.buffer + g_print_float_offset + 138, &rel_float_print_int2, 4);
+
+    // 回填 __print_bool 调用重定位
+    for (int i = 0; i < g_print_bool_reloc_count; i++) {
+        uint32_t text_off = g_print_bool_relocs[i];
+        int32_t rel32 = (int32_t)(g_print_bool_offset - (text_off + 4));
+        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+    }
+
+    // 回填 __print_hex 内部的 __print_str 调用
+    int32_t rel_hex_print_str = (int32_t)(g_print_str_offset - (g_print_hex_offset + 74 + 4));
+    memcpy(linker->text_section.buffer + g_print_hex_offset + 74, &rel_hex_print_str, 4);
+
+    // 回填 __print_bool 内部的 __print_str 调用
+    int32_t rel_bool_print_str = (int32_t)(g_print_str_offset - (g_print_bool_offset + 32 + 4));
+    memcpy(linker->text_section.buffer + g_print_bool_offset + 32, &rel_bool_print_str, 4);
+
+    // 回填 __print_bool 内部的 lea rcx, [rip + verum/falsum]
+    int32_t rel_verum = (int32_t)((rdata_sec.VirtualAddress + g_verum_rdata_off) - (text_sec.VirtualAddress + g_print_bool_offset + 8 + 4));
+    memcpy(linker->text_section.buffer + g_print_bool_offset + 8, &rel_verum, 4);
+    
+    int32_t rel_falsum = (int32_t)((rdata_sec.VirtualAddress + g_falsum_rdata_off) - (text_sec.VirtualAddress + g_print_bool_offset + 22 + 4));
+    memcpy(linker->text_section.buffer + g_print_bool_offset + 22, &rel_falsum, 4);
 
     // 回填 __crea 调用重定位
     for (int i = 0; i < g_crea_reloc_count; i++) {

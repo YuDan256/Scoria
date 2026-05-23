@@ -167,8 +167,9 @@ SirValue* ir_build_unary(IrBuilder* builder, SirOpcode op, SirValue* operand) {
     return inst->dest;
 }
 
-SirValue* ir_build_alloca(IrBuilder* builder, ScoriaType* type) {
-    SirInst* inst = create_inst(builder, SIR_ALLOCA, 0);
+SirValue* ir_build_alloca(IrBuilder* builder, ScoriaType* type, int size) {
+    SirInst* inst = create_inst(builder, SIR_ALLOCA, 1);
+    inst->operands[0] = ir_const_int(builder, type_get_basic(TY_I32), size);
     inst->dest = create_vreg(builder, type_get_via(type)); // alloca 总是返回 via T
     return inst->dest;
 }
@@ -194,10 +195,11 @@ void ir_build_store(IrBuilder* builder, SirValue* val, SirValue* ptr) {
     // store 没有返回值 (dest 为 NULL)
 }
 
-SirValue* ir_build_gep(IrBuilder* builder, SirValue* ptr, SirValue* index, ScoriaType* res_type) {
-    SirInst* inst = create_inst(builder, SIR_GEP, 2);
+SirValue* ir_build_gep(IrBuilder* builder, SirValue* ptr, SirValue* index, int element_size, ScoriaType* res_type) {
+    SirInst* inst = create_inst(builder, SIR_GEP, 3);
     inst->operands[0] = ptr;
     inst->operands[1] = index;
+    inst->operands[2] = ir_const_int(builder, type_get_basic(TY_I32), element_size);
     inst->dest = create_vreg(builder, res_type);
     return inst->dest;
 }
