@@ -546,20 +546,36 @@ static void generate_function(FILE* out, SirFunction* func) {
                     }
                     
                     // Windows x64 ABI: rcx, rdx, r8, r9, 然后是栈
-                    for (int i = 0; i < inst->num_operands - 1; i++) {
+                    int num_args = inst->num_operands - 1;
+                    for (int i = num_args - 1; i >= 4; i--) {
                         char arg_str[64];
                         get_operand_str(arg_str, inst->operands[i+1], &allocator, 8);
-                        if (i < 4) {
-                            const char* arg_regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
-                            fprintf(out, "    movq %s, %s\n", arg_str, arg_regs[i]);
-                            
-                            bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
-                            if (is_float) {
-                                fprintf(out, "    movq %s, %%xmm%d\n", arg_regs[i], i);
-                            }
+                        if (inst->operands[i+1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[i+1]->type || inst->operands[i+1]->type->kind == TY_F64)) {
+                            fprintf(out, "    movabsq %s, %%rax\n", arg_str);
                         } else {
                             fprintf(out, "    movq %s, %%rax\n", arg_str);
-                            fprintf(out, "    movq %%rax, %d(%%rsp)\n", 32 + (i - 4) * 8);
+                        }
+                        fprintf(out, "    movq %%rax, %d(%%rsp)\n", 32 + (i - 4) * 8);
+                    }
+                    
+                    int reg_args = num_args > 4 ? 4 : num_args;
+                    for (int i = 0; i < reg_args; i++) {
+                        char arg_str[64];
+                        get_operand_str(arg_str, inst->operands[i+1], &allocator, 8);
+                        if (inst->operands[i+1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[i+1]->type || inst->operands[i+1]->type->kind == TY_F64)) {
+                            fprintf(out, "    movabsq %s, %%rax\n", arg_str);
+                        } else {
+                            fprintf(out, "    movq %s, %%rax\n", arg_str);
+                        }
+                        fprintf(out, "    pushq %%rax\n");
+                    }
+                    
+                    const char* arg_regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
+                    for (int i = reg_args - 1; i >= 0; i--) {
+                        fprintf(out, "    popq %s\n", arg_regs[i]);
+                        bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
+                        if (is_float) {
+                            fprintf(out, "    movq %s, %%xmm%d\n", arg_regs[i], i);
                         }
                     }
                     // 针对可变参数函数 (如 printf/scribe)，清空 %al

@@ -1130,25 +1130,34 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             }
 
                             int arg_regs[] = {REG_RCX, REG_RDX, 8, 9};
-                            // 倒序加载参数，防止前面的参数被后面的 load_operand 破坏 (特别是当它们都在物理寄存器中时)
-                            for (int i = inst->num_operands - 2; i >= 0; i--) {
-                                // 使用 RAX 作为暂存，避免直接覆盖目标参数寄存器
+                            int num_args = inst->num_operands - 1;
+                            
+                            // 1. 处理栈传递的参数 (i >= 4)
+                            for (int i = num_args - 1; i >= 4; i--) {
                                 int val = load_operand(&linker->text_section, &allocator, inst->operands[i+1], REG_RAX, &ctx);
-                                if (i < 4) {
-                                    if (val != arg_regs[i]) emit_mov_reg_reg(&linker->text_section, arg_regs[i], val);
-                                    
-                                    bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
-                                    if (is_float) {
-                                        bool is_f32 = (inst->operands[i+1]->type->kind == TY_F32);
-                                        // movd/movq xmmX, arg_regs[i]
-                                        emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, arg_regs[i] > 7); 
-                                        emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); 
-                                        emit_modrm(&linker->text_section, 3, i, arg_regs[i] & 7);
-                                    }
-                                } else {
-                                    emit_rex(&linker->text_section, 1, val > 7, 0, 0);
-                                    emit8(&linker->text_section, 0x89);
-                                    emit_mem(&linker->text_section, val, REG_RSP, 32 + (i - 4) * 8);
+                                emit_rex(&linker->text_section, 1, val > 7, 0, 0);
+                                emit8(&linker->text_section, 0x89);
+                                emit_mem(&linker->text_section, val, REG_RSP, 32 + (i - 4) * 8);
+                            }
+                            
+                            // 2. 处理寄存器传递的参数 (i < 4)
+                            // 使用 push/pop 机制防止寄存器互相覆盖 (Swap Bug)
+                            int reg_args = num_args > 4 ? 4 : num_args;
+                            for (int i = 0; i < reg_args; i++) {
+                                int val = load_operand(&linker->text_section, &allocator, inst->operands[i+1], REG_RAX, &ctx);
+                                emit_rex(&linker->text_section, 0, 0, 0, val > 7);
+                                emit8(&linker->text_section, 0x50 + (val & 7)); // push val
+                            }
+                            for (int i = reg_args - 1; i >= 0; i--) {
+                                emit_rex(&linker->text_section, 0, 0, 0, arg_regs[i] > 7);
+                                emit8(&linker->text_section, 0x58 + (arg_regs[i] & 7)); // pop arg_regs[i]
+                                
+                                bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
+                                if (is_float) {
+                                    bool is_f32 = (inst->operands[i+1]->type->kind == TY_F32);
+                                    emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, arg_regs[i] > 7); 
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); 
+                                    emit_modrm(&linker->text_section, 3, i, arg_regs[i] & 7);
                                 }
                             }
                             emit_rex(&linker->text_section, 1, 0, 0, 0);
