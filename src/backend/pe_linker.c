@@ -1040,10 +1040,12 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x89); emit_mem(&linker->text_section, 3, REG_RBP, -72); // mov [rbp-72], r11
 
                             if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "scribe") == 0) {
-                                bool is_str = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_COHORS && inst->operands[1]->type->as.inner->kind == TY_LITTERA);
-                                bool is_bool = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_LOGICA) || (inst->operands[1]->kind == SIR_VAL_CONST_BOOL);
-                                bool is_ptr = !is_str && (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_VIA || inst->operands[1]->type->kind == TY_COHORS || inst->operands[1]->type->kind == TY_ACIES));
-                                bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
+                                ScoriaType* arg_type = inst->operands[1]->type;
+                                if (arg_type && arg_type->kind == TY_VIA) arg_type = arg_type->as.inner;
+                                bool is_str = (arg_type && arg_type->kind == TY_COHORS && arg_type->as.inner->kind == TY_LITTERA);
+                                bool is_bool = (arg_type && arg_type->kind == TY_LOGICA) || (inst->operands[1]->kind == SIR_VAL_CONST_BOOL);
+                                bool is_ptr = !is_str && (arg_type && (arg_type->kind == TY_VIA || arg_type->kind == TY_COHORS || arg_type->kind == TY_ACIES));
+                                bool is_float = (arg_type && (arg_type->kind == TY_F32 || arg_type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
                                 
                                 int arg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RAX, &ctx);
                                 if (arg != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, arg);

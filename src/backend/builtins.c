@@ -24,10 +24,12 @@ void builtins_analyze_usage(SirModule* module) {
                 if (inst->opcode == SIR_CALL && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
                     const char* callee = inst->operands[0]->as.global_name;
                     if (strcmp(callee, "scribe") == 0) {
-                        bool is_str = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_COHORS && inst->operands[1]->type->as.inner->kind == TY_LITTERA);
-                        bool is_bool = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_LOGICA) || (inst->operands[1]->kind == SIR_VAL_CONST_BOOL);
-                        bool is_ptr = !is_str && (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_VIA || inst->operands[1]->type->kind == TY_COHORS || inst->operands[1]->type->kind == TY_ACIES));
-                        bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
+                        ScoriaType* arg_type = inst->operands[1]->type;
+                        if (arg_type && arg_type->kind == TY_VIA) arg_type = arg_type->as.inner;
+                        bool is_str = (arg_type && arg_type->kind == TY_COHORS && arg_type->as.inner->kind == TY_LITTERA);
+                        bool is_bool = (arg_type && arg_type->kind == TY_LOGICA) || (inst->operands[1]->kind == SIR_VAL_CONST_BOOL);
+                        bool is_ptr = !is_str && (arg_type && (arg_type->kind == TY_VIA || arg_type->kind == TY_COHORS || arg_type->kind == TY_ACIES));
+                        bool is_float = (arg_type && (arg_type->kind == TY_F32 || arg_type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
 
                         if (is_str) g_use_print_str = true;
                         else if (is_bool) g_use_print_bool = true;
@@ -272,8 +274,8 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
     
     // test rdx, rdx
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x85); emit8(&linker->text_section, 0xD2);
-    // jnz .Lprint_str_len_ok (偏移量稍后计算)
-    emit8(&linker->text_section, 0x75); emit8(&linker->text_section, 0x0E); // 14 bytes forward
+    // jnz .Lprint_str_len_ok
+    emit8(&linker->text_section, 0x75); emit8(&linker->text_section, 0x13); // 19 bytes forward
     
     // mov rax, rcx
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xC8);
@@ -285,7 +287,7 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
     // inc rax
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0xC0);
     // jmp .Lprint_str_len_loop
-    emit8(&linker->text_section, 0xEB); emit8(&linker->text_section, 0xF4); // -12 bytes backward
+    emit8(&linker->text_section, 0xEB); emit8(&linker->text_section, 0xF6); // -10 bytes backward
     // .Lprint_str_len_done:
     // sub rax, rcx
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x2B); emit8(&linker->text_section, 0xC1);

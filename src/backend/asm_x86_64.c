@@ -512,10 +512,12 @@ static void generate_function(FILE* out, SirFunction* func) {
                         get_operand_str(arg_str, inst->operands[1], &allocator, 8);
                         fprintf(out, "    movq %s, %%rcx\n", arg_str);
                         
-                        bool is_str = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_COHORS && inst->operands[1]->type->as.inner->kind == TY_LITTERA);
-                        bool is_bool = (inst->operands[1]->type && inst->operands[1]->type->kind == TY_LOGICA) || (inst->operands[1]->kind == SIR_VAL_CONST_BOOL);
-                        bool is_ptr = !is_str && (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_VIA || inst->operands[1]->type->kind == TY_COHORS || inst->operands[1]->type->kind == TY_ACIES));
-                        bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
+                        ScoriaType* arg_type = inst->operands[1]->type;
+                        if (arg_type && arg_type->kind == TY_VIA) arg_type = arg_type->as.inner;
+                        bool is_str = (arg_type && arg_type->kind == TY_COHORS && arg_type->as.inner->kind == TY_LITTERA);
+                        bool is_bool = (arg_type && arg_type->kind == TY_LOGICA) || (inst->operands[1]->kind == SIR_VAL_CONST_BOOL);
+                        bool is_ptr = !is_str && (arg_type && (arg_type->kind == TY_VIA || arg_type->kind == TY_COHORS || arg_type->kind == TY_ACIES));
+                        bool is_float = (arg_type && (arg_type->kind == TY_F32 || arg_type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
                         
                         if (is_str) {
                             fprintf(out, "    movq %s, %%rax\n", arg_str);
