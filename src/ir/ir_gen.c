@@ -272,6 +272,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
 
             SirValue* left = gen_expression(builder, expr->as.binary.left);
             SirValue* right = gen_expression(builder, expr->as.binary.right);
+            if (!left || !right) return NULL;
             SirOpcode op = SIR_ADD;
             bool is_float = (left->type && (left->type->kind == TY_F32 || left->type->kind == TY_F64));
             switch (expr->as.binary.op.kind) {
@@ -311,6 +312,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 return ir_build_binary(builder, SIR_XOR, operand, true_val); // !x 等价于 x XOR true
             } else if (expr->as.unary.op.kind == TK_MINUS) {
                 SirValue* operand = gen_expression(builder, expr->as.unary.operand);
+                if (!operand) return NULL;
                 bool is_float = (operand->type && (operand->type->kind == TY_F32 || operand->type->kind == TY_F64));
                 SirValue* zero = is_float ? ir_const_float(builder, operand->type, 0.0) : ir_const_int(builder, operand->type, 0);
                 return ir_build_binary(builder, is_float ? SIR_FSUB : SIR_SUB, zero, operand); // -x 等价于 0 - x
@@ -364,6 +366,8 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
         case AST_CAST_EXPR: {
             ScoriaType* target_type = expr->expr_type;
             ScoriaType* src_type = expr->as.cast_expr.value->expr_type;
+            
+            if (!src_type || !target_type) return NULL;
             
             if (type_equals(src_type, target_type)) {
                 return gen_expression(builder, expr->as.cast_expr.value);
@@ -424,6 +428,8 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             } else {
                 count_val = ir_const_int(builder, type_get_basic(TY_I64), 1);
             }
+            
+            if (!count_val) return NULL;
             
             if (type_get_size(count_val->type) < 8) {
                 count_val = ir_build_cast(builder, count_val, type_get_basic(TY_I64));

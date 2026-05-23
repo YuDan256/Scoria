@@ -198,6 +198,7 @@ static SirInst* create_inst(IrBuilder* builder, SirOpcode opcode, int num_operan
 }
 
 SirValue* ir_build_binary(IrBuilder* builder, SirOpcode op, SirValue* left, SirValue* right) {
+    if (!left || !right) return NULL;
     SirInst* inst = create_inst(builder, op, 2);
     inst->operands[0] = left;
     inst->operands[1] = right;
@@ -213,6 +214,7 @@ SirValue* ir_build_binary(IrBuilder* builder, SirOpcode op, SirValue* left, SirV
 }
 
 SirValue* ir_build_unary(IrBuilder* builder, SirOpcode op, SirValue* operand) {
+    if (!operand) return NULL;
     SirInst* inst = create_inst(builder, op, 1);
     inst->operands[0] = operand;
     inst->dest = create_vreg(builder, operand->type);
@@ -227,6 +229,7 @@ SirValue* ir_build_alloca(IrBuilder* builder, ScoriaType* type, int size) {
 }
 
 SirValue* ir_build_load(IrBuilder* builder, SirValue* ptr) {
+    if (!ptr) return NULL;
     SirInst* inst = create_inst(builder, SIR_LOAD, 1);
     inst->operands[0] = ptr;
     
@@ -241,6 +244,7 @@ SirValue* ir_build_load(IrBuilder* builder, SirValue* ptr) {
 }
 
 void ir_build_store(IrBuilder* builder, SirValue* val, SirValue* ptr) {
+    if (!val || !ptr) return;
     SirInst* inst = create_inst(builder, SIR_STORE, 2);
     inst->operands[0] = val;
     inst->operands[1] = ptr;
@@ -248,6 +252,7 @@ void ir_build_store(IrBuilder* builder, SirValue* val, SirValue* ptr) {
 }
 
 SirValue* ir_build_gep(IrBuilder* builder, SirValue* ptr, SirValue* index, int element_size, ScoriaType* res_type) {
+    if (!ptr || !index) return NULL;
     SirInst* inst = create_inst(builder, SIR_GEP, 3);
     inst->operands[0] = ptr;
     inst->operands[1] = index;
@@ -257,6 +262,7 @@ SirValue* ir_build_gep(IrBuilder* builder, SirValue* ptr, SirValue* index, int e
 }
 
 void ir_build_memcpy(IrBuilder* builder, SirValue* dest_ptr, SirValue* src_ptr, int size) {
+    if (!dest_ptr || !src_ptr) return;
     SirInst* inst = create_inst(builder, SIR_MEMCPY, 3);
     inst->operands[0] = dest_ptr;
     inst->operands[1] = src_ptr;
@@ -264,6 +270,7 @@ void ir_build_memcpy(IrBuilder* builder, SirValue* dest_ptr, SirValue* src_ptr, 
 }
 
 SirValue* ir_build_cast(IrBuilder* builder, SirValue* val, ScoriaType* target_type) {
+    if (!val) return NULL;
     SirInst* inst = create_inst(builder, SIR_CAST, 1);
     inst->operands[0] = val;
     inst->dest = create_vreg(builder, target_type);
@@ -271,6 +278,7 @@ SirValue* ir_build_cast(IrBuilder* builder, SirValue* val, ScoriaType* target_ty
 }
 
 SirValue* ir_build_call(IrBuilder* builder, SirValue* callee, SirValue** args, int arg_count, ScoriaType* ret_type) {
+    if (!callee) return NULL;
     SirInst* inst = create_inst(builder, SIR_CALL, arg_count + 1);
     inst->operands[0] = callee;
     for (int i = 0; i < arg_count; i++) {
@@ -290,6 +298,7 @@ void ir_build_jmp(IrBuilder* builder, SirBlock* target) {
 }
 
 void ir_build_br(IrBuilder* builder, SirValue* cond, SirBlock* true_block, SirBlock* false_block) {
+    if (!cond) return;
     SirInst* inst = create_inst(builder, SIR_BR, 3);
     inst->operands[0] = cond;
     
