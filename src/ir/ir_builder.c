@@ -327,6 +327,20 @@ void ir_build_br(IrBuilder* builder, SirValue* cond, SirBlock* true_block, SirBl
     inst->operands[2] = f_val;
 }
 
+void ir_build_switch(IrBuilder* builder, SirValue* cond, SirBlock* default_block, SirValue** case_vals, SirBlock** case_blocks, int case_count) {
+    SirInst* inst = create_inst(builder, SIR_SWITCH, 2 + case_count * 2);
+    inst->operands[0] = cond;
+    SirValue* def_val = create_value(builder, SIR_VAL_BLOCK, type_get_basic(TY_UNKNOWN));
+    def_val->as.block = default_block;
+    inst->operands[1] = def_val;
+    for (int i = 0; i < case_count; i++) {
+        inst->operands[2 + i * 2] = case_vals[i];
+        SirValue* cb_val = create_value(builder, SIR_VAL_BLOCK, type_get_basic(TY_UNKNOWN));
+        cb_val->as.block = case_blocks[i];
+        inst->operands[2 + i * 2 + 1] = cb_val;
+    }
+}
+
 void ir_build_ret(IrBuilder* builder, SirValue* val) {
     if (val) {
         SirInst* inst = create_inst(builder, SIR_RET, 1);

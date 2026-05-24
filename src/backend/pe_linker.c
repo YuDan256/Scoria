@@ -1241,6 +1241,115 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             emit32(&linker->text_section, (uint32_t)(f_off - (linker->text_section.size + 4)));
                             break;
                         }
+                        case SIR_SWITCH: {
+                            int cond_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
+                            if (cond_reg != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, cond_reg);
+
+                            int case_count = (inst->num_operands - 2) / 2;
+                            SirBlock* def_block = inst->operands[1]->as.block;
+
+                            bool can_jump_table = true;
+                            int64_t min_val = INT64_MAX;
+                            int64_t max_val = INT64_MIN;
+
+                            for (int i = 0; i < case_count; i++) {
+                                SirValue* cval = inst->operands[2 + i * 2];
+                                if (cval->kind != SIR_VAL_CONST_INT) {
+                                    can_jump_table = false;
+                                    break;
+                                }
+                                if (cval->as.int_val < min_val) min_val = cval->as.int_val;
+                                if (cval->as.int_val > max_val) max_val = cval->as.int_val;
+                            }
+
+                            if (case_count == 0) can_jump_table = false;
+                            if (can_jump_table && (max_val - min_val > 256)) can_jump_table = false;
+
+                            if (can_jump_table) {
+                                // sub rax, min_val
+                                if (min_val != 0) emit_alu_reg_imm32(&linker->text_section, 5, REG_RAX, (int32_t)min_val);
+                                // cmp rax, max_val - min_val
+                                emit_alu_reg_imm32(&linker->text_section, 7, REG_RAX, (int32_t)(max_val - min_val));
+
+                                // ja default_block
+                                uint32_t def_id = def_block->id;
+                                uint32_t def_off = def_id < 1024 ? block_offsets[def_id] : 0;
+                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x87);
+                                emit32(&linker->text_section, (uint32_t)(def_off - (linker->text_section.size + 4)));
+
+                                // lea rcx, [rip + table]
+                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                emit8(&linker->text_section, 0x8D);
+                                emit_modrm(&linker->text_section, 0, REG_RCX, 5);
+                                uint32_t lea_rip_offset = (uint32_t)linker->text_section.size;
+                                emit32(&linker->text_section, 0); // 占位符
+
+                                // movsxd rdx, dword ptr [rcx + rax*4]
+                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                emit8(&linker->text_section, 0x63);
+                                emit_modrm(&linker->text_section, 0, REG_RDX, 4); // SIB
+                                emit_sib(&linker->text_section, 2, REG_RAX, REG_RCX); // scale=4, index=rax, base=rcx
+
+                                // add rdx, rcx
+                                emit_alu_reg_reg(&linker->text_section, 0x01, REG_RDX, REG_RCX);
+
+                                // jmp rdx
+                                emit_rex(&linker->text_section, 0, 0, 0, 0);
+                                emit8(&linker->text_section, 0xFF);
+                                emit_modrm(&linker->text_section, 3, 4, REG_RDX);
+
+                                // jmp over table
+                                emit8(&linker->text_section, 0xE9);
+                                uint32_t jmp_over_offset = (uint32_t)linker->text_section.size;
+                                emit32(&linker->text_section, 0);
+
+                                // 写入跳转表 (Table)
+                                uint32_t table_start = (uint32_t)linker->text_section.size;
+
+                                // 回填 lea rcx, [rip + table]
+                                int32_t rel_table = (int32_t)(table_start - (lea_rip_offset + 4));
+                                memcpy(linker->text_section.buffer + lea_rip_offset, &rel_table, 4);
+
+                                for (int64_t v = min_val; v <= max_val; v++) {
+                                    SirBlock* target = def_block;
+                                    for (int i = 0; i < case_count; i++) {
+                                        if (inst->operands[2 + i * 2]->as.int_val == v) {
+                                            target = inst->operands[2 + i * 2 + 1]->as.block;
+                                            break;
+                                        }
+                                    }
+                                    uint32_t t_id = target->id;
+                                    uint32_t t_off = t_id < 1024 ? block_offsets[t_id] : 0;
+                                    int32_t rel_target = (int32_t)(t_off - table_start);
+                                    emit32(&linker->text_section, (uint32_t)rel_target);
+                                }
+
+                                // 回填 jmp over table
+                                int32_t rel_end = (int32_t)(linker->text_section.size - (jmp_over_offset + 4));
+                                memcpy(linker->text_section.buffer + jmp_over_offset, &rel_end, 4);
+
+                            } else {
+                                // 退化为 If-Else 链
+                                for (int i = 0; i < case_count; i++) {
+                                    int val_reg = load_operand(&linker->text_section, &allocator, inst->operands[2 + i * 2], REG_RCX, &ctx);
+                                    emit_rex(&linker->text_section, 1, val_reg > 7, 0, 0);
+                                    emit8(&linker->text_section, 0x39); // cmp rax, val_reg
+                                    emit_modrm(&linker->text_section, 3, val_reg & 7, REG_RAX);
+
+                                    SirBlock* target = inst->operands[2 + i * 2 + 1]->as.block;
+                                    uint32_t t_id = target->id;
+                                    uint32_t t_off = t_id < 1024 ? block_offsets[t_id] : 0;
+
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x84); // je
+                                    emit32(&linker->text_section, (uint32_t)(t_off - (linker->text_section.size + 4)));
+                                }
+                                uint32_t def_id = def_block->id;
+                                uint32_t def_off = def_id < 1024 ? block_offsets[def_id] : 0;
+                                emit8(&linker->text_section, 0xE9); // jmp
+                                emit32(&linker->text_section, (uint32_t)(def_off - (linker->text_section.size + 4)));
+                            }
+                            break;
+                        }
                         case SIR_RET: {
                             if (inst->num_operands > 0) {
                                 int val = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);

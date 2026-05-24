@@ -28,6 +28,7 @@ typedef enum {
     // 控制流
     SIR_JMP,     // 无条件跳转
     SIR_BR,      // 条件分支
+    SIR_SWITCH,  // 多路分支 (跳转表)
     SIR_CALL,    // 函数调用
     SIR_RET,     // 返回
     

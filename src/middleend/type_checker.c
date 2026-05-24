@@ -65,10 +65,10 @@ static ScoriaType* resolve_type_node(TypeChecker* checker, AstNode* type_node) {
         case TK_KW_NIHIL: base_type = type_get_basic(TY_NIHIL); break;
         case TK_IDENTIFIER: {
             Symbol* sym = symtab_lookup(&checker->symtab, base_tok);
-            if (sym && sym->kind == SYM_STRUCT) {
+            if (sym && (sym->kind == SYM_STRUCT || sym->kind == SYM_UNION)) {
                 base_type = sym->type;
             } else {
-                type_error(checker, base_tok, "Forma ignota est.");
+                type_error(checker, base_tok, "Forma vel unio ignota est.");
                 base_type = type_get_basic(TY_UNKNOWN);
             }
             break;
@@ -211,14 +211,14 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr) {
             }
 
             if (expr->as.member_expr.is_pointer) {
-                if (obj_type->kind != TY_VIA || obj_type->as.inner->kind != TY_FORMA) {
-                    type_error(checker, expr->token, "Operator '->' ad 'via forma' solum applicari potest.");
+                if (obj_type->kind != TY_VIA || (obj_type->as.inner->kind != TY_FORMA && obj_type->as.inner->kind != TY_UNIO)) {
+                    type_error(checker, expr->token, "Operator '->' ad 'via forma' vel 'via unio' solum applicari potest.");
                     break;
                 }
                 obj_type = obj_type->as.inner;
             } else {
-                if (obj_type->kind != TY_FORMA) {
-                    type_error(checker, expr->token, "Operator '.' ad 'forma' solum applicari potest.");
+                if (obj_type->kind != TY_FORMA && obj_type->kind != TY_UNIO) {
+                    type_error(checker, expr->token, "Operator '.' ad 'forma' vel 'unio' solum applicari potest.");
                     break;
                 }
             }
@@ -439,6 +439,27 @@ static void check_statement(TypeChecker* checker, AstNode* stmt) {
         case AST_LABEL_STMT:
             break;
 
+        case AST_SWITCH_STMT: {
+            ScoriaType* cond_type = check_expression(checker, stmt->as.switch_stmt.condition);
+            for (int i = 0; i < stmt->as.switch_stmt.case_count; i++) {
+                for (int j = 0; j < stmt->as.switch_stmt.case_val_counts[i]; j++) {
+                    ScoriaType* case_type = check_expression(checker, stmt->as.switch_stmt.case_vals[i][j]);
+                    if (!type_equals(cond_type, case_type)) {
+                        type_error(checker, stmt->as.switch_stmt.case_vals[i][j]->token, "Typus casus cum condicione non congruit.");
+                    }
+                }
+                checker->loop_depth++; // 允许 rumpe
+                check_statement(checker, stmt->as.switch_stmt.case_stmts[i]);
+                checker->loop_depth--;
+            }
+            if (stmt->as.switch_stmt.default_branch) {
+                checker->loop_depth++;
+                check_statement(checker, stmt->as.switch_stmt.default_branch);
+                checker->loop_depth--;
+            }
+            break;
+        }
+
         default:
             break;
     }
@@ -458,6 +479,11 @@ static void collect_declarations(TypeChecker* checker, AstNode* program) {
             if (!symtab_define(&checker->symtab, decl->as.struct_decl.name, SYM_STRUCT, forma_type, decl, decl->as.struct_decl.is_editus)) {
                 type_error(checker, decl->as.struct_decl.name, "Nomen formae iam definitum est.");
             }
+        } else if (decl->kind == AST_UNION_DECL) {
+            ScoriaType* unio_type = type_create_unio(decl->as.struct_decl.name);
+            if (!symtab_define(&checker->symtab, decl->as.struct_decl.name, SYM_UNION, unio_type, decl, decl->as.struct_decl.is_editus)) {
+                type_error(checker, decl->as.struct_decl.name, "Nomen unionis iam definitum est.");
+            }
         }
     }
 
@@ -465,14 +491,14 @@ static void collect_declarations(TypeChecker* checker, AstNode* program) {
     for (int i = 0; i < program->as.program.decl_count; i++) {
         AstNode* decl = program->as.program.declarations[i];
         
-        if (decl->kind == AST_STRUCT_DECL) {
+        if (decl->kind == AST_STRUCT_DECL || decl->kind == AST_UNION_DECL) {
             Symbol* sym = symtab_lookup(&checker->symtab, decl->as.struct_decl.name);
-            if (sym && sym->type->kind == TY_FORMA) {
-                ScoriaType* forma_type = sym->type;
+            if (sym && (sym->type->kind == TY_FORMA || sym->type->kind == TY_UNIO)) {
+                ScoriaType* comp_type = sym->type;
                 for (int j = 0; j < decl->as.struct_decl.field_count; j++) {
                     AstNode* field = decl->as.struct_decl.fields[j];
                     ScoriaType* field_type = resolve_type_node(checker, field->as.var_decl.type);
-                    type_forma_add_field(forma_type, field->as.var_decl.name, field_type);
+                    type_forma_add_field(comp_type, field->as.var_decl.name, field_type);
                 }
             }
         } 

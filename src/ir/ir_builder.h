@@ -57,6 +57,7 @@ SirValue* ir_build_cast(IrBuilder* builder, SirValue* val, ScoriaType* target_ty
 SirValue* ir_build_call(IrBuilder* builder, SirValue* callee, SirValue** args, int arg_count, ScoriaType* ret_type);
 void ir_build_jmp(IrBuilder* builder, SirBlock* target);
 void ir_build_br(IrBuilder* builder, SirValue* cond, SirBlock* true_block, SirBlock* false_block);
+void ir_build_switch(IrBuilder* builder, SirValue* cond, SirBlock* default_block, SirValue** case_vals, SirBlock** case_blocks, int case_count);
 void ir_build_ret(IrBuilder* builder, SirValue* val);
 
 // 获取函数的第 N 个参数 (作为虚拟寄存器)

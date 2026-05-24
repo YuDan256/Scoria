@@ -8,7 +8,8 @@ typedef enum {
     SYM_VAR,
     SYM_CONST,
     SYM_FUNC,
-    SYM_STRUCT
+    SYM_STRUCT,
+    SYM_UNION
 } SymbolKind;
 
 struct SirValue; // 前置声明

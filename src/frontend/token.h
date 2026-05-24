@@ -60,6 +60,7 @@ typedef enum {
     TK_KW_RUMPE, TK_KW_PERGE,
     TK_KW_LOCUS, TK_KW_TENE, TK_KW_VADE, TK_KW_RECEDE,
     TK_KW_SCRIBE, TK_KW_CREA, TK_KW_NECA, TK_KW_NIHIL, TK_KW_SALI,
+    TK_KW_ELIGE, TK_KW_CASUS, TK_KW_UNIO,
 
     // ================= [系统类型定义] =================
     // 现代工程缩写

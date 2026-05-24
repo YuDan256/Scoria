@@ -128,6 +128,7 @@ static TokenKind identifier_type(Lexer* lexer) {
     case 'c':
         if (len == 7) return check_keyword(lexer, 1, 6, "onsule", TK_KW_CONSULE);
         if (len == 6) return check_keyword(lexer, 1, 5, "ohors", TK_TY_COHORS);
+        if (len == 5) return check_keyword(lexer, 1, 4, "asus", TK_KW_CASUS);
         if (len == 4) return check_keyword(lexer, 1, 3, "rea", TK_KW_CREA);
         break;
     case 'd':
@@ -137,7 +138,10 @@ static TokenKind identifier_type(Lexer* lexer) {
         break;
     case 'e':
         if (len == 7) return check_keyword(lexer, 1, 6, "xcerpe", TK_KW_EXCERPE);
-        if (len == 5) return check_keyword(lexer, 1, 4, "dita", TK_KW_EDITA);
+        if (len == 5) {
+            if (memcmp(lexer->start + 1, "dita", 4) == 0) return TK_KW_EDITA;
+            if (memcmp(lexer->start + 1, "lige", 4) == 0) return TK_KW_ELIGE;
+        }
         break;
     case 'f':
         if (len == 6 && lexer->start[1] == 'a') return check_keyword(lexer, 2, 4, "lsum", TK_BOOL_CONST);
@@ -184,6 +188,9 @@ static TokenKind identifier_type(Lexer* lexer) {
     case 't':
         if (len == 4) return check_keyword(lexer, 1, 3, "ene", TK_KW_TENE);
         if (len == 6) return check_keyword(lexer, 1, 5, "extus", TK_TY_TEXTUS);
+        break;
+    case 'u':
+        if (len == 4) return check_keyword(lexer, 1, 3, "nio", TK_KW_UNIO);
         break;
     case 'v':
         if (len == 5) return check_keyword(lexer, 1, 4, "erum", TK_BOOL_CONST);

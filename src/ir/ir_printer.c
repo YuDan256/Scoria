@@ -32,6 +32,9 @@ static void print_type(FILE* out, ScoriaType* type) {
         case TY_FORMA:
             fprintf(out, "forma %.*s", type->as.struct_type.name.length, type->as.struct_type.name.start);
             break;
+        case TY_UNIO:
+            fprintf(out, "unio %.*s", type->as.struct_type.name.length, type->as.struct_type.name.start);
+            break;
         case TY_ACTIO:
             fprintf(out, "actio");
             break;
@@ -107,6 +110,7 @@ static void print_inst(FILE* out, SirInst* inst) {
         case SIR_MEMCPY: fprintf(out, "memcpy "); break;
         case SIR_JMP: fprintf(out, "jmp "); break;
         case SIR_BR: fprintf(out, "br "); break;
+        case SIR_SWITCH: fprintf(out, "switch "); break;
         case SIR_CALL: fprintf(out, "call "); break;
         case SIR_RET: fprintf(out, "ret "); break;
         case SIR_CAST: fprintf(out, "cast "); break;

@@ -16,6 +16,7 @@ typedef enum {
     AST_VAR_DECL,
     AST_CONST_DECL,
     AST_STRUCT_DECL,
+    AST_UNION_DECL,
     AST_BLOCK_STMT,
     AST_EXPR_STMT,
     AST_IF_STMT,
@@ -40,6 +41,7 @@ typedef enum {
     AST_ASSIGN_EXPR,
     AST_GOTO_STMT,
     AST_LABEL_STMT,
+    AST_SWITCH_STMT,
     AST_TYPE
 } AstNodeKind;
 
@@ -196,6 +198,15 @@ struct AstNode {
         struct {
             Token name;
         } label_stmt;
+
+        struct {
+            AstNode* condition;
+            AstNode*** case_vals;
+            int* case_val_counts;
+            AstNode** case_stmts;
+            int case_count;
+            AstNode* default_branch;
+        } switch_stmt;
 
         struct {
             Token base_type;

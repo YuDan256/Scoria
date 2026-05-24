@@ -52,7 +52,8 @@ bool type_equals(ScoriaType* a, ScoriaType* b) {
         case TY_ACIES:
             return a->as.array.length == b->as.array.length && type_equals(a->as.array.inner, b->as.array.inner);
         case TY_FORMA:
-            // 结构体通过名称比较
+        case TY_UNIO:
+            // 结构体/联合体通过名称比较
             return a->as.struct_type.name.length == b->as.struct_type.name.length &&
                    memcmp(a->as.struct_type.name.start, b->as.struct_type.name.start, a->as.struct_type.name.length) == 0;
         case TY_ACTIO:
@@ -114,8 +115,18 @@ ScoriaType* type_create_forma(Token name, bool is_densa) {
     return t; // 结构体通过名字区分，不放入 intern 池
 }
 
+ScoriaType* type_create_unio(Token name) {
+    ScoriaType* t = (ScoriaType*)malloc(sizeof(ScoriaType));
+    t->kind = TY_UNIO;
+    t->as.struct_type.name = name;
+    t->as.struct_type.fields = NULL;
+    t->as.struct_type.field_count = 0;
+    t->as.struct_type.is_densa = false;
+    return t; // 联合体通过名字区分，不放入 intern 池
+}
+
 void type_forma_add_field(ScoriaType* forma_type, Token name, ScoriaType* field_type) {
-    if (forma_type->kind != TY_FORMA) return;
+    if (forma_type->kind != TY_FORMA && forma_type->kind != TY_UNIO) return;
     
     int count = forma_type->as.struct_type.field_count;
     forma_type->as.struct_type.fields = realloc(forma_type->as.struct_type.fields, sizeof(StructField) * (count + 1));
@@ -149,6 +160,17 @@ int type_get_size(ScoriaType* type) {
                 size = (size + max_align - 1) & ~(max_align - 1);
             }
             return size;
+        }
+        case TY_UNIO: {
+            int max_size = 0;
+            int max_align = 1;
+            for (int i = 0; i < type->as.struct_type.field_count; i++) {
+                int field_size = type_get_size(type->as.struct_type.fields[i].type);
+                int field_align = field_size > 8 ? 8 : field_size;
+                if (field_align > max_align) max_align = field_align;
+                if (field_size > max_size) max_size = field_size;
+            }
+            return (max_size + max_align - 1) & ~(max_align - 1);
         }
         default: return 8;
     }

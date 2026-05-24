@@ -104,6 +104,8 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
                     }
                     byte_offset += field_size;
                 }
+            } else if (obj_type && obj_type->kind == TY_UNIO) {
+                byte_offset = 0; // 联合体所有字段偏移均为 0
             }
             SirValue* index_val = ir_const_int(builder, type_get_basic(TY_I32), byte_offset);
             return ir_build_gep(builder, obj_ptr, index_val, 1, type_get_via(expr->expr_type));
@@ -211,7 +213,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                     return val;
                 } else if (sym->ir_val) {
                     // 结构体、数组和切片作为右值时，退化为指针
-                    if (sym->type && (sym->type->kind == TY_FORMA || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS)) {
+                    if (sym->type && (sym->type->kind == TY_FORMA || sym->type->kind == TY_UNIO || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS)) {
                         return sym->ir_val;
                     }
                     // 局部变量或全局变量的 ir_val 是指针，使用时需要 load 出来
@@ -222,8 +224,8 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
         }
         case AST_ASSIGN_EXPR: {
             ScoriaType* type = expr->expr_type ? expr->expr_type : expr->as.assign.target->expr_type;
-            if (type && (type->kind == TY_FORMA || type->kind == TY_ACIES || type->kind == TY_COHORS)) {
-                // 结构体、数组和切片赋值：使用 memcpy 拷贝内存块
+            if (type && (type->kind == TY_FORMA || type->kind == TY_UNIO || type->kind == TY_ACIES || type->kind == TY_COHORS)) {
+                // 结构体、联合体、数组和切片赋值：使用 memcpy 拷贝内存块
                 SirValue* dst_ptr = gen_lvalue(builder, expr->as.assign.target);
                 SirValue* src_ptr = gen_expression(builder, expr->as.assign.value); // 右值已退化为指针
                 if (dst_ptr && src_ptr) {
@@ -321,8 +323,8 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             } else if (expr->as.unary.op.kind == TK_KW_TENE) {
                 SirValue* ptr = gen_expression(builder, expr->as.unary.operand);
                 ScoriaType* target_type = expr->expr_type;
-                if (target_type && (target_type->kind == TY_FORMA || target_type->kind == TY_ACIES || target_type->kind == TY_COHORS)) {
-                    return ptr; // 结构体/数组/切片退化为指针
+                if (target_type && (target_type->kind == TY_FORMA || target_type->kind == TY_UNIO || target_type->kind == TY_ACIES || target_type->kind == TY_COHORS)) {
+                    return ptr; // 结构体/联合体/数组/切片退化为指针
                 }
                 return ir_build_load(builder, ptr);
             } else if (expr->as.unary.op.kind == TK_LOGIC_NOT) {
@@ -555,7 +557,7 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
                 AstNode* initializer = stmt->as.var_decl.initializer;
                 if (initializer) {
                     SirValue* init_val = gen_expression(builder, initializer);
-                    if (sym->type->kind == TY_FORMA || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS) {
+                    if (sym->type->kind == TY_FORMA || sym->type->kind == TY_UNIO || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS) {
                         ir_build_memcpy(builder, sym->ir_val, init_val, type_size);
                     } else {
                         ir_build_store(builder, init_val, sym->ir_val);
@@ -698,6 +700,68 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
             ir_builder_set_insert_point(builder, label_block);
             break;
         }
+        case AST_SWITCH_STMT: {
+            SirValue* cond = gen_expression(builder, stmt->as.switch_stmt.condition);
+
+            int total_case_vals = 0;
+            for (int i = 0; i < stmt->as.switch_stmt.case_count; i++) {
+                total_case_vals += stmt->as.switch_stmt.case_val_counts[i];
+            }
+
+            SirValue** flat_case_vals = NULL;
+            SirBlock** flat_case_blocks = NULL;
+            if (total_case_vals > 0) {
+                flat_case_vals = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * total_case_vals);
+                flat_case_blocks = (SirBlock**)arena_alloc(&builder->arena, sizeof(SirBlock*) * total_case_vals);
+            }
+
+            SirBlock* default_block = ir_builder_create_block(builder, "elige.aliter");
+            SirBlock* exit_block = ir_builder_create_block(builder, "elige.exitus");
+
+            SirBlock** branch_blocks = (SirBlock**)arena_alloc(&builder->arena, sizeof(SirBlock*) * stmt->as.switch_stmt.case_count);
+
+            int flat_idx = 0;
+            for (int i = 0; i < stmt->as.switch_stmt.case_count; i++) {
+                branch_blocks[i] = ir_builder_create_block(builder, "elige.casus");
+                for (int j = 0; j < stmt->as.switch_stmt.case_val_counts[i]; j++) {
+                    flat_case_vals[flat_idx] = gen_expression(builder, stmt->as.switch_stmt.case_vals[i][j]);
+                    flat_case_blocks[flat_idx] = branch_blocks[i];
+                    flat_idx++;
+                }
+            }
+
+            ir_build_switch(builder, cond, default_block, flat_case_vals, flat_case_blocks, total_case_vals);
+
+            SirBlock* prev_exit = builder->current_loop_exit;
+            builder->current_loop_exit = exit_block; // 允许 rumpe 跳出 switch
+
+            for (int i = 0; i < stmt->as.switch_stmt.case_count; i++) {
+                ir_builder_set_insert_point(builder, branch_blocks[i]);
+                gen_statement(builder, stmt->as.switch_stmt.case_stmts[i]);
+                // 默认不贯穿：如果块末尾没有跳转，自动跳到出口
+                if (builder->current_block && (!builder->current_block->last_inst ||
+                    (builder->current_block->last_inst->opcode != SIR_JMP &&
+                     builder->current_block->last_inst->opcode != SIR_BR &&
+                     builder->current_block->last_inst->opcode != SIR_RET))) {
+                    ir_build_jmp(builder, exit_block);
+                }
+            }
+
+            ir_builder_set_insert_point(builder, default_block);
+            if (stmt->as.switch_stmt.default_branch) {
+                gen_statement(builder, stmt->as.switch_stmt.default_branch);
+            }
+            if (builder->current_block && (!builder->current_block->last_inst ||
+                (builder->current_block->last_inst->opcode != SIR_JMP &&
+                 builder->current_block->last_inst->opcode != SIR_BR &&
+                 builder->current_block->last_inst->opcode != SIR_RET))) {
+                ir_build_jmp(builder, exit_block);
+            }
+
+            builder->current_loop_exit = prev_exit;
+            ir_builder_set_insert_point(builder, exit_block);
+            break;
+        }
         default: break;
     }
 }
@@ -757,7 +821,7 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
                     ir_builder_set_insert_point(builder, current_init_block);
                     
                     SirValue* init_val = gen_expression(builder, initializer);
-                    if (sym->type->kind == TY_FORMA || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS) {
+                    if (sym->type->kind == TY_FORMA || sym->type->kind == TY_UNIO || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS) {
                         ir_build_memcpy(builder, sym->ir_val, init_val, size);
                     } else {
                         ir_build_store(builder, init_val, sym->ir_val);

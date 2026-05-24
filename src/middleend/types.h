@@ -18,6 +18,7 @@ typedef enum {
     TY_COHORS,   // 切片
     TY_ACIES,    // 数组
     TY_FORMA,    // 结构体
+    TY_UNIO,     // 联合体
     TY_ACTIO     // 函数
 } TypeKind;
 
@@ -70,8 +71,9 @@ ScoriaType* type_get_via(ScoriaType* inner);
 ScoriaType* type_get_cohors(ScoriaType* inner);
 ScoriaType* type_get_acies(ScoriaType* inner, uint32_t length);
 
-// 创建结构体和函数类型
+// 创建结构体、联合体和函数类型
 ScoriaType* type_create_forma(Token name, bool is_densa);
+ScoriaType* type_create_unio(Token name);
 void type_forma_add_field(ScoriaType* forma_type, Token name, ScoriaType* field_type);
 
 ScoriaType* type_create_actio(ScoriaType* return_type, ScoriaType** param_types, int param_count);

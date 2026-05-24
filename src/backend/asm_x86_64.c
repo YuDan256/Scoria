@@ -345,6 +345,68 @@ static void generate_function(FILE* out, SirFunction* func) {
                     fprintf(out, "    jmp .L%s_%u\n", inst->operands[2]->as.block->name, inst->operands[2]->as.block->id);
                     break;
 
+                case SIR_SWITCH: {
+                    char cond_str[64];
+                    get_operand_str(cond_str, inst->operands[0], &allocator, 8);
+                    fprintf(out, "    movq %s, %%rax\n", cond_str);
+
+                    int case_count = (inst->num_operands - 2) / 2;
+                    SirBlock* def_block = inst->operands[1]->as.block;
+
+                    bool can_jump_table = true;
+                    int64_t min_val = INT64_MAX;
+                    int64_t max_val = INT64_MIN;
+
+                    for (int i = 0; i < case_count; i++) {
+                        SirValue* cval = inst->operands[2 + i * 2];
+                        if (cval->kind != SIR_VAL_CONST_INT) {
+                            can_jump_table = false;
+                            break;
+                        }
+                        if (cval->as.int_val < min_val) min_val = cval->as.int_val;
+                        if (cval->as.int_val > max_val) max_val = cval->as.int_val;
+                    }
+
+                    if (case_count == 0) can_jump_table = false;
+                    if (can_jump_table && (max_val - min_val > 256)) can_jump_table = false;
+
+                    if (can_jump_table) {
+                        if (min_val != 0) fprintf(out, "    subq $%lld, %%rax\n", (long long)min_val);
+                        fprintf(out, "    cmpq $%lld, %%rax\n", (long long)(max_val - min_val));
+                        fprintf(out, "    ja .L%s_%u\n", def_block->name, def_block->id);
+                        fprintf(out, "    leaq .Ljt_%p(%%rip), %%rcx\n", (void*)inst);
+                        fprintf(out, "    movslq (%%rcx, %%rax, 4), %%rdx\n");
+                        fprintf(out, "    addq %%rcx, %%rdx\n");
+                        fprintf(out, "    jmp *%%rdx\n");
+
+                        fprintf(out, "    .section .rdata,\"a\"\n");
+                        fprintf(out, "    .align 4\n");
+                        fprintf(out, ".Ljt_%p:\n", (void*)inst);
+                        for (int64_t v = min_val; v <= max_val; v++) {
+                            SirBlock* target = def_block;
+                            for (int i = 0; i < case_count; i++) {
+                                if (inst->operands[2 + i * 2]->as.int_val == v) {
+                                    target = inst->operands[2 + i * 2 + 1]->as.block;
+                                    break;
+                                }
+                            }
+                            fprintf(out, "    .long .L%s_%u - .Ljt_%p\n", target->name, target->id, (void*)inst);
+                        }
+                        fprintf(out, "    .text\n");
+                    } else {
+                        // 退化为 If-Else 链
+                        for (int i = 0; i < case_count; i++) {
+                            char val_str[64];
+                            get_operand_str(val_str, inst->operands[2 + i * 2], &allocator, 8);
+                            fprintf(out, "    cmpq %s, %%rax\n", val_str);
+                            SirBlock* target = inst->operands[2 + i * 2 + 1]->as.block;
+                            fprintf(out, "    je .L%s_%u\n", target->name, target->id);
+                        }
+                        fprintf(out, "    jmp .L%s_%u\n", def_block->name, def_block->id);
+                    }
+                    break;
+                }
+
                 case SIR_GET_PARAM: {
                     int param_idx = (int)inst->operands[0]->as.int_val;
                     int offset = 16 + param_idx * 8;

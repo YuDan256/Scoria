@@ -516,6 +516,91 @@ static AstNode* statement(Parser* parser) {
         node->as.if_stmt.else_branch = else_branch;
         return node;
     }
+    if (match(parser, TK_KW_ELIGE)) {
+        Token keyword = parser->previous;
+        consume(parser, TK_LPAREN, "Post 'elige' '(' exspectatur.");
+        AstNode* condition = expression(parser);
+        consume(parser, TK_RPAREN, "Post condicionem ')' exspectatur.");
+        consume(parser, TK_LBRACE, "Ante corpus 'elige' '{' exspectatur.");
+
+        AstNode*** case_vals = NULL;
+        int* case_val_counts = NULL;
+        AstNode** case_stmts = NULL;
+        int case_count = 0;
+        int capacity = 0;
+        AstNode* default_branch = NULL;
+
+        while (!check(parser, TK_RBRACE) && !check(parser, TK_EOF)) {
+            if (match(parser, TK_KW_CASUS)) {
+                AstNode** vals = NULL;
+                int val_count = 0;
+                int val_cap = 0;
+                do {
+                    if (val_count >= val_cap) {
+                        int old_cap = val_cap;
+                        val_cap = val_cap < 4 ? 4 : val_cap * 2;
+                        vals = arena_realloc(&parser->arena, vals, sizeof(AstNode*) * old_cap, sizeof(AstNode*) * val_cap);
+                    }
+                    vals[val_count++] = expression(parser);
+                } while (match(parser, TK_COMMA));
+
+                consume(parser, TK_COLON, "Post valorem casus ':' exspectatur.");
+
+                AstNode* body = ast_create_node(&parser->arena, AST_BLOCK_STMT, parser->previous);
+                body->as.block.statements = NULL;
+                body->as.block.stmt_count = 0;
+                int stmt_cap = 0;
+                while (!check(parser, TK_KW_CASUS) && !check(parser, TK_KW_ALITER) && !check(parser, TK_RBRACE) && !check(parser, TK_EOF)) {
+                    if (body->as.block.stmt_count >= stmt_cap) {
+                        int old_cap = stmt_cap;
+                        stmt_cap = stmt_cap < 4 ? 4 : stmt_cap * 2;
+                        body->as.block.statements = arena_realloc(&parser->arena, body->as.block.statements, sizeof(AstNode*) * old_cap, sizeof(AstNode*) * stmt_cap);
+                    }
+                    body->as.block.statements[body->as.block.stmt_count++] = declaration(parser);
+                }
+
+                if (case_count >= capacity) {
+                    int old_cap = capacity;
+                    capacity = capacity < 4 ? 4 : capacity * 2;
+                    case_vals = arena_realloc(&parser->arena, case_vals, sizeof(AstNode**) * old_cap, sizeof(AstNode**) * capacity);
+                    case_val_counts = arena_realloc(&parser->arena, case_val_counts, sizeof(int) * old_cap, sizeof(int) * capacity);
+                    case_stmts = arena_realloc(&parser->arena, case_stmts, sizeof(AstNode*) * old_cap, sizeof(AstNode*) * capacity);
+                }
+                case_vals[case_count] = vals;
+                case_val_counts[case_count] = val_count;
+                case_stmts[case_count] = body;
+                case_count++;
+            } else if (match(parser, TK_KW_ALITER)) {
+                consume(parser, TK_COLON, "Post 'aliter' ':' exspectatur.");
+                AstNode* body = ast_create_node(&parser->arena, AST_BLOCK_STMT, parser->previous);
+                body->as.block.statements = NULL;
+                body->as.block.stmt_count = 0;
+                int stmt_cap = 0;
+                while (!check(parser, TK_KW_CASUS) && !check(parser, TK_KW_ALITER) && !check(parser, TK_RBRACE) && !check(parser, TK_EOF)) {
+                    if (body->as.block.stmt_count >= stmt_cap) {
+                        int old_cap = stmt_cap;
+                        stmt_cap = stmt_cap < 4 ? 4 : stmt_cap * 2;
+                        body->as.block.statements = arena_realloc(&parser->arena, body->as.block.statements, sizeof(AstNode*) * old_cap, sizeof(AstNode*) * stmt_cap);
+                    }
+                    body->as.block.statements[body->as.block.stmt_count++] = declaration(parser);
+                }
+                default_branch = body;
+            } else {
+                error(parser, "In 'elige' 'casus' vel 'aliter' exspectatur.");
+                advance(parser);
+            }
+        }
+        consume(parser, TK_RBRACE, "Post corpus 'elige' '}' exspectatur.");
+
+        AstNode* node = ast_create_node(&parser->arena, AST_SWITCH_STMT, keyword);
+        node->as.switch_stmt.condition = condition;
+        node->as.switch_stmt.case_vals = case_vals;
+        node->as.switch_stmt.case_val_counts = case_val_counts;
+        node->as.switch_stmt.case_stmts = case_stmts;
+        node->as.switch_stmt.case_count = case_count;
+        node->as.switch_stmt.default_branch = default_branch;
+        return node;
+    }
     if (match(parser, TK_KW_DUM)) {
         Token keyword = parser->previous;
         consume(parser, TK_LPAREN, "Post 'dum' '(' exspectatur.");
@@ -718,6 +803,44 @@ static AstNode* func_declaration(Parser* parser) {
     return node;
 }
 
+static AstNode* union_declaration(Parser* parser) {
+    Token keyword = parser->previous;
+    bool is_edita = match(parser, TK_KW_EDITA);
+    
+    consume(parser, TK_IDENTIFIER, "Nomen unionis exspectatur.");
+    Token name = parser->previous;
+    
+    consume(parser, TK_LBRACE, "Ante corpus unionis '{' exspectatur.");
+    
+    AstNode** fields = NULL;
+    int field_count = 0;
+    int capacity = 0;
+    
+    while (!check(parser, TK_RBRACE) && !check(parser, TK_EOF)) {
+        if (match(parser, TK_KW_SIT)) {
+            if (field_count >= capacity) {
+                int old_capacity = capacity;
+                capacity = capacity < 8 ? 8 : capacity * 2;
+                fields = arena_realloc(&parser->arena, fields, sizeof(AstNode*) * old_capacity, sizeof(AstNode*) * capacity);
+            }
+            fields[field_count++] = var_declaration(parser, false);
+        } else {
+            error(parser, "Pro declaratione campi unionis 'sit' exspectatur.");
+            advance(parser);
+        }
+    }
+    
+    consume(parser, TK_RBRACE, "Post corpus unionis '}' exspectatur.");
+    
+    AstNode* node = ast_create_node(&parser->arena, AST_UNION_DECL, keyword);
+    node->as.struct_decl.name = name;
+    node->as.struct_decl.is_editus = is_edita;
+    node->as.struct_decl.is_densa = false;
+    node->as.struct_decl.fields = fields;
+    node->as.struct_decl.field_count = field_count;
+    return node;
+}
+
 static AstNode* struct_declaration(Parser* parser) {
     Token keyword = parser->previous;
     bool is_densa = false;
@@ -774,6 +897,7 @@ static void synchronize(Parser* parser) {
             case TK_KW_SIT:
             case TK_KW_LEX:
             case TK_TY_FORMA:
+            case TK_KW_UNIO:
             case TK_KW_LIBER:
             case TK_KW_CONSULE:
             case TK_KW_SI:
@@ -845,6 +969,8 @@ static AstNode* declaration(Parser* parser) {
             decl = var_declaration(parser, true);
         } else if (match(parser, TK_TY_FORMA)) {
             decl = struct_declaration(parser);
+        } else if (match(parser, TK_KW_UNIO)) {
+            decl = union_declaration(parser);
         } else {
             decl = statement(parser);
         }
