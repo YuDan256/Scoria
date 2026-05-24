@@ -814,10 +814,10 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             } else {
                                 int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                                 if (inst->opcode == SIR_ADD) emit_alu_reg_reg(&linker->text_section, 0x01, REG_RAX, right);
-                                else if (inst->opcode == SIR_SUB) emit_alu_reg_reg(&linker->text_section, 0x2B, REG_RAX, right);
-                                else if (inst->opcode == SIR_AND) emit_alu_reg_reg(&linker->text_section, 0x23, REG_RAX, right);
-                                else if (inst->opcode == SIR_OR) emit_alu_reg_reg(&linker->text_section, 0x0B, REG_RAX, right);
-                                else if (inst->opcode == SIR_XOR) emit_alu_reg_reg(&linker->text_section, 0x33, REG_RAX, right);
+                                else if (inst->opcode == SIR_SUB) emit_alu_reg_reg(&linker->text_section, 0x29, REG_RAX, right);
+                                else if (inst->opcode == SIR_AND) emit_alu_reg_reg(&linker->text_section, 0x21, REG_RAX, right);
+                                else if (inst->opcode == SIR_OR) emit_alu_reg_reg(&linker->text_section, 0x09, REG_RAX, right);
+                                else if (inst->opcode == SIR_XOR) emit_alu_reg_reg(&linker->text_section, 0x31, REG_RAX, right);
                                 else {
                                     emit_rex(&linker->text_section, 1, 0, 0, right > 7);
                                     emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xAF); // imul rax, right
