@@ -7,6 +7,19 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr);
 static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr);
 static void gen_statement(IrBuilder* builder, AstNode* stmt);
 
+static int roman_char_value(char c) {
+    switch (c) {
+        case 'I': case 'i': return 1;
+        case 'V': case 'v': return 5;
+        case 'X': case 'x': return 10;
+        case 'L': case 'l': return 50;
+        case 'C': case 'c': return 100;
+        case 'D': case 'd': return 500;
+        case 'M': case 'm': return 1000;
+        default: return 0;
+    }
+}
+
 // 获取左值 (L-value) 的内存地址指针
 static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
     if (!expr) return NULL;
@@ -109,6 +122,16 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 int64_t val = 0;
                 if (expr->token.length > 2 && expr->token.start[0] == '0' && (expr->token.start[1] == 'b' || expr->token.start[1] == 'B')) {
                     val = strtoll(expr->token.start + 2, NULL, 2); // 二进制
+                } else if (expr->token.length > 2 && expr->token.start[0] == '0' && (expr->token.start[1] == 'r' || expr->token.start[1] == 'R')) {
+                    for (uint32_t i = 2; i < expr->token.length; i++) {
+                        int current = roman_char_value(expr->token.start[i]);
+                        int next = (i + 1 < expr->token.length) ? roman_char_value(expr->token.start[i + 1]) : 0;
+                        if (current < next) {
+                            val -= current;
+                        } else {
+                            val += current;
+                        }
+                    }
                 } else {
                     val = strtoll(expr->token.start, NULL, 0); // 自动识别 10进制、16进制(0x)和8进制(0)
                 }
