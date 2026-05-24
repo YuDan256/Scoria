@@ -226,28 +226,32 @@ void asm_builtins_generate(FILE* out) {
     if (g_use_crea) {
     fprintf(out, "    .globl crea\n");
     fprintf(out, "crea:\n");
-    fprintf(out, "    subq $40, %%rsp\n");
-    fprintf(out, "    movq %%rcx, 48(%%rsp)\n");
+    fprintf(out, "    pushq %%rbx\n");
+    fprintf(out, "    subq $32, %%rsp\n");
+    fprintf(out, "    movq %%rcx, %%rbx\n");
     fprintf(out, "    call GetProcessHeap\n");
-    fprintf(out, "    movq 48(%%rsp), %%r8\n");
+    fprintf(out, "    movq %%rbx, %%r8\n");
     fprintf(out, "    movq $8, %%rdx\n");
     fprintf(out, "    movq %%rax, %%rcx\n");
     fprintf(out, "    call HeapAlloc\n");
-    fprintf(out, "    addq $40, %%rsp\n");
+    fprintf(out, "    addq $32, %%rsp\n");
+    fprintf(out, "    popq %%rbx\n");
     fprintf(out, "    ret\n\n");
     }
 
     if (g_use_neca) {
     fprintf(out, "    .globl neca\n");
     fprintf(out, "neca:\n");
-    fprintf(out, "    subq $40, %%rsp\n");
-    fprintf(out, "    movq %%rcx, 48(%%rsp)\n");
+    fprintf(out, "    pushq %%rbx\n");
+    fprintf(out, "    subq $32, %%rsp\n");
+    fprintf(out, "    movq %%rcx, %%rbx\n");
     fprintf(out, "    call GetProcessHeap\n");
-    fprintf(out, "    movq 48(%%rsp), %%r8\n");
+    fprintf(out, "    movq %%rbx, %%r8\n");
     fprintf(out, "    movq $0, %%rdx\n");
     fprintf(out, "    movq %%rax, %%rcx\n");
     fprintf(out, "    call HeapFree\n");
-    fprintf(out, "    addq $40, %%rsp\n");
+    fprintf(out, "    addq $32, %%rsp\n");
+    fprintf(out, "    popq %%rbx\n");
     fprintf(out, "    ret\n\n");
     }
 
@@ -386,36 +390,40 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
     if (g_use_crea) {
     // 追加内置汇编例程: __crea
     g_crea_offset = (uint32_t)linker->text_section.size;
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x28); // sub rsp, 40
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30); // mov [rsp+48], rcx
+    emit8(&linker->text_section, 0x53); // push rbx
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x20); // sub rsp, 32
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xCB); // mov rbx, rcx
     emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15); // call GetProcessHeap
     g_call_getprocessheap_reloc1 = (uint32_t)linker->text_section.size;
     emit32(&linker->text_section, 0);
-    emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit8(&linker->text_section, 0x44); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30); // mov r8, [rsp+48]
+    emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xD8); // mov r8, rbx
     emit_mov_reg_imm32(&linker->text_section, REG_RDX, 8); // mov rdx, 8 (HEAP_ZERO_MEMORY)
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xC1); // mov rcx, rax
     emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15); // call HeapAlloc
     g_call_heapalloc_reloc = (uint32_t)linker->text_section.size;
     emit32(&linker->text_section, 0);
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xC4); emit8(&linker->text_section, 0x28); // add rsp, 40
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xC4); emit8(&linker->text_section, 0x20); // add rsp, 32
+    emit8(&linker->text_section, 0x5B); // pop rbx
     emit8(&linker->text_section, 0xC3); // ret
     }
 
     if (g_use_neca) {
     // 追加内置汇编例程: __neca
     g_neca_offset = (uint32_t)linker->text_section.size;
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x28); // sub rsp, 40
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30); // mov [rsp+48], rcx
+    emit8(&linker->text_section, 0x53); // push rbx
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x20); // sub rsp, 32
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xCB); // mov rbx, rcx
     emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15); // call GetProcessHeap
     g_call_getprocessheap_reloc2 = (uint32_t)linker->text_section.size;
     emit32(&linker->text_section, 0);
-    emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit8(&linker->text_section, 0x44); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x30); // mov r8, [rsp+48]
+    emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xD8); // mov r8, rbx
     emit_mov_reg_imm32(&linker->text_section, REG_RDX, 0); // mov rdx, 0
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x89); emit8(&linker->text_section, 0xC1); // mov rcx, rax
     emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15); // call HeapFree
     g_call_heapfree_reloc = (uint32_t)linker->text_section.size;
     emit32(&linker->text_section, 0);
-    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xC4); emit8(&linker->text_section, 0x28); // add rsp, 40
+    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xC4); emit8(&linker->text_section, 0x20); // add rsp, 32
+    emit8(&linker->text_section, 0x5B); // pop rbx
     emit8(&linker->text_section, 0xC3); // ret
     }
 

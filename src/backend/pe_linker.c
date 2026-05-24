@@ -1500,8 +1500,8 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
         }
 
         // 回填 __print_hex 内部的 __print_str 调用
-        int32_t rel_hex_print_str = (int32_t)(g_print_str_offset - (g_print_hex_offset + 74 + 4));
-        memcpy(linker->text_section.buffer + g_print_hex_offset + 74, &rel_hex_print_str, 4);
+        int32_t rel_hex_print_str = (int32_t)(g_print_str_offset - (g_print_hex_offset + 78 + 4));
+        memcpy(linker->text_section.buffer + g_print_hex_offset + 78, &rel_hex_print_str, 4);
     }
 
     // 回填 __print_bool 调用重定位
