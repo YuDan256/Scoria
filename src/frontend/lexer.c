@@ -111,6 +111,11 @@ static TokenKind identifier_type(Lexer* lexer) {
     if (len == 3 && memcmp(lexer->start, "nhl", 3) == 0) return TK_KW_NIHIL;
     if (len == 3 && memcmp(lexer->start, "rmp", 3) == 0) return TK_KW_RUMPE;
     if (len == 3 && memcmp(lexer->start, "prg", 3) == 0) return TK_KW_PERGE;
+    if (len == 3 && memcmp(lexer->start, "csl", 3) == 0) return TK_KW_CONSULE;
+    if (len == 3 && memcmp(lexer->start, "xcp", 3) == 0) return TK_KW_EXCERPE;
+    if (len == 3 && memcmp(lexer->start, "alt", 3) == 0) return TK_KW_ALITER;
+    if (len == 3 && memcmp(lexer->start, "scb", 3) == 0) return TK_KW_SCRIBE;
+    if (len == 3 && memcmp(lexer->start, "rcd", 3) == 0) return TK_KW_RECEDE;
 
     // 【古典宗卷长体映射网络】
     switch (c) {

@@ -133,6 +133,11 @@ Scoria 提供了极其显式的内存操作指令，拒绝隐式转换：
 | :--- | :--- | :--- |
 | `edita` | `edt` | 公开暴露(导出) |
 | `barbara` | `bbr` | 蛮族接口(外部) |
+| `consule` | `csl` | 引入整个模块 |
+| `excerpe` | `xcp` | 精确摘录符号 |
+| `aliter` | `alt` | 条件分支的否则 |
+| `scribe` | `scb` | 安全变长输出 |
+| `recede` | `rcd` | 指针后退 |
 | `logica` | `lgc` | 逻辑电平(bool) |
 | `littera` | `ltr` | 1字节 ASCII |
 | `textus` | `txt` | 静态文本字面量 |
