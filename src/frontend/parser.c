@@ -1,12 +1,14 @@
 #include "parser.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 // ---------------------------------------------------------
 // AST 节点内存分配 (幽灵后勤大营)
 // ---------------------------------------------------------
 AstNode* ast_create_node(Arena* arena, AstNodeKind kind, Token token) {
     AstNode* node = (AstNode*)arena_alloc(arena, sizeof(AstNode));
+    memset(node, 0, sizeof(AstNode));
     node->kind = kind;
     node->token = token;
     return node;
@@ -75,6 +77,7 @@ static AstNode* struct_declaration(Parser* parser);
 // ---------------------------------------------------------
 static AstNode* parse_type(Parser* parser) {
     AstNode* node = ast_create_node(&parser->arena, AST_TYPE, parser->current);
+    node->as.type_node.module_prefix = (Token){0};
     node->as.type_node.is_via = false;
     node->as.type_node.is_cohors = false;
     node->as.type_node.is_acies = false;
@@ -105,6 +108,12 @@ static AstNode* parse_type(Parser* parser) {
         match(parser, TK_KW_NIHIL) || match(parser, TK_IDENTIFIER)) {
         
         node->as.type_node.base_type = parser->previous;
+        
+        if (node->as.type_node.base_type.kind == TK_IDENTIFIER && match(parser, TK_DOT)) {
+            node->as.type_node.module_prefix = node->as.type_node.base_type;
+            consume(parser, TK_IDENTIFIER, "Nomen typi post '.' exspectatur.");
+            node->as.type_node.base_type = parser->previous;
+        }
         
         // 处理古典词缀组合，例如 minimus (i8) purus -> p8
         if (match(parser, TK_TY_PURUS)) {

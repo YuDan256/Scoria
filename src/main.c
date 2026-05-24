@@ -78,54 +78,61 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // 将所有输入文件拼接成一个巨大的源代码字符串 (Unity Build 模式)
-    size_t total_size = 0;
+    // 1. 前端：独立解析每个文件 (Syntax Analysis)
     char** sources = (char**)malloc(source_count * sizeof(char*));
-    for (int i = 0; i < source_count; i++) {
-        sources[i] = read_file(source_paths[i]);
-        if (!sources[i]) return 1;
-        total_size += strlen(sources[i]) + 2; // +2 用于追加 "\n\n"
-    }
+    Parser* parsers = (Parser*)malloc(source_count * sizeof(Parser));
+    AstNode** programs = (AstNode**)malloc(source_count * sizeof(AstNode*));
+    bool has_syntax_error = false;
 
-    char* source = (char*)malloc(total_size + 1);
-    source[0] = '\0';
     for (int i = 0; i < source_count; i++) {
         LOG_INFO("[I] Lectio fontis: %s", source_paths[i]);
-        strcat(source, sources[i]);
-        strcat(source, "\n\n");
-        free(sources[i]);
+        sources[i] = read_file(source_paths[i]);
+        if (!sources[i]) return 1;
+        
+        parser_init(&parsers[i], sources[i]);
+        programs[i] = parse_program(&parsers[i]);
+        
+        if (parsers[i].had_error) {
+            has_syntax_error = true;
+        }
     }
-    free(sources);
-
-    // 1. 前端：语法分析 (Syntax Analysis)
-    Parser parser;
-    parser_init(&parser, source);
-    AstNode* program = parse_program(&parser);
     
-    if (parser.had_error) {
+    if (has_syntax_error) {
         LOG_ERROR("Vitia syntactica inventa sunt. Processus abortus est.");
-        parser_free(&parser);
+        for (int i = 0; i < source_count; i++) {
+            parser_free(&parsers[i]);
+            free(sources[i]);
+        }
+        free(sources);
+        free(parsers);
+        free(programs);
         return 1;
     }
     LOG_INFO("[II] Analysis syntactica perfecta est.");
 
-    // 2. 中端：类型检查与语义分析 (Semantic Analysis)
+    // 2. 中端：跨模块类型检查与语义分析 (Semantic Analysis)
     types_init(); // 初始化类型系统单例
     TypeChecker checker;
     type_checker_init(&checker);
     
-    if (!type_checker_run(&checker, program)) {
+    if (!type_checker_run(&checker, programs, source_count)) {
         LOG_ERROR("Vitia semantica inventa sunt. Processus abortus est.");
         type_checker_free(&checker);
-        parser_free(&parser);
+        for (int i = 0; i < source_count; i++) {
+            parser_free(&parsers[i]);
+            free(sources[i]);
+        }
+        free(sources);
+        free(parsers);
+        free(programs);
         return 1;
     }
     LOG_INFO("[III] Probatio typorum et semantica perfecta est.");
 
     // 3. 后端：IR 生成 (IR Generation)
     IrBuilder builder;
-    ir_builder_init(&builder, "TestModule");
-    ir_gen_generate(&builder, program);
+    ir_builder_init(&builder, "ScoriaModule");
+    ir_gen_generate(&builder, programs, source_count);
     
     if (emit_ir) {
         LOG_INFO("[IV] Generatio Repraesentationis Intermediae (SIR):");
@@ -154,8 +161,13 @@ int main(int argc, char** argv) {
     // 6. 清理战场 (Cleanup)
     ir_builder_free(&builder);
     type_checker_free(&checker);
-    parser_free(&parser);
-    free(source);
+    for (int i = 0; i < source_count; i++) {
+        parser_free(&parsers[i]);
+        free(sources[i]);
+    }
+    free(sources);
+    free(parsers);
+    free(programs);
 
     return 0;
 }

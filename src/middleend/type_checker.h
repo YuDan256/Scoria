@@ -15,7 +15,7 @@ typedef struct {
 void type_checker_init(TypeChecker* checker);
 void type_checker_free(TypeChecker* checker);
 
-// 执行类型检查 (包含两遍遍历：收集声明与深度检查)
-bool type_checker_run(TypeChecker* checker, AstNode* program);
+// 执行类型检查 (包含多遍遍历：模块注册、收集声明、处理导入、深度检查)
+bool type_checker_run(TypeChecker* checker, AstNode** programs, int count);
 
 #endif // SCORIA_TYPE_CHECKER_H

@@ -65,7 +65,22 @@ static ScoriaType* resolve_type_node(TypeChecker* checker, AstNode* type_node) {
         case TK_TY_TEXTUS: base_type = type_get_basic(TY_TEXTUS); break;
         case TK_KW_NIHIL: base_type = type_get_basic(TY_NIHIL); break;
         case TK_IDENTIFIER: {
-            Symbol* sym = symtab_lookup(&checker->symtab, base_tok);
+            Symbol* sym = NULL;
+            if (type_node->as.type_node.module_prefix.length > 0) {
+                Symbol* mod_sym = symtab_lookup(&checker->symtab, type_node->as.type_node.module_prefix);
+                if (mod_sym && mod_sym->kind == SYM_MODULE) {
+                    sym = symtab_lookup_in_scope(mod_sym->module_scope, base_tok);
+                    if (sym && !sym->is_editus) {
+                        type_error(checker, base_tok, "Typus privatus est et extra librum adhiberi non potest.");
+                        sym = NULL;
+                    }
+                } else {
+                    type_error(checker, type_node->as.type_node.module_prefix, "Liber non inventus est.");
+                }
+            } else {
+                sym = symtab_lookup(&checker->symtab, base_tok);
+            }
+
             if (sym && (sym->kind == SYM_STRUCT || sym->kind == SYM_UNION)) {
                 base_type = sym->type;
             } else {
@@ -151,10 +166,6 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr) {
         case AST_UNARY_EXPR: {
             ScoriaType* operand_type = check_expression(checker, expr->as.unary.operand);
             
-            if (operand_type->kind == TY_UNKNOWN) {
-                break; // 防止级联报错
-            }
-
             if (expr->as.unary.op.kind == TK_KW_LOCUS) {
                 type = type_get_via(operand_type);
             } else if (expr->as.unary.op.kind == TK_KW_TENE) {
@@ -182,9 +193,6 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr) {
 
         case AST_CALL_EXPR: {
             ScoriaType* callee_type = check_expression(checker, expr->as.call.callee);
-            if (callee_type->kind == TY_UNKNOWN) {
-                break; // 防止级联报错
-            }
             if (callee_type->kind != TY_ACTIO) {
                 type_error(checker, expr->token, "Actiones solae vocari possunt.");
                 break;
@@ -206,9 +214,20 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr) {
 
         case AST_MEMBER_EXPR: {
             ScoriaType* obj_type = check_expression(checker, expr->as.member_expr.object);
-            
-            if (obj_type->kind == TY_UNKNOWN) {
-                break; // 防止级联报错
+
+            // 模块命名空间访问 (如 math_lib.Vector)
+            if (obj_type->kind == TY_MODULE) {
+                Symbol* mod_sym = expr->as.member_expr.object->resolved_symbol;
+                Symbol* prop_sym = symtab_lookup_in_scope(mod_sym->module_scope, expr->as.member_expr.property);
+                if (!prop_sym) {
+                    type_error(checker, expr->as.member_expr.property, "Symbolum in libro non inventum est.");
+                } else if (!prop_sym->is_editus) {
+                    type_error(checker, expr->as.member_expr.property, "Symbolum privatum est et extra librum adhiberi non potest.");
+                } else {
+                    expr->resolved_symbol = prop_sym; // 将 AST_MEMBER_EXPR 直接重定向到目标符号
+                    type = prop_sym->type;
+                }
+                break;
             }
 
             if (expr->as.member_expr.is_pointer) {
@@ -219,7 +238,7 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr) {
                 obj_type = obj_type->as.inner;
             } else {
                 if (obj_type->kind != TY_FORMA && obj_type->kind != TY_UNIO && obj_type->kind != TY_COHORS) {
-                    type_error(checker, expr->token, "Operator '.' ad 'forma', 'unio' vel 'cohors' solum applicari potest.");
+                    type_error(checker, expr->token, "Operator '.' ad 'forma', 'unio', 'cohors' vel 'liber' solum applicari potest.");
                     break;
                 }
             }
@@ -262,7 +281,7 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr) {
 
         case AST_NECA_EXPR: {
             ScoriaType* ptr_type = check_expression(checker, expr->as.neca_expr.pointer);
-            if (ptr_type->kind != TY_UNKNOWN && ptr_type->kind != TY_VIA) {
+            if (ptr_type->kind != TY_VIA) {
                 type_error(checker, expr->token, "'neca' ad 'via' solum applicari potest.");
             }
             type = type_get_basic(TY_NIHIL);
@@ -273,9 +292,7 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr) {
             ScoriaType* target_type = check_expression(checker, expr->as.index_expr.target);
             ScoriaType* index_type = check_expression(checker, expr->as.index_expr.index);
             
-            if (target_type->kind == TY_UNKNOWN) {
-                // skip
-            } else if (target_type->kind == TY_ACIES) {
+            if (target_type->kind == TY_ACIES) {
                 type = target_type->as.array.inner;
             } else if (target_type->kind == TY_COHORS || target_type->kind == TY_VIA) {
                 type = target_type->as.inner;
@@ -284,7 +301,7 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr) {
             }
 
             // 简单校验索引是否为整数类型 (i8~i64, p8~p64)
-            if (index_type->kind != TY_UNKNOWN && (index_type->kind < TY_I8 || index_type->kind > TY_P64)) {
+            if (index_type->kind < TY_I8 || index_type->kind > TY_P64) {
                 type_error(checker, expr->token, "Index integer esse debet.");
             }
             break;
@@ -295,10 +312,10 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr) {
             ScoriaType* ptr_type = check_expression(checker, expr->as.pointer_offset.pointer);
             ScoriaType* offset_type = check_expression(checker, expr->as.pointer_offset.offset);
 
-            if (ptr_type->kind != TY_UNKNOWN && ptr_type->kind != TY_VIA && ptr_type->kind != TY_COHORS) {
+            if (ptr_type->kind != TY_VIA && ptr_type->kind != TY_COHORS) {
                 type_error(checker, expr->token, "'vade/recede' ad 'via' vel 'cohors' solum applicari potest.");
             }
-            if (offset_type->kind != TY_UNKNOWN && (offset_type->kind < TY_I8 || offset_type->kind > TY_P64)) {
+            if (offset_type->kind < TY_I8 || offset_type->kind > TY_P64) {
                 type_error(checker, expr->token, "Offset integer esse debet.");
             }
             type = ptr_type;
@@ -391,7 +408,7 @@ static void check_statement(TypeChecker* checker, AstNode* stmt) {
 
         case AST_IF_STMT: {
             ScoriaType* cond_type = check_expression(checker, stmt->as.if_stmt.condition);
-            if (cond_type->kind != TY_UNKNOWN && cond_type->kind != TY_LOGICA) {
+            if (cond_type->kind != TY_LOGICA) {
                 type_error(checker, stmt->token, "Condicio in 'si' logica esse debet.");
             }
             check_statement(checker, stmt->as.if_stmt.then_branch);
@@ -403,7 +420,7 @@ static void check_statement(TypeChecker* checker, AstNode* stmt) {
 
         case AST_WHILE_STMT: {
             ScoriaType* cond_type = check_expression(checker, stmt->as.while_stmt.condition);
-            if (cond_type->kind != TY_UNKNOWN && cond_type->kind != TY_LOGICA) {
+            if (cond_type->kind != TY_LOGICA) {
                 type_error(checker, stmt->token, "Condicio in 'dum' logica esse debet.");
             }
             checker->loop_depth++;
@@ -419,7 +436,7 @@ static void check_statement(TypeChecker* checker, AstNode* stmt) {
             }
             if (stmt->as.for_stmt.condition) {
                 ScoriaType* cond_type = check_expression(checker, stmt->as.for_stmt.condition);
-                if (cond_type->kind != TY_UNKNOWN && cond_type->kind != TY_LOGICA) {
+                if (cond_type->kind != TY_LOGICA) {
                     type_error(checker, stmt->token, "Condicio in 'per' logica esse debet.");
                 }
             }
@@ -478,7 +495,7 @@ static void check_statement(TypeChecker* checker, AstNode* stmt) {
 }
 
 // ---------------------------------------------------------
-// 第一遍：收集全局声明 (Declaration Pass)
+// 收集全局声明 (Declaration Pass)
 // ---------------------------------------------------------
 static void collect_declarations(TypeChecker* checker, AstNode* program) {
     if (program->kind != AST_PROGRAM) return;
@@ -567,32 +584,112 @@ void type_checker_free(TypeChecker* checker) {
     symtab_free(&checker->symtab);
 }
 
-bool type_checker_run(TypeChecker* checker, AstNode* program) {
-    // 第一遍：收集全局声明
-    collect_declarations(checker, program);
+bool type_checker_run(TypeChecker* checker, AstNode** programs, int count) {
+    // 第一遍：注册所有模块 (Module Registration Pass)
+    for (int i = 0; i < count; i++) {
+        AstNode* prog = programs[i];
+        if (prog->kind != AST_PROGRAM) continue;
+        
+        Token mod_name = {0};
+        for (int j = 0; j < prog->as.program.decl_count; j++) {
+            if (prog->as.program.declarations[j]->kind == AST_MODULE_DECL) {
+                mod_name = prog->as.program.declarations[j]->as.module_decl.name;
+                break;
+            }
+        }
+        
+        if (mod_name.length == 0) {
+            type_error(checker, prog->token, "Fasciculus sine declaratione 'liber' est.");
+            continue;
+        }
+        
+        checker->symtab.current_scope = checker->symtab.universe_scope;
+        symtab_enter_scope(&checker->symtab); // 创建模块的全局作用域
+        Scope* mod_scope = checker->symtab.current_scope;
+        checker->symtab.current_scope = checker->symtab.universe_scope;
+        
+        if (symtab_define(&checker->symtab, mod_name, SYM_MODULE, type_get_basic(TY_MODULE), NULL, true)) {
+            Symbol* mod_sym = symtab_lookup_current(&checker->symtab, mod_name);
+            mod_sym->module_scope = mod_scope;
+            prog->resolved_symbol = mod_sym;
+        } else {
+            type_error(checker, mod_name, "Nomen libri iam definitum est.");
+        }
+    }
     
     if (checker->had_error) return false;
 
-    // 第二遍：深入检查函数体 (Type Checking Pass)
-    if (program->kind == AST_PROGRAM) {
-        for (int i = 0; i < program->as.program.decl_count; i++) {
-            AstNode* decl = program->as.program.declarations[i];
-            
+    // 第二遍：收集各模块内的全局声明 (Declaration Pass)
+    for (int i = 0; i < count; i++) {
+        AstNode* prog = programs[i];
+        if (!prog->resolved_symbol) continue;
+        checker->symtab.current_scope = prog->resolved_symbol->module_scope;
+        collect_declarations(checker, prog);
+    }
+    
+    if (checker->had_error) return false;
+
+    // 第三遍：处理模块导入 (Import Pass)
+    for (int i = 0; i < count; i++) {
+        AstNode* prog = programs[i];
+        if (!prog->resolved_symbol) continue;
+        checker->symtab.current_scope = prog->resolved_symbol->module_scope;
+        
+        for (int j = 0; j < prog->as.program.decl_count; j++) {
+            AstNode* decl = prog->as.program.declarations[j];
+            if (decl->kind == AST_IMPORT_DECL) {
+                Symbol* target_mod = symtab_lookup_in_scope(checker->symtab.universe_scope, decl->as.import_decl.module_name);
+                if (!target_mod) {
+                    type_error(checker, decl->as.import_decl.module_name, "Liber importatus non inventus est.");
+                    continue;
+                }
+                
+                if (decl->as.import_decl.item_count == 0) {
+                    // consule liber X; (引入整个模块命名空间)
+                    symtab_define(&checker->symtab, target_mod->name, SYM_MODULE, type_get_basic(TY_MODULE), NULL, false);
+                    Symbol* alias = symtab_lookup_current(&checker->symtab, target_mod->name);
+                    alias->module_scope = target_mod->module_scope;
+                } else {
+                    // de X xcp Y, Z; (精确摘录)
+                    for (int k = 0; k < decl->as.import_decl.item_count; k++) {
+                        Token item_name = decl->as.import_decl.items[k];
+                        Symbol* item_sym = symtab_lookup_in_scope(target_mod->module_scope, item_name);
+                        if (!item_sym) {
+                            type_error(checker, item_name, "Symbolum in libro non inventum est.");
+                        } else if (!item_sym->is_editus) {
+                            type_error(checker, item_name, "Symbolum privatum est et importari non potest.");
+                        } else {
+                            // 创建别名符号
+                            symtab_insert_alias(&checker->symtab, item_name, item_sym);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    if (checker->had_error) return false;
+
+    // 第四遍：深入检查函数体 (Type Checking Pass)
+    for (int i = 0; i < count; i++) {
+        AstNode* prog = programs[i];
+        if (!prog->resolved_symbol) continue;
+        checker->symtab.current_scope = prog->resolved_symbol->module_scope;
+        
+        for (int j = 0; j < prog->as.program.decl_count; j++) {
+            AstNode* decl = prog->as.program.declarations[j];
             if (decl->kind == AST_FUNC_DECL) {
-                Symbol* sym = symtab_lookup(&checker->symtab, decl->as.func_decl.name);
+                Symbol* sym = symtab_lookup_current(&checker->symtab, decl->as.func_decl.name);
                 if (sym && sym->type->kind == TY_ACTIO) {
                     checker->current_function_return_type = sym->type->as.func_type.return_type;
-                    
                     symtab_enter_scope(&checker->symtab);
                     
-                    // 将参数注册到函数作用域
-                    for (int j = 0; j < decl->as.func_decl.param_count; j++) {
-                        AstNode* param = decl->as.func_decl.params[j];
+                    for (int k = 0; k < decl->as.func_decl.param_count; k++) {
+                        AstNode* param = decl->as.func_decl.params[k];
                         ScoriaType* param_type = resolve_type_node(checker, param->as.var_decl.type);
                         symtab_define(&checker->symtab, param->as.var_decl.name, SYM_VAR, param_type, param, false);
                     }
                     
-                    // 检查函数体
                     if (decl->as.func_decl.body) {
                         check_statement(checker, decl->as.func_decl.body);
                     }

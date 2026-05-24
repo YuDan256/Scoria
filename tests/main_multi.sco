@@ -1,7 +1,7 @@
 liber main_multi;
 
-// 测试多文件引入：精确摘录 (xcp = excerpe)
-de math_lib xcp Vector, add_vec;
+// 测试多文件引入：引入整个模块命名空间 (csl = consule)
+csl liber math_lib;
 
 // 测试 FFI 调用：声明 msvcrt.dll 中的 C 标准库函数 (bbr = barbara, ltr = littera)
 act bbr("msvcrt.dll") puts(str: via ltr) -> medius;
@@ -20,18 +20,18 @@ act princeps() -> medius {
     // 也可以直接获取胖指针的长度
     scb("Longitudo ex textus: ", msg2.longitudo, "\n");
 
-    // 2. 使用外部模块的结构体和函数
-    sit v1: Vector;
+    // 2. 使用外部模块的结构体和函数 (通过命名空间访问)
+    sit v1: math_lib.Vector;
     v1.x = 10;
     v1.y = 20;
 
-    sit v2: Vector;
+    sit v2: math_lib.Vector;
     v2.x = 5;
     v2.y = 15;
 
-    sit v3: Vector;
+    sit v3: math_lib.Vector;
     // locus 取地址
-    add_vec(locus v1, locus v2, locus v3);
+    math_lib.add_vec(locus v1, locus v2, locus v3);
 
     scb("Vector Resultatum: x=", v3.x, ", y=", v3.y, "\n");
 

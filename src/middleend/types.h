@@ -19,7 +19,8 @@ typedef enum {
     TY_ACIES,    // 数组
     TY_FORMA,    // 结构体
     TY_UNIO,     // 联合体
-    TY_ACTIO     // 函数
+    TY_ACTIO,    // 函数
+    TY_MODULE    // 模块命名空间
 } TypeKind;
 
 typedef struct ScoriaType ScoriaType;

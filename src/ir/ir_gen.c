@@ -27,6 +27,7 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
         case AST_IDENT_EXPR: {
             Symbol* sym = expr->resolved_symbol;
             if (sym) {
+                while (sym->alias_target) sym = sym->alias_target;
                 if (sym->type && sym->type->kind == TY_ACTIO) {
                     SirValue* val = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
                     val->kind = SIR_VAL_GLOBAL;
@@ -69,6 +70,38 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
             return ir_build_gep(builder, ptr, index, element_size, type_get_via(expr->expr_type));
         }
         case AST_MEMBER_EXPR: {
+            if (expr->resolved_symbol) {
+                // 这是一个跨模块的符号访问 (如 math_lib.Vector)，直接返回目标符号的左值
+                Symbol* sym = expr->resolved_symbol;
+                while (sym->alias_target) sym = sym->alias_target;
+                if (sym->type && sym->type->kind == TY_ACTIO) {
+                    SirValue* val = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
+                    val->kind = SIR_VAL_GLOBAL;
+                    val->type = type_get_via(sym->type);
+                    char* name = (char*)arena_alloc(&builder->arena, sym->name.length + 1);
+                    strncpy(name, sym->name.start, sym->name.length);
+                    name[sym->name.length] = '\0';
+                    val->as.global_name = name;
+                    return val;
+                }
+                if (sym->ir_val) return sym->ir_val;
+                return NULL;
+            }
+
+            ScoriaType* obj_type = expr->as.member_expr.object->expr_type;
+            Symbol* obj_sym = expr->as.member_expr.object->resolved_symbol;
+            if ((obj_type && obj_type->kind == TY_MODULE) || 
+                (obj_sym && obj_sym->type && obj_sym->type->kind == TY_MODULE)) {
+                SirValue* val = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
+                val->kind = SIR_VAL_GLOBAL;
+                val->type = type_get_via(expr->expr_type);
+                char* name = (char*)arena_alloc(&builder->arena, expr->as.member_expr.property.length + 1);
+                strncpy(name, expr->as.member_expr.property.start, expr->as.member_expr.property.length);
+                name[expr->as.member_expr.property.length] = '\0';
+                val->as.global_name = name;
+                return val;
+            }
+
             SirValue* obj_ptr = NULL;
             if (expr->as.member_expr.is_pointer) {
                 // p->field: p 已经是指针，直接求值
@@ -79,7 +112,6 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
             }
             
             int byte_offset = 0;
-            ScoriaType* obj_type = expr->as.member_expr.object->expr_type;
             if (obj_type && obj_type->kind == TY_VIA) obj_type = obj_type->as.inner;
             
             if (obj_type && obj_type->kind == TY_COHORS) {
@@ -347,18 +379,22 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
         }
         case AST_CALL_EXPR: {
             SirValue* callee = NULL;
-            if (expr->as.call.callee->kind == AST_IDENT_EXPR && (!expr->as.call.callee->resolved_symbol || !expr->as.call.callee->resolved_symbol->ir_val)) {
-                // 全局函数调用
-                Symbol* sym = expr->as.call.callee->resolved_symbol;
-                if (sym) {
-                    callee = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
-                    callee->kind = SIR_VAL_GLOBAL;
-                    callee->type = sym->type;
-                    char* name = (char*)arena_alloc(&builder->arena, sym->name.length + 1);
-                    strncpy(name, sym->name.start, sym->name.length);
-                    name[sym->name.length] = '\0';
-                    callee->as.global_name = name;
-                }
+            Symbol* callee_sym = NULL;
+            
+            if (expr->as.call.callee->kind == AST_IDENT_EXPR || expr->as.call.callee->kind == AST_MEMBER_EXPR) {
+                callee_sym = expr->as.call.callee->resolved_symbol;
+                while (callee_sym && callee_sym->alias_target) callee_sym = callee_sym->alias_target;
+            }
+            
+            if (callee_sym && !callee_sym->ir_val) {
+                // 全局函数调用 (包括跨模块的命名空间调用)
+                callee = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
+                callee->kind = SIR_VAL_GLOBAL;
+                callee->type = type_get_via(callee_sym->type);
+                char* name = (char*)arena_alloc(&builder->arena, callee_sym->name.length + 1);
+                strncpy(name, callee_sym->name.start, callee_sym->name.length);
+                name[callee_sym->name.length] = '\0';
+                callee->as.global_name = name;
             } else {
                 // 函数指针调用 (通过表达式求值获取指针)
                 callee = gen_expression(builder, expr->as.call.callee);
@@ -389,8 +425,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             ScoriaType* target_type = expr->expr_type;
             ScoriaType* src_type = expr->as.cast_expr.value->expr_type;
             
-            if (!target_type) return NULL;
-            if (!src_type) src_type = type_get_basic(TY_NIHIL); // 容错：如果字面量丢失类型，默认视为 nihil
+            if (!target_type || !src_type) return NULL;
             
             if (type_equals(src_type, target_type)) {
                 return gen_expression(builder, expr->as.cast_expr.value);
@@ -500,11 +535,26 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
         }
         case AST_INDEX_EXPR:
         case AST_MEMBER_EXPR: {
+            if (expr->kind == AST_MEMBER_EXPR && expr->resolved_symbol) {
+                // 跨模块符号访问作为右值
+                Symbol* sym = expr->resolved_symbol;
+                while (sym->alias_target) sym = sym->alias_target;
+                if (sym->type && sym->type->kind == TY_ACTIO) {
+                    return gen_lvalue(builder, expr); // 函数指针
+                } else if (sym->ir_val) {
+                    if (sym->type && (sym->type->kind == TY_FORMA || sym->type->kind == TY_UNIO || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS)) {
+                        return sym->ir_val;
+                    }
+                    return ir_build_load(builder, sym->ir_val);
+                }
+                return NULL;
+            }
+
             // 数组索引和成员访问作为右值时，先取其左值地址
             SirValue* lval = gen_lvalue(builder, expr);
             if (lval) {
-                // 结构体、数组和切片退化为指针
-                if (expr->expr_type && (expr->expr_type->kind == TY_FORMA || expr->expr_type->kind == TY_ACIES || expr->expr_type->kind == TY_COHORS)) {
+                // 结构体、数组、切片和函数退化为指针
+                if (expr->expr_type && (expr->expr_type->kind == TY_FORMA || expr->expr_type->kind == TY_ACIES || expr->expr_type->kind == TY_COHORS || expr->expr_type->kind == TY_ACTIO)) {
                     return lval;
                 }
                 return ir_build_load(builder, lval);
@@ -767,10 +817,8 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
     }
 }
 
-void ir_gen_generate(IrBuilder* builder, AstNode* program) {
-    if (!program || program->kind != AST_PROGRAM) return;
-
-    // 查找或创建全局初始化函数 __scoria_init (支持多文件合并到同一个 Module)
+void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count) {
+    // 查找或创建全局初始化函数 __scoria_init
     SirFunction* init_func = NULL;
     for (SirFunction* f = builder->module->first_func; f; f = f->next) {
         if (strcmp(f->name, "__scoria_init") == 0) {
@@ -798,10 +846,15 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
         }
     }
 
-    for (int i = 0; i < program->as.program.decl_count; i++) {
-        AstNode* decl = program->as.program.declarations[i];
-        
-        if (decl->kind == AST_VAR_DECL || decl->kind == AST_CONST_DECL) {
+    // 遍历所有模块生成 IR
+    for (int p = 0; p < count; p++) {
+        AstNode* program = programs[p];
+        if (!program || program->kind != AST_PROGRAM) continue;
+
+        for (int i = 0; i < program->as.program.decl_count; i++) {
+            AstNode* decl = program->as.program.declarations[i];
+            
+            if (decl->kind == AST_VAR_DECL || decl->kind == AST_CONST_DECL) {
             Symbol* sym = decl->resolved_symbol;
             if (sym) {
                 int size = type_get_size(sym->type);
@@ -895,6 +948,7 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
             }
         }
     }
+    } // end for programs
 
     // 结束 __scoria_init 函数
     SirFunction* prev_func = builder->current_func;

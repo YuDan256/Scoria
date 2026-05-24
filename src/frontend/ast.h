@@ -209,6 +209,7 @@ struct AstNode {
         } switch_stmt;
 
         struct {
+            Token module_prefix; // 模块前缀 (可选)
             Token base_type;
             bool is_via;
             bool is_cohors;
