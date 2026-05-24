@@ -435,6 +435,10 @@ static void check_statement(TypeChecker* checker, AstNode* stmt) {
             }
             break;
 
+        case AST_GOTO_STMT:
+        case AST_LABEL_STMT:
+            break;
+
         default:
             break;
     }

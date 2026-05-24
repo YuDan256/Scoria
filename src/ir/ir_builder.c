@@ -103,6 +103,22 @@ SirFunction* ir_builder_create_function(IrBuilder* builder, const char* name, Sc
     return func;
 }
 
+SirBlock* ir_builder_get_or_create_label_block(IrBuilder* builder, const char* name_start, int name_len) {
+    char* name = (char*)arena_alloc(&builder->arena, name_len + 5);
+    strcpy(name, "lbl_");
+    strncat(name, name_start, name_len);
+    name[name_len + 4] = '\0';
+    
+    if (builder->current_func) {
+        for (SirBlock* b = builder->current_func->first_block; b; b = b->next) {
+            if (strcmp(b->name, name) == 0) {
+                return b;
+            }
+        }
+    }
+    return ir_builder_create_block(builder, name);
+}
+
 SirBlock* ir_builder_create_block(IrBuilder* builder, const char* name) {
     SirBlock* block = (SirBlock*)arena_alloc(&builder->arena, sizeof(SirBlock));
     block->id = builder->next_block_id++;

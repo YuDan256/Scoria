@@ -178,6 +178,7 @@ static TokenKind identifier_type(Lexer* lexer) {
     case 's':
         if (len == 2) return check_keyword(lexer, 1, 1, "i", TK_KW_SI);
         if (len == 3) return check_keyword(lexer, 1, 2, "it", TK_KW_SIT);
+        if (len == 4) return check_keyword(lexer, 1, 3, "ali", TK_KW_SALI);
         if (len == 6) return check_keyword(lexer, 1, 5, "cribe", TK_KW_SCRIBE);
         break;
     case 't':

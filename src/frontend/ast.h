@@ -38,6 +38,8 @@ typedef enum {
     AST_CREA_EXPR,
     AST_NECA_EXPR,
     AST_ASSIGN_EXPR,
+    AST_GOTO_STMT,
+    AST_LABEL_STMT,
     AST_TYPE
 } AstNodeKind;
 
@@ -186,6 +188,14 @@ struct AstNode {
             AstNode* target;
             AstNode* value;
         } assign;
+
+        struct {
+            Token label_name;
+        } goto_stmt;
+
+        struct {
+            Token name;
+        } label_stmt;
 
         struct {
             Token base_type;

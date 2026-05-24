@@ -453,6 +453,11 @@ static AstNode* expression(Parser* parser) {
 // ---------------------------------------------------------
 static AstNode* expression_statement(Parser* parser) {
     AstNode* expr = expression(parser);
+    if (expr && expr->kind == AST_IDENT_EXPR && match(parser, TK_COLON)) {
+        AstNode* node = ast_create_node(&parser->arena, AST_LABEL_STMT, expr->token);
+        node->as.label_stmt.name = expr->token;
+        return node;
+    }
     consume(parser, TK_SEMI, "Post expressionem ';' exspectatur.");
     AstNode* node = ast_create_node(&parser->arena, AST_EXPR_STMT, expr ? expr->token : parser->previous);
     node->as.expr_stmt.expr = expr;
@@ -569,6 +574,15 @@ static AstNode* statement(Parser* parser) {
         Token keyword = parser->previous;
         consume(parser, TK_SEMI, "Post 'perge' ';' exspectatur.");
         return ast_create_node(&parser->arena, AST_CONTINUE_STMT, keyword);
+    }
+    if (match(parser, TK_KW_SALI)) {
+        Token keyword = parser->previous;
+        consume(parser, TK_IDENTIFIER, "Nomen tituli exspectatur.");
+        Token label_name = parser->previous;
+        consume(parser, TK_SEMI, "Post 'sali' ';' exspectatur.");
+        AstNode* node = ast_create_node(&parser->arena, AST_GOTO_STMT, keyword);
+        node->as.goto_stmt.label_name = label_name;
+        return node;
     }
     if (match(parser, TK_KW_REDDE)) {
         Token keyword = parser->previous;
@@ -766,6 +780,7 @@ static void synchronize(Parser* parser) {
             case TK_KW_DUM:
             case TK_KW_PER:
             case TK_KW_REDDE:
+            case TK_KW_SALI:
                 parser->panic_mode = false;
                 return;
             default:

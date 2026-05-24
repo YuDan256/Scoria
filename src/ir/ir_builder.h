@@ -32,6 +32,7 @@ SirGlobalVar* ir_builder_create_global(IrBuilder* builder, const char* name_star
 void ir_builder_add_extern(IrBuilder* builder, const char* name_start, int name_len, const char* dll_start, int dll_len);
 SirFunction* ir_builder_create_function(IrBuilder* builder, const char* name, ScoriaType* func_type);
 SirBlock* ir_builder_create_block(IrBuilder* builder, const char* name);
+SirBlock* ir_builder_get_or_create_label_block(IrBuilder* builder, const char* name_start, int name_len);
 void ir_builder_set_insert_point(IrBuilder* builder, SirBlock* block);
 
 // ---------------------------------------------------------

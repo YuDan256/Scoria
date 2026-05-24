@@ -677,6 +677,27 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
             }
             break;
         }
+        case AST_GOTO_STMT: {
+            SirBlock* target_block = ir_builder_get_or_create_label_block(builder, stmt->as.goto_stmt.label_name.start, stmt->as.goto_stmt.label_name.length);
+            ir_build_jmp(builder, target_block);
+            
+            SirBlock* next_block = ir_builder_create_block(builder, "post_sali");
+            ir_builder_set_insert_point(builder, next_block);
+            break;
+        }
+        case AST_LABEL_STMT: {
+            SirBlock* label_block = ir_builder_get_or_create_label_block(builder, stmt->as.label_stmt.name.start, stmt->as.label_stmt.name.length);
+            
+            if (builder->current_block && (!builder->current_block->last_inst || 
+                (builder->current_block->last_inst->opcode != SIR_JMP && 
+                 builder->current_block->last_inst->opcode != SIR_BR && 
+                 builder->current_block->last_inst->opcode != SIR_RET))) {
+                ir_build_jmp(builder, label_block);
+            }
+            
+            ir_builder_set_insert_point(builder, label_block);
+            break;
+        }
         default: break;
     }
 }
@@ -802,7 +823,7 @@ void ir_gen_generate(IrBuilder* builder, AstNode* program) {
             }
             
             // 5. 安全兜底：如果基本块最后没有返回指令，自动补全 (针对 nihil 返回类型)
-            if (!entry_block->last_inst || entry_block->last_inst->opcode != SIR_RET) {
+            if (builder->current_block && (!builder->current_block->last_inst || builder->current_block->last_inst->opcode != SIR_RET)) {
                 if (sym->type->as.func_type.return_type->kind == TY_NIHIL) {
                     ir_build_ret(builder, NULL);
                 }
