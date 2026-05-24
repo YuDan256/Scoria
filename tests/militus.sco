@@ -19,13 +19,13 @@ actio princeps() -> medius {
         // 修正3：向 p8 (1字节) 写入时，明确将内容截断为 p8
         tene via_ad_castra = muta(p8, 0xFF);  
         
-        vade(via_ad_castra, 1);     
+        via_ad_castra = vade(via_ad_castra, 1);     
         
         // 修正4：将字面量 1 muta 为 p32 才能与 i 相加
         i += muta(p32, 1);
     }
     
-    recede(via_ad_castra, MAX_MILITUM);
+    via_ad_castra = recede(via_ad_castra, MAX_MILITUM);
     neca(via_ad_castra);
     
     scribe("Victoria!");

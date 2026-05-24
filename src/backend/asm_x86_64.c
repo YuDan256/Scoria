@@ -55,7 +55,7 @@ static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int s
             sprintf(buf, "$%d", val->as.bool_val ? 1 : 0);
             break;
         case SIR_VAL_GLOBAL:
-            sprintf(buf, "%s(%%rip)", val->as.global_name);
+            sprintf(buf, "$%s", val->as.global_name);
             break;
         case SIR_VAL_CONST_STRING:
             sprintf(buf, "$.Lstr%d", get_string_id(val->as.string_val));
