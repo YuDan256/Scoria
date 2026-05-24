@@ -196,7 +196,13 @@ static void generate_function(FILE* out, SirFunction* func) {
                 }
 
                 case SIR_STORE: {
-                    int size = type_get_size(inst->operands[0]->type);
+                    int size = 8;
+                    // 优先使用指针解引用后的目标类型大小，防止右值字面量丢失类型导致越界写入
+                    if (inst->operands[1]->type && inst->operands[1]->type->kind == TY_VIA) {
+                        size = type_get_size(inst->operands[1]->type->as.inner);
+                    } else if (inst->operands[0]->type) {
+                        size = type_get_size(inst->operands[0]->type);
+                    }
                     fprintf(out, "    movq %s, %%rax\n", op0);
                     fprintf(out, "    movq %s, %%rcx\n", op1);
                     if (size == 1) fprintf(out, "    movb %%al, (%%rcx)\n");

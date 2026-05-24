@@ -168,16 +168,12 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                     }
                 }
                 return ir_const_int(builder, expr->expr_type, (int64_t)c);
+            } else if (expr->token.kind == TK_KW_NIHIL) {
+                return ir_const_int(builder, expr->expr_type, 0);
             }
             break;
         }
         case AST_IDENT_EXPR: {
-            if (expr->token.length == 5 && strncmp(expr->token.start, "nihil", 5) == 0) {
-                return ir_const_int(builder, expr->expr_type, 0);
-            }
-            if (expr->token.length == 3 && strncmp(expr->token.start, "nhl", 3) == 0) {
-                return ir_const_int(builder, expr->expr_type, 0);
-            }
             Symbol* sym = expr->resolved_symbol;
             if (sym) {
                 if (sym->type && sym->type->kind == TY_ACTIO) {
@@ -367,7 +363,8 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             ScoriaType* target_type = expr->expr_type;
             ScoriaType* src_type = expr->as.cast_expr.value->expr_type;
             
-            if (!src_type || !target_type) return NULL;
+            if (!target_type) return NULL;
+            if (!src_type) src_type = type_get_basic(TY_NIHIL); // 容错：如果字面量丢失类型，默认视为 nihil
             
             if (type_equals(src_type, target_type)) {
                 return gen_expression(builder, expr->as.cast_expr.value);

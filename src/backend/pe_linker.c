@@ -673,7 +673,13 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             break;
                         }
                         case SIR_STORE: {
-                            int size = type_get_size(inst->operands[0]->type);
+                            int size = 8;
+                            // 优先使用指针解引用后的目标类型大小，防止右值字面量丢失类型导致越界写入
+                            if (inst->operands[1]->type && inst->operands[1]->type->kind == TY_VIA) {
+                                size = type_get_size(inst->operands[1]->type->as.inner);
+                            } else if (inst->operands[0]->type) {
+                                size = type_get_size(inst->operands[0]->type);
+                            }
                             int val_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             int ptr_scratch = (val_reg == REG_RCX) ? REG_RDX : REG_RCX;
                             int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], ptr_scratch, &ctx);
