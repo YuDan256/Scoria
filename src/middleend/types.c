@@ -38,6 +38,11 @@ bool type_equals(ScoriaType* a, ScoriaType* b) {
     if (!a || !b) return false;
     // 容错处理：如果其中一个是未知类型，直接放行，防止级联报错
     if (a->kind == TY_UNKNOWN || b->kind == TY_UNKNOWN) return true;
+    
+    // 允许 nihil 隐式匹配任何指针、切片或函数类型 (类似 C 语言的 NULL)
+    if (a->kind == TY_NIHIL && (b->kind == TY_VIA || b->kind == TY_COHORS || b->kind == TY_ACTIO)) return true;
+    if (b->kind == TY_NIHIL && (a->kind == TY_VIA || a->kind == TY_COHORS || a->kind == TY_ACTIO)) return true;
+
     if (a->kind != b->kind) return false;
     
     switch (a->kind) {

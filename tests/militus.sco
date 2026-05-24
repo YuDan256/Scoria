@@ -6,8 +6,8 @@ actio princeps() -> medius {
 
     sit via_ad_castra: via p8 = crea(p8, muta(integer, MAX_MILITUM));
     
-    // 修正1：严谨的指针相等比较，将虚无转型为 p8 指针
-    si (via_ad_castra == muta(via p8, nhl)) {
+    // 修正1：得益于类型系统的优化，现在可以直接与 nhl 比较
+    si (via_ad_castra == nhl) {
         scribe("Ruina: Allocatio memoriae defecit!");
         redde -1; 
     }
