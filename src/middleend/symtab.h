@@ -29,11 +29,13 @@ typedef struct Scope {
     int capacity;
     int count;
     struct Scope* parent;
+    struct Scope* next_in_all;
 } Scope;
 
 typedef struct {
     Scope* current_scope;
     Scope* global_scope;
+    Scope* all_scopes;
 } Symtab;
 
 void symtab_init(Symtab* symtab);

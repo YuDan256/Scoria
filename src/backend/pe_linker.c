@@ -1294,7 +1294,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 emit_alu_reg_reg(&linker->text_section, 0x01, REG_RDX, REG_RCX);
 
                                 // jmp rdx
-                                emit_rex(&linker->text_section, 0, 0, 0, 0);
                                 emit8(&linker->text_section, 0xFF);
                                 emit_modrm(&linker->text_section, 3, 4, REG_RDX);
 

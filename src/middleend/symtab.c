@@ -18,12 +18,14 @@ static bool token_equals(Token a, Token b) {
     return memcmp(a.start, b.start, a.length) == 0;
 }
 
-static Scope* create_scope(Scope* parent) {
+static Scope* create_scope(Symtab* symtab, Scope* parent) {
     Scope* scope = (Scope*)malloc(sizeof(Scope));
     scope->capacity = INITIAL_CAPACITY;
     scope->count = 0;
     scope->hash_table = (Symbol**)calloc(scope->capacity, sizeof(Symbol*));
     scope->parent = parent;
+    scope->next_in_all = symtab->all_scopes;
+    symtab->all_scopes = scope;
     return scope;
 }
 
@@ -41,30 +43,30 @@ static void free_scope(Scope* scope) {
 }
 
 void symtab_init(Symtab* symtab) {
-    symtab->global_scope = create_scope(NULL);
+    symtab->all_scopes = NULL;
+    symtab->global_scope = create_scope(symtab, NULL);
     symtab->current_scope = symtab->global_scope;
 }
 
 void symtab_free(Symtab* symtab) {
-    Scope* scope = symtab->current_scope;
+    Scope* scope = symtab->all_scopes;
     while (scope) {
-        Scope* parent = scope->parent;
+        Scope* next = scope->next_in_all;
         free_scope(scope);
-        scope = parent;
+        scope = next;
     }
     symtab->current_scope = NULL;
     symtab->global_scope = NULL;
+    symtab->all_scopes = NULL;
 }
 
 void symtab_enter_scope(Symtab* symtab) {
-    symtab->current_scope = create_scope(symtab->current_scope);
+    symtab->current_scope = create_scope(symtab, symtab->current_scope);
 }
 
 void symtab_leave_scope(Symtab* symtab) {
     if (symtab->current_scope->parent) {
-        Scope* parent = symtab->current_scope->parent;
-        free_scope(symtab->current_scope);
-        symtab->current_scope = parent;
+        symtab->current_scope = symtab->current_scope->parent;
     }
 }
 

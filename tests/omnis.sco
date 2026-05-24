@@ -101,8 +101,8 @@ actio test_memoria() -> nihil {
 
 // 6. 数据类型测试
 actio test_typi() -> nihil {
-    sit a: i8 = -1;
-    sit b: p32 = 0xFFFFFFFF;
+    sit a: i8 = muta(i8, -1);
+    sit b: p32 = muta(p32, 0xFFFFFFFF);
     sit c: logica = verum;
     sit d: littera = 'A';
     sit e: textus = "Salve, Mundus!";
