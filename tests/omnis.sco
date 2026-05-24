@@ -1,7 +1,7 @@
 liber omnis_test;
 
 // 1. 外部函数 (FFI) 测试
-actio barbara("msvcrt.dll") puts(str: textus) -> medius;
+actio barbara("msvcrt.dll") puts(str: via littera) -> medius;
 
 // 2. 常量与字面量测试 (支持 16进制, 2进制, 8进制, 罗马数字)
 lex MAX_VAL: medius = 0rC;       // 罗马数字 100

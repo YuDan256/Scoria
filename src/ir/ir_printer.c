@@ -58,7 +58,7 @@ static void print_value(FILE* out, SirValue* val) {
             fprintf(out, "%s", val->as.bool_val ? "verum" : "falsum"); 
             break;
         case SIR_VAL_CONST_STRING: 
-            fprintf(out, "\"%s\"", val->as.string_val); 
+            fprintf(out, "\"%s\"", val->as.string_val.str); 
             break;
         case SIR_VAL_GLOBAL: 
             fprintf(out, "@%s", val->as.global_name); 

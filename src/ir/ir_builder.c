@@ -177,9 +177,10 @@ SirValue* ir_const_bool(IrBuilder* builder, bool val) {
     return v;
 }
 
-SirValue* ir_const_string(IrBuilder* builder, const char* val) {
+SirValue* ir_const_string(IrBuilder* builder, const char* val, uint32_t len) {
     SirValue* v = create_value(builder, SIR_VAL_CONST_STRING, type_get_via(type_get_basic(TY_LITTERA)));
-    v->as.string_val = val;
+    v->as.string_val.str = val;
+    v->as.string_val.len = len;
     return v;
 }
 

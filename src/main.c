@@ -42,7 +42,8 @@ static char* read_file(const char* path) {
 int main(int argc, char** argv) {
     logger_init();
 
-    const char* source_path = NULL;
+    const char* source_paths[64];
+    int source_count = 0;
     const char* output_path = "scoria_out.exe";
     bool emit_ir = false;
     bool emit_asm = false;
@@ -58,10 +59,12 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "--verbosus") == 0 || strcmp(argv[i], "-v") == 0) {
             verbose = true;
         } else if (argv[i][0] != '-') {
-            source_path = argv[i];
+            if (source_count < 64) {
+                source_paths[source_count++] = argv[i];
+            }
         } else {
             LOG_ERROR("Argumentum ignotum: %s", argv[i]);
-            printf("Usus: scoria <fasciculus.sco> [-o <opus.exe>] [--emitte-ir] [--emitte-asm] [--verbosus]\n");
+            printf("Usus: scoria <fasciculus.sco>... [-o <opus.exe>] [--emitte-ir] [--emitte-asm] [--verbosus]\n");
             return 1;
         }
     }
@@ -69,18 +72,30 @@ int main(int argc, char** argv) {
     logger_set_level(verbose ? LOG_INFO : LOG_WARN);
     LOG_INFO("Incipit compilatio Scoriae. Roma Invicta.");
 
-    if (!source_path) {
+    if (source_count == 0) {
         LOG_ERROR("Nullus fasciculus datus est.");
-        printf("Usus: scoria <fasciculus.sco> [-o <opus.exe>] [--emitte-ir] [--emitte-asm] [--verbosus]\n");
+        printf("Usus: scoria <fasciculus.sco>... [-o <opus.exe>] [--emitte-ir] [--emitte-asm] [--verbosus]\n");
         return 1;
     }
 
-    char* source = read_file(source_path);
-    if (!source) {
-        return 1;
+    // 将所有输入文件拼接成一个巨大的源代码字符串 (Unity Build 模式)
+    size_t total_size = 0;
+    char** sources = (char**)malloc(source_count * sizeof(char*));
+    for (int i = 0; i < source_count; i++) {
+        sources[i] = read_file(source_paths[i]);
+        if (!sources[i]) return 1;
+        total_size += strlen(sources[i]) + 2; // +2 用于追加 "\n\n"
     }
 
-    LOG_INFO("[I] Lectio fontis: %s", source_path);
+    char* source = (char*)malloc(total_size + 1);
+    source[0] = '\0';
+    for (int i = 0; i < source_count; i++) {
+        LOG_INFO("[I] Lectio fontis: %s", source_paths[i]);
+        strcat(source, sources[i]);
+        strcat(source, "\n\n");
+        free(sources[i]);
+    }
+    free(sources);
 
     // 1. 前端：语法分析 (Syntax Analysis)
     Parser parser;

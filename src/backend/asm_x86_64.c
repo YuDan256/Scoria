@@ -12,17 +12,19 @@ static const char* phys_regs8[]  = {"%bl", "%sil", "%dil", "%r12b", "%r13b", "%r
 
 typedef struct {
     const char* str;
+    uint32_t len;
     int id;
 } StringConst;
 
 static StringConst g_strings[1024];
 static int g_string_count = 0;
 
-static int get_string_id(const char* str) {
+static int get_string_id(const char* str, uint32_t len) {
     for (int i = 0; i < g_string_count; i++) {
-        if (strcmp(g_strings[i].str, str) == 0) return g_strings[i].id;
+        if (g_strings[i].len == len && memcmp(g_strings[i].str, str, len) == 0) return g_strings[i].id;
     }
     g_strings[g_string_count].str = str;
+    g_strings[g_string_count].len = len;
     g_strings[g_string_count].id = g_string_count;
     return g_string_count++;
 }
@@ -58,7 +60,7 @@ static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int s
             sprintf(buf, "$%s", val->as.global_name);
             break;
         case SIR_VAL_CONST_STRING:
-            sprintf(buf, "$.Lstr%d", get_string_id(val->as.string_val));
+            sprintf(buf, "$.Lstr%d", get_string_id(val->as.string_val.str, val->as.string_val.len));
             break;
         case SIR_VAL_VREG: {
             int color = reg_alloc_get_color(alloc, val->as.vreg);
@@ -735,7 +737,7 @@ void asm_x86_64_generate(FILE* out, SirModule* module) {
         for (int i = 0; i < g_string_count; i++) {
             fprintf(out, ".Lstr%d:\n", g_strings[i].id);
             const char* s = g_strings[i].str;
-            size_t len = strlen(s);
+            uint32_t len = g_strings[i].len;
             if (len > 0) {
                 fprintf(out, "    .byte ");
                 for (size_t j = 0; j < len; j++) {

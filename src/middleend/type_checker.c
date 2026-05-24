@@ -1,6 +1,7 @@
 #include "type_checker.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 // ---------------------------------------------------------
 // 错误处理
@@ -211,16 +212,27 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr) {
             }
 
             if (expr->as.member_expr.is_pointer) {
-                if (obj_type->kind != TY_VIA || (obj_type->as.inner->kind != TY_FORMA && obj_type->as.inner->kind != TY_UNIO)) {
-                    type_error(checker, expr->token, "Operator '->' ad 'via forma' vel 'via unio' solum applicari potest.");
+                if (obj_type->kind != TY_VIA || (obj_type->as.inner->kind != TY_FORMA && obj_type->as.inner->kind != TY_UNIO && obj_type->as.inner->kind != TY_COHORS)) {
+                    type_error(checker, expr->token, "Operator '->' ad 'via forma', 'via unio' vel 'via cohors' solum applicari potest.");
                     break;
                 }
                 obj_type = obj_type->as.inner;
             } else {
-                if (obj_type->kind != TY_FORMA && obj_type->kind != TY_UNIO) {
-                    type_error(checker, expr->token, "Operator '.' ad 'forma' vel 'unio' solum applicari potest.");
+                if (obj_type->kind != TY_FORMA && obj_type->kind != TY_UNIO && obj_type->kind != TY_COHORS) {
+                    type_error(checker, expr->token, "Operator '.' ad 'forma', 'unio' vel 'cohors' solum applicari potest.");
                     break;
                 }
+            }
+
+            if (obj_type->kind == TY_COHORS) {
+                if (expr->as.member_expr.property.length == 5 && strncmp(expr->as.member_expr.property.start, "locus", 5) == 0) {
+                    type = type_get_via(obj_type->as.inner);
+                } else if (expr->as.member_expr.property.length == 9 && strncmp(expr->as.member_expr.property.start, "longitudo", 9) == 0) {
+                    type = type_get_basic(TY_I64);
+                } else {
+                    type_error(checker, expr->as.member_expr.property, "In cohorte proprietas ignota est (solum 'locus' et 'longitudo' licent).");
+                }
+                break;
             }
 
             bool found = false;
@@ -512,6 +524,10 @@ static void collect_declarations(TypeChecker* checker, AstNode* program) {
             ScoriaType** param_types = NULL;
             if (param_count > 0) {
                 param_types = (ScoriaType**)malloc(sizeof(ScoriaType*) * param_count);
+                if (!param_types) {
+                    fprintf(stderr, "Memoria non sufficit.\n");
+                    exit(1);
+                }
                 for (int j = 0; j < param_count; j++) {
                     param_types[j] = resolve_type_node(checker, decl->as.func_decl.params[j]->as.var_decl.type);
                 }

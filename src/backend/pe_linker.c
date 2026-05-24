@@ -217,6 +217,7 @@ static int get_phys_reg(int color) {
 typedef struct {
     int pass;
     const char** strings;
+    uint32_t* string_lens;
     uint32_t* string_offsets;
     int string_count;
     const char** globals;
@@ -271,7 +272,8 @@ static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, in
     } else if (val->kind == SIR_VAL_CONST_STRING) {
         uint32_t rdata_off = 0;
         for (int i = 0; i < ctx->string_count; i++) {
-            if (strcmp(ctx->strings[i], val->as.string_val) == 0) {
+            if (ctx->string_lens[i] == val->as.string_val.len &&
+                memcmp(ctx->strings[i], val->as.string_val.str, val->as.string_val.len) == 0) {
                 rdata_off = ctx->string_offsets[i];
                 break;
             }
@@ -432,6 +434,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
     int func_count = 0;
 
     const char** strings = (const char**)malloc(1024 * sizeof(const char*));
+    uint32_t* string_lens = (uint32_t*)malloc(1024 * sizeof(uint32_t));
     uint32_t* string_offsets = (uint32_t*)malloc(1024 * sizeof(uint32_t));
     int string_count = 0;
     g_str_reloc_count = 0;
@@ -463,16 +466,20 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                     if (inst->operands[i] && inst->operands[i]->kind == SIR_VAL_CONST_STRING) {
                         bool found = false;
                         for (int j = 0; j < string_count; j++) {
-                            if (strcmp(strings[j], inst->operands[i]->as.string_val) == 0) {
+                            if (string_lens[j] == inst->operands[i]->as.string_val.len &&
+                                memcmp(strings[j], inst->operands[i]->as.string_val.str, inst->operands[i]->as.string_val.len) == 0) {
                                 found = true; break;
                             }
                         }
                         if (!found) {
-                            strings[string_count] = inst->operands[i]->as.string_val;
+                            strings[string_count] = inst->operands[i]->as.string_val.str;
+                            string_lens[string_count] = inst->operands[i]->as.string_val.len;
                             string_offsets[string_count] = (uint32_t)linker->rdata_section.size;
+                            
+                            const char* str = inst->operands[i]->as.string_val.str;
+                            uint32_t len = inst->operands[i]->as.string_val.len;
+                            for (size_t k = 0; k < len; k++) buf_append(&linker->rdata_section, (uint8_t)str[k]);
                             string_count++;
-                            const char* str = inst->operands[i]->as.string_val;
-                            for (size_t k = 0; k < strlen(str); k++) buf_append(&linker->rdata_section, (uint8_t)str[k]);
                         }
                     }
                 }
@@ -521,6 +528,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
         LinkCtx ctx;
         ctx.pass = pass;
         ctx.strings = strings;
+        ctx.string_lens = string_lens;
         ctx.string_offsets = string_offsets;
         ctx.string_count = string_count;
         ctx.globals = global_names;
@@ -1396,6 +1404,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
     free(func_names);
     free(func_offsets);
     free(strings);
+    free(string_lens);
     free(string_offsets);
 }
 

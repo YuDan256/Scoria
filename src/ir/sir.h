@@ -60,7 +60,10 @@ typedef struct SirValue {
         int64_t int_val;
         double float_val;
         bool bool_val;
-        const char* string_val;
+        struct {
+            const char* str;
+            uint32_t len;
+        } string_val;
         const char* global_name;
         SirBlock* block;
     } as;

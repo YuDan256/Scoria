@@ -83,7 +83,7 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
             if (obj_type && obj_type->kind == TY_VIA) obj_type = obj_type->as.inner;
             
             if (obj_type && obj_type->kind == TY_COHORS) {
-                if (expr->as.member_expr.property.length == 6 && strncmp(expr->as.member_expr.property.start, "length", 6) == 0) {
+                if (expr->as.member_expr.property.length == 9 && strncmp(expr->as.member_expr.property.start, "longitudo", 9) == 0) {
                     byte_offset = 8;
                 } else if (expr->as.member_expr.property.length == 5 && strncmp(expr->as.member_expr.property.start, "locus", 5) == 0) {
                     byte_offset = 0;
@@ -160,9 +160,10 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                     }
                     str[j++] = expr->token.start[i];
                 }
-                str[j] = '\0';
+                str[j] = '\0'; // 仅为编译器内部 C 字符串打印安全保留，不计入 Scoria 物理长度
                 
-                SirValue* raw_str_val = ir_const_string(builder, str);
+                // 纯净的 Scoria 字符串：绝不偷偷追加 \0，长度就是实际字符数
+                SirValue* raw_str_val = ir_const_string(builder, str, j);
                 ScoriaType* cohors_type = type_get_cohors(type_get_basic(TY_LITTERA));
                 SirValue* slice_ptr = ir_build_alloca(builder, cohors_type, 16);
                 

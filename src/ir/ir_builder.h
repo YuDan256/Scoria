@@ -41,7 +41,7 @@ void ir_builder_set_insert_point(IrBuilder* builder, SirBlock* block);
 SirValue* ir_const_int(IrBuilder* builder, ScoriaType* type, int64_t val);
 SirValue* ir_const_float(IrBuilder* builder, ScoriaType* type, double val);
 SirValue* ir_const_bool(IrBuilder* builder, bool val);
-SirValue* ir_const_string(IrBuilder* builder, const char* val);
+SirValue* ir_const_string(IrBuilder* builder, const char* val, uint32_t len);
 
 // ---------------------------------------------------------
 // 指令构建 API

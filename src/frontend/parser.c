@@ -248,7 +248,9 @@ static AstNode* postfix(Parser* parser) {
             expr = node;
         } else if (match(parser, TK_DOT)) {
             Token dot = parser->previous;
-            consume(parser, TK_IDENTIFIER, "Post '.' nomen proprietatis exspectatur.");
+            if (!match(parser, TK_IDENTIFIER) && !match(parser, TK_KW_LOCUS)) {
+                error(parser, "Post '.' nomen proprietatis exspectatur.");
+            }
             Token name = parser->previous;
             AstNode* node = ast_create_node(&parser->arena, AST_MEMBER_EXPR, dot);
             node->as.member_expr.object = expr;
@@ -257,7 +259,9 @@ static AstNode* postfix(Parser* parser) {
             expr = node;
         } else if (match(parser, TK_ARROW)) {
             Token arrow = parser->previous;
-            consume(parser, TK_IDENTIFIER, "Post '->' nomen proprietatis exspectatur.");
+            if (!match(parser, TK_IDENTIFIER) && !match(parser, TK_KW_LOCUS)) {
+                error(parser, "Post '->' nomen proprietatis exspectatur.");
+            }
             Token name = parser->previous;
             AstNode* node = ast_create_node(&parser->arena, AST_MEMBER_EXPR, arrow);
             node->as.member_expr.object = expr;
