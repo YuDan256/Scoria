@@ -306,6 +306,9 @@ static void generate_function(FILE* out, SirFunction* func) {
                             // no-op
                         } else if (imm == 2) {
                             fprintf(out, "    addq %s, %s\n", acc, acc);
+                        } else if (imm == 3 || imm == 5 || imm == 9) {
+                            int scale = (imm == 3) ? 2 : (imm == 5) ? 4 : 8;
+                            fprintf(out, "    leaq (%s, %s, %d), %s\n", acc, acc, scale, acc);
                         } else if (imm > 0 && (imm & (imm - 1)) == 0) {
                             int shift = 0;
                             while ((imm >> shift) > 1) shift++;
@@ -350,7 +353,11 @@ static void generate_function(FILE* out, SirFunction* func) {
                 }
 
                 case SIR_JMP:
-                    fprintf(out, "    jmp .L%s_%u\n", inst->operands[0]->as.block->name, inst->operands[0]->as.block->id);
+                    if (block->next && inst->operands[0]->as.block == block->next) {
+                        fprintf(out, "    # fall-through to .L%s_%u\n", inst->operands[0]->as.block->name, inst->operands[0]->as.block->id);
+                    } else {
+                        fprintf(out, "    jmp .L%s_%u\n", inst->operands[0]->as.block->name, inst->operands[0]->as.block->id);
+                    }
                     break;
 
                 case SIR_BR:
@@ -360,8 +367,14 @@ static void generate_function(FILE* out, SirFunction* func) {
                     } else {
                         fprintf(out, "    cmpq $0, %s\n", op0);
                     }
-                    fprintf(out, "    jne .L%s_%u\n", inst->operands[1]->as.block->name, inst->operands[1]->as.block->id);
-                    fprintf(out, "    jmp .L%s_%u\n", inst->operands[2]->as.block->name, inst->operands[2]->as.block->id);
+                    if (block->next && inst->operands[2]->as.block == block->next) {
+                        fprintf(out, "    jne .L%s_%u\n", inst->operands[1]->as.block->name, inst->operands[1]->as.block->id);
+                    } else if (block->next && inst->operands[1]->as.block == block->next) {
+                        fprintf(out, "    je .L%s_%u\n", inst->operands[2]->as.block->name, inst->operands[2]->as.block->id);
+                    } else {
+                        fprintf(out, "    jne .L%s_%u\n", inst->operands[1]->as.block->name, inst->operands[1]->as.block->id);
+                        fprintf(out, "    jmp .L%s_%u\n", inst->operands[2]->as.block->name, inst->operands[2]->as.block->id);
+                    }
                     break;
 
                 case SIR_SWITCH: {
@@ -622,14 +635,21 @@ static void generate_function(FILE* out, SirFunction* func) {
 
                     if (can_fuse) {
                         const char* jcc = "je";
-                        if (inst->opcode == SIR_ICMP_NE) jcc = "jne";
-                        else if (inst->opcode == SIR_ICMP_LT) jcc = is_unsigned ? "jb" : "jl";
-                        else if (inst->opcode == SIR_ICMP_LE) jcc = is_unsigned ? "jbe" : "jle";
-                        else if (inst->opcode == SIR_ICMP_GT) jcc = is_unsigned ? "ja" : "jg";
-                        else if (inst->opcode == SIR_ICMP_GE) jcc = is_unsigned ? "jae" : "jge";
+                        const char* inv_jcc = "jne";
+                        if (inst->opcode == SIR_ICMP_NE) { jcc = "jne"; inv_jcc = "je"; }
+                        else if (inst->opcode == SIR_ICMP_LT) { jcc = is_unsigned ? "jb" : "jl"; inv_jcc = is_unsigned ? "jae" : "jge"; }
+                        else if (inst->opcode == SIR_ICMP_LE) { jcc = is_unsigned ? "jbe" : "jle"; inv_jcc = is_unsigned ? "ja" : "jg"; }
+                        else if (inst->opcode == SIR_ICMP_GT) { jcc = is_unsigned ? "ja" : "jg"; inv_jcc = is_unsigned ? "jbe" : "jle"; }
+                        else if (inst->opcode == SIR_ICMP_GE) { jcc = is_unsigned ? "jae" : "jge"; inv_jcc = is_unsigned ? "jb" : "jl"; }
                         
-                        fprintf(out, "    %s .L%s_%u\n", jcc, next_inst->operands[1]->as.block->name, next_inst->operands[1]->as.block->id);
-                        fprintf(out, "    jmp .L%s_%u\n", next_inst->operands[2]->as.block->name, next_inst->operands[2]->as.block->id);
+                        if (block->next && next_inst->operands[2]->as.block == block->next) {
+                            fprintf(out, "    %s .L%s_%u\n", jcc, next_inst->operands[1]->as.block->name, next_inst->operands[1]->as.block->id);
+                        } else if (block->next && next_inst->operands[1]->as.block == block->next) {
+                            fprintf(out, "    %s .L%s_%u\n", inv_jcc, next_inst->operands[2]->as.block->name, next_inst->operands[2]->as.block->id);
+                        } else {
+                            fprintf(out, "    %s .L%s_%u\n", jcc, next_inst->operands[1]->as.block->name, next_inst->operands[1]->as.block->id);
+                            fprintf(out, "    jmp .L%s_%u\n", next_inst->operands[2]->as.block->name, next_inst->operands[2]->as.block->id);
+                        }
                         
                         inst = next_inst; // 跳过下一个 BR 指令
                     } else {
@@ -682,14 +702,21 @@ static void generate_function(FILE* out, SirFunction* func) {
 
                     if (can_fuse) {
                         const char* jcc = "je";
-                        if (inst->opcode == SIR_FCMP_NE) jcc = "jne";
-                        else if (inst->opcode == SIR_FCMP_LT) jcc = "jb";
-                        else if (inst->opcode == SIR_FCMP_LE) jcc = "jbe";
-                        else if (inst->opcode == SIR_FCMP_GT) jcc = "ja";
-                        else if (inst->opcode == SIR_FCMP_GE) jcc = "jae";
+                        const char* inv_jcc = "jne";
+                        if (inst->opcode == SIR_FCMP_NE) { jcc = "jne"; inv_jcc = "je"; }
+                        else if (inst->opcode == SIR_FCMP_LT) { jcc = "jb"; inv_jcc = "jae"; }
+                        else if (inst->opcode == SIR_FCMP_LE) { jcc = "jbe"; inv_jcc = "ja"; }
+                        else if (inst->opcode == SIR_FCMP_GT) { jcc = "ja"; inv_jcc = "jbe"; }
+                        else if (inst->opcode == SIR_FCMP_GE) { jcc = "jae"; inv_jcc = "jb"; }
                         
-                        fprintf(out, "    %s .L%s_%u\n", jcc, next_inst->operands[1]->as.block->name, next_inst->operands[1]->as.block->id);
-                        fprintf(out, "    jmp .L%s_%u\n", next_inst->operands[2]->as.block->name, next_inst->operands[2]->as.block->id);
+                        if (block->next && next_inst->operands[2]->as.block == block->next) {
+                            fprintf(out, "    %s .L%s_%u\n", jcc, next_inst->operands[1]->as.block->name, next_inst->operands[1]->as.block->id);
+                        } else if (block->next && next_inst->operands[1]->as.block == block->next) {
+                            fprintf(out, "    %s .L%s_%u\n", inv_jcc, next_inst->operands[2]->as.block->name, next_inst->operands[2]->as.block->id);
+                        } else {
+                            fprintf(out, "    %s .L%s_%u\n", jcc, next_inst->operands[1]->as.block->name, next_inst->operands[1]->as.block->id);
+                            fprintf(out, "    jmp .L%s_%u\n", next_inst->operands[2]->as.block->name, next_inst->operands[2]->as.block->id);
+                        }
                         
                         inst = next_inst; // 跳过下一个 BR 指令
                     } else {

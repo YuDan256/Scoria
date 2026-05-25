@@ -842,6 +842,19 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                         // no-op
                                     } else if (imm == 2) {
                                         emit_alu_reg_reg(&linker->text_section, 0x01, dest_reg, dest_reg); // add dest, dest
+                                    } else if (imm == 3 || imm == 5 || imm == 9) {
+                                        int scale = (imm == 3) ? 1 : (imm == 5) ? 2 : 3; // 1=2, 2=4, 3=8
+                                        emit_rex(&linker->text_section, 1, dest_reg > 7, dest_reg > 7, dest_reg > 7);
+                                        emit8(&linker->text_section, 0x8D); // lea
+                                        int b = dest_reg & 7;
+                                        if (b == 5) {
+                                            emit_modrm(&linker->text_section, 1, dest_reg & 7, 4);
+                                            emit_sib(&linker->text_section, scale, dest_reg & 7, b);
+                                            emit8(&linker->text_section, 0);
+                                        } else {
+                                            emit_modrm(&linker->text_section, 0, dest_reg & 7, 4);
+                                            emit_sib(&linker->text_section, scale, dest_reg & 7, b);
+                                        }
                                     } else if (imm > 0 && (imm & (imm - 1)) == 0) {
                                         int shift = 0;
                                         while ((imm >> shift) > 1) shift++;
@@ -1117,22 +1130,30 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             }
 
                             if (can_fuse) {
-                                emit8(&linker->text_section, 0x0F);
-                                if (inst->opcode == SIR_ICMP_EQ) emit8(&linker->text_section, 0x84);
-                                else if (inst->opcode == SIR_ICMP_NE) emit8(&linker->text_section, 0x85);
-                                else if (inst->opcode == SIR_ICMP_LT) emit8(&linker->text_section, is_unsigned ? 0x82 : 0x8C);
-                                else if (inst->opcode == SIR_ICMP_LE) emit8(&linker->text_section, is_unsigned ? 0x86 : 0x8E);
-                                else if (inst->opcode == SIR_ICMP_GT) emit8(&linker->text_section, is_unsigned ? 0x87 : 0x8F);
-                                else if (inst->opcode == SIR_ICMP_GE) emit8(&linker->text_section, is_unsigned ? 0x83 : 0x8D);
+                                uint8_t jcc = 0x84, inv_jcc = 0x85;
+                                if (inst->opcode == SIR_ICMP_NE) { jcc = 0x85; inv_jcc = 0x84; }
+                                else if (inst->opcode == SIR_ICMP_LT) { jcc = is_unsigned ? 0x82 : 0x8C; inv_jcc = is_unsigned ? 0x83 : 0x8D; }
+                                else if (inst->opcode == SIR_ICMP_LE) { jcc = is_unsigned ? 0x86 : 0x8E; inv_jcc = is_unsigned ? 0x87 : 0x8F; }
+                                else if (inst->opcode == SIR_ICMP_GT) { jcc = is_unsigned ? 0x87 : 0x8F; inv_jcc = is_unsigned ? 0x86 : 0x8E; }
+                                else if (inst->opcode == SIR_ICMP_GE) { jcc = is_unsigned ? 0x83 : 0x8D; inv_jcc = is_unsigned ? 0x82 : 0x8C; }
                                 
                                 uint32_t t_id = next_inst->operands[1]->as.block->id;
                                 uint32_t t_off = t_id < 1024 ? block_offsets[t_id] : 0;
-                                emit32(&linker->text_section, (uint32_t)(t_off - (linker->text_section.size + 4)));
-                                
                                 uint32_t f_id = next_inst->operands[2]->as.block->id;
                                 uint32_t f_off = f_id < 1024 ? block_offsets[f_id] : 0;
-                                emit8(&linker->text_section, 0xE9); // jmp false_block
-                                emit32(&linker->text_section, (uint32_t)(f_off - (linker->text_section.size + 4)));
+
+                                if (block->next && next_inst->operands[2]->as.block == block->next) {
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, jcc);
+                                    emit32(&linker->text_section, (uint32_t)(t_off - (linker->text_section.size + 4)));
+                                } else if (block->next && next_inst->operands[1]->as.block == block->next) {
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, inv_jcc);
+                                    emit32(&linker->text_section, (uint32_t)(f_off - (linker->text_section.size + 4)));
+                                } else {
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, jcc);
+                                    emit32(&linker->text_section, (uint32_t)(t_off - (linker->text_section.size + 4)));
+                                    emit8(&linker->text_section, 0xE9); // jmp false_block
+                                    emit32(&linker->text_section, (uint32_t)(f_off - (linker->text_section.size + 4)));
+                                }
                                 
                                 inst = next_inst; // 跳过下一个 BR 指令
                             } else {
@@ -1189,22 +1210,30 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             }
 
                             if (can_fuse) {
-                                emit8(&linker->text_section, 0x0F);
-                                if (inst->opcode == SIR_FCMP_EQ) emit8(&linker->text_section, 0x84); // je
-                                else if (inst->opcode == SIR_FCMP_NE) emit8(&linker->text_section, 0x85); // jne
-                                else if (inst->opcode == SIR_FCMP_LT) emit8(&linker->text_section, 0x82); // jb
-                                else if (inst->opcode == SIR_FCMP_LE) emit8(&linker->text_section, 0x86); // jbe
-                                else if (inst->opcode == SIR_FCMP_GT) emit8(&linker->text_section, 0x87); // ja
-                                else if (inst->opcode == SIR_FCMP_GE) emit8(&linker->text_section, 0x83); // jae
+                                uint8_t jcc = 0x84, inv_jcc = 0x85;
+                                if (inst->opcode == SIR_FCMP_NE) { jcc = 0x85; inv_jcc = 0x84; }
+                                else if (inst->opcode == SIR_FCMP_LT) { jcc = 0x82; inv_jcc = 0x83; }
+                                else if (inst->opcode == SIR_FCMP_LE) { jcc = 0x86; inv_jcc = 0x87; }
+                                else if (inst->opcode == SIR_FCMP_GT) { jcc = 0x87; inv_jcc = 0x86; }
+                                else if (inst->opcode == SIR_FCMP_GE) { jcc = 0x83; inv_jcc = 0x82; }
                                 
                                 uint32_t t_id = next_inst->operands[1]->as.block->id;
                                 uint32_t t_off = t_id < 1024 ? block_offsets[t_id] : 0;
-                                emit32(&linker->text_section, (uint32_t)(t_off - (linker->text_section.size + 4)));
-                                
                                 uint32_t f_id = next_inst->operands[2]->as.block->id;
                                 uint32_t f_off = f_id < 1024 ? block_offsets[f_id] : 0;
-                                emit8(&linker->text_section, 0xE9); // jmp false_block
-                                emit32(&linker->text_section, (uint32_t)(f_off - (linker->text_section.size + 4)));
+
+                                if (block->next && next_inst->operands[2]->as.block == block->next) {
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, jcc);
+                                    emit32(&linker->text_section, (uint32_t)(t_off - (linker->text_section.size + 4)));
+                                } else if (block->next && next_inst->operands[1]->as.block == block->next) {
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, inv_jcc);
+                                    emit32(&linker->text_section, (uint32_t)(f_off - (linker->text_section.size + 4)));
+                                } else {
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, jcc);
+                                    emit32(&linker->text_section, (uint32_t)(t_off - (linker->text_section.size + 4)));
+                                    emit8(&linker->text_section, 0xE9); // jmp false_block
+                                    emit32(&linker->text_section, (uint32_t)(f_off - (linker->text_section.size + 4)));
+                                }
                                 
                                 inst = next_inst; // 跳过下一个 BR 指令
                             } else {
@@ -1225,6 +1254,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             break;
                         }
                         case SIR_JMP: {
+                            if (block->next && inst->operands[0]->as.block == block->next) {
+                                break; // fall-through
+                            }
                             uint32_t t_id = inst->operands[0]->as.block->id;
                             uint32_t t_off = t_id < 1024 ? block_offsets[t_id] : 0;
                             emit8(&linker->text_section, 0xE9); // jmp rel32
@@ -1434,13 +1466,21 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             
                             uint32_t t_id = inst->operands[1]->as.block->id;
                             uint32_t t_off = t_id < 1024 ? block_offsets[t_id] : 0;
-                            emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x85); // jne true_block
-                            emit32(&linker->text_section, (uint32_t)(t_off - (linker->text_section.size + 4)));
-                            
                             uint32_t f_id = inst->operands[2]->as.block->id;
                             uint32_t f_off = f_id < 1024 ? block_offsets[f_id] : 0;
-                            emit8(&linker->text_section, 0xE9); // jmp false_block
-                            emit32(&linker->text_section, (uint32_t)(f_off - (linker->text_section.size + 4)));
+
+                            if (block->next && inst->operands[2]->as.block == block->next) {
+                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x85); // jne true_block
+                                emit32(&linker->text_section, (uint32_t)(t_off - (linker->text_section.size + 4)));
+                            } else if (block->next && inst->operands[1]->as.block == block->next) {
+                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x84); // je false_block
+                                emit32(&linker->text_section, (uint32_t)(f_off - (linker->text_section.size + 4)));
+                            } else {
+                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x85); // jne true_block
+                                emit32(&linker->text_section, (uint32_t)(t_off - (linker->text_section.size + 4)));
+                                emit8(&linker->text_section, 0xE9); // jmp false_block
+                                emit32(&linker->text_section, (uint32_t)(f_off - (linker->text_section.size + 4)));
+                            }
                             break;
                         }
                         case SIR_SWITCH: {
