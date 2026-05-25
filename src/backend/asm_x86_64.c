@@ -605,9 +605,38 @@ static void generate_function(FILE* out, SirFunction* func) {
                     } else {
                         fprintf(out, "    cmpq %s, %%rax\n", op1);
                     }
-                    fprintf(out, "    set%s %%al\n", cc);
-                    fprintf(out, "    movzbq %%al, %%rax\n");
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                    bool can_fuse = false;
+                    SirInst* next_inst = inst->next;
+                    if (next_inst && next_inst->opcode == SIR_BR && next_inst->operands[0]->kind == SIR_VAL_VREG && inst->dest->kind == SIR_VAL_VREG && next_inst->operands[0]->as.vreg == inst->dest->as.vreg) {
+                        bool used_elsewhere = false;
+                        for (SirInst* scan = next_inst->next; scan; scan = scan->next) {
+                            for (int i=0; i<scan->num_operands; i++) {
+                                if (scan->operands[i] && scan->operands[i]->kind == SIR_VAL_VREG && scan->operands[i]->as.vreg == inst->dest->as.vreg) {
+                                    used_elsewhere = true; break;
+                                }
+                            }
+                            if (used_elsewhere) break;
+                        }
+                        if (!used_elsewhere) can_fuse = true;
+                    }
+
+                    if (can_fuse) {
+                        const char* jcc = "je";
+                        if (inst->opcode == SIR_ICMP_NE) jcc = "jne";
+                        else if (inst->opcode == SIR_ICMP_LT) jcc = is_unsigned ? "jb" : "jl";
+                        else if (inst->opcode == SIR_ICMP_LE) jcc = is_unsigned ? "jbe" : "jle";
+                        else if (inst->opcode == SIR_ICMP_GT) jcc = is_unsigned ? "ja" : "jg";
+                        else if (inst->opcode == SIR_ICMP_GE) jcc = is_unsigned ? "jae" : "jge";
+                        
+                        fprintf(out, "    %s .L%s_%u\n", jcc, next_inst->operands[1]->as.block->name, next_inst->operands[1]->as.block->id);
+                        fprintf(out, "    jmp .L%s_%u\n", next_inst->operands[2]->as.block->name, next_inst->operands[2]->as.block->id);
+                        
+                        inst = next_inst; // 跳过下一个 BR 指令
+                    } else {
+                        fprintf(out, "    set%s %%al\n", cc);
+                        fprintf(out, "    movzbq %%al, %%rax\n");
+                        fprintf(out, "    movq %%rax, %s\n", dest);
+                    }
                     break;
                 }
 
@@ -636,9 +665,38 @@ static void generate_function(FILE* out, SirFunction* func) {
                         fprintf(out, "    movq %%rcx, %%xmm1\n");
                         fprintf(out, "    ucomisd %%xmm1, %%xmm0\n");
                     }
-                    fprintf(out, "    set%s %%al\n", cc);
-                    fprintf(out, "    movzbq %%al, %%rax\n");
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                    bool can_fuse = false;
+                    SirInst* next_inst = inst->next;
+                    if (next_inst && next_inst->opcode == SIR_BR && next_inst->operands[0]->kind == SIR_VAL_VREG && inst->dest->kind == SIR_VAL_VREG && next_inst->operands[0]->as.vreg == inst->dest->as.vreg) {
+                        bool used_elsewhere = false;
+                        for (SirInst* scan = next_inst->next; scan; scan = scan->next) {
+                            for (int i=0; i<scan->num_operands; i++) {
+                                if (scan->operands[i] && scan->operands[i]->kind == SIR_VAL_VREG && scan->operands[i]->as.vreg == inst->dest->as.vreg) {
+                                    used_elsewhere = true; break;
+                                }
+                            }
+                            if (used_elsewhere) break;
+                        }
+                        if (!used_elsewhere) can_fuse = true;
+                    }
+
+                    if (can_fuse) {
+                        const char* jcc = "je";
+                        if (inst->opcode == SIR_FCMP_NE) jcc = "jne";
+                        else if (inst->opcode == SIR_FCMP_LT) jcc = "jb";
+                        else if (inst->opcode == SIR_FCMP_LE) jcc = "jbe";
+                        else if (inst->opcode == SIR_FCMP_GT) jcc = "ja";
+                        else if (inst->opcode == SIR_FCMP_GE) jcc = "jae";
+                        
+                        fprintf(out, "    %s .L%s_%u\n", jcc, next_inst->operands[1]->as.block->name, next_inst->operands[1]->as.block->id);
+                        fprintf(out, "    jmp .L%s_%u\n", next_inst->operands[2]->as.block->name, next_inst->operands[2]->as.block->id);
+                        
+                        inst = next_inst; // 跳过下一个 BR 指令
+                    } else {
+                        fprintf(out, "    set%s %%al\n", cc);
+                        fprintf(out, "    movzbq %%al, %%rax\n");
+                        fprintf(out, "    movq %%rax, %s\n", dest);
+                    }
                     break;
                 }
 
