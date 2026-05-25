@@ -165,7 +165,35 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
             if (inst->num_operands > 0) get_operand_str(op0, inst->operands[0], &allocator, 8, total_frame_size);
             if (inst->num_operands > 1) get_operand_str(op1, inst->operands[1], &allocator, 8, total_frame_size);
             if (inst->num_operands > 2) get_operand_str(op2, inst->operands[2], &allocator, 8, total_frame_size);
-            if (inst->dest) get_operand_str(dest, inst->dest, &allocator, 8, total_frame_size);
+            
+            if (inst->dest) {
+                get_operand_str(dest, inst->dest, &allocator, 8, total_frame_size);
+                if (inst->dest->kind == SIR_VAL_VREG && inst->next) {
+                    if (inst->next->opcode == SIR_RET && inst->next->num_operands > 0 && inst->next->operands[0] == inst->dest) {
+                        bool used_elsewhere = false;
+                        for (SirInst* scan = inst->next->next; scan; scan = scan->next) {
+                            for (int i=0; i<scan->num_operands; i++) {
+                                if (scan->operands[i] == inst->dest) { used_elsewhere = true; break; }
+                            }
+                            if (used_elsewhere) break;
+                        }
+                        if (!used_elsewhere) {
+                            strcpy(dest, "%rax");
+                        }
+                    } else if (inst->next->opcode == SIR_CALL && inst->next->num_operands == 2 && inst->next->operands[1] == inst->dest) {
+                        bool used_elsewhere = false;
+                        for (SirInst* scan = inst->next->next; scan; scan = scan->next) {
+                            for (int i=0; i<scan->num_operands; i++) {
+                                if (scan->operands[i] == inst->dest) { used_elsewhere = true; break; }
+                            }
+                            if (used_elsewhere) break;
+                        }
+                        if (!used_elsewhere) {
+                            strcpy(dest, "%rcx");
+                        }
+                    }
+                }
+            }
 
             switch (inst->opcode) {
                 case SIR_ALLOCA: {
