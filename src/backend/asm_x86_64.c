@@ -190,17 +190,24 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
         
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
             // 解析操作数
-            if (inst->num_operands > 0) get_operand_str(op0, inst->operands[0], &allocator, 8, total_frame_size);
-            if (inst->num_operands > 1) get_operand_str(op1, inst->operands[1], &allocator, 8, total_frame_size);
-            if (inst->num_operands > 2) get_operand_str(op2, inst->operands[2], &allocator, 8, total_frame_size);
+            int s0 = (inst->num_operands > 0 && inst->operands[0]->type) ? type_get_size(inst->operands[0]->type) : 8;
+            int s1 = (inst->num_operands > 1 && inst->operands[1]->type) ? type_get_size(inst->operands[1]->type) : 8;
+            int s2 = (inst->num_operands > 2 && inst->operands[2]->type) ? type_get_size(inst->operands[2]->type) : 8;
+            if (s0 < 4) s0 = 4; if (s1 < 4) s1 = 4; if (s2 < 4) s2 = 4;
+            
+            if (inst->num_operands > 0) get_operand_str(op0, inst->operands[0], &allocator, s0, total_frame_size);
+            if (inst->num_operands > 1) get_operand_str(op1, inst->operands[1], &allocator, s1, total_frame_size);
+            if (inst->num_operands > 2) get_operand_str(op2, inst->operands[2], &allocator, s2, total_frame_size);
             
             if (inst->dest) {
-                get_operand_str(dest, inst->dest, &allocator, 8, total_frame_size);
-                if (inst->dest->kind == SIR_VAL_VREG && inst->next && allocator.use_count[inst->dest->as.vreg] == 2) {
+                int dest_size = (inst->dest->type) ? type_get_size(inst->dest->type) : 8;
+                if (dest_size < 4) dest_size = 4;
+                get_operand_str(dest, inst->dest, &allocator, dest_size, total_frame_size);
+                if (inst->dest->kind == SIR_VAL_VREG && inst->next && (allocator.use_count[inst->dest->as.vreg] == 2 || inst->next->opcode == SIR_RET)) {
                     if (inst->next->opcode == SIR_RET && inst->next->num_operands > 0 && inst->next->operands[0] == inst->dest) {
-                        strcpy(dest, "%rax");
+                        strcpy(dest, dest_size <= 4 ? "%eax" : "%rax");
                     } else if (inst->next->opcode == SIR_CALL && inst->next->num_operands == 2 && inst->next->operands[1] == inst->dest) {
-                        strcpy(dest, "%rcx");
+                        strcpy(dest, dest_size <= 4 ? "%ecx" : "%rcx");
                     }
                 }
             }
@@ -314,76 +321,82 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
 
                 case SIR_ADD: {
                     bool dest_is_mem = (dest[0] != '%');
-                    const char* acc = dest_is_mem ? "%rax" : dest;
+                    int dest_size = (inst->dest && inst->dest->type) ? type_get_size(inst->dest->type) : 8;
+                    const char* ax = (dest_size <= 4) ? "%eax" : "%rax";
+                    const char* acc = dest_is_mem ? ax : dest;
+                    const char* suf = (dest_size <= 4) ? "l" : "q";
                     
                     const char* left_op = op0;
                     if (inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[0]) {
-                        if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
-                            left_op = "%rax";
+                        if (inst->operands[0]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[0]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
+                            left_op = ax;
                         }
                     }
                     const char* right_op = op1;
                     if (inst->num_operands > 1 && inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[1]) {
-                        if (inst->operands[1]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[1]->as.vreg] == 2) {
-                            right_op = "%rax";
+                        if (inst->operands[1]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[1]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
+                            right_op = ax;
                         }
                     }
                     
                     if (inst->operands[1]->kind == SIR_VAL_CONST_INT && strcmp(left_op, acc) != 0) {
                         int64_t imm = inst->operands[1]->as.int_val;
-                        fprintf(out, "    leaq %lld(%s), %s\n", (long long)imm, op0, acc);
+                        fprintf(out, "    lea%s %lld(%s), %s\n", suf, (long long)imm, op0, acc);
                     } else {
                         if (strcmp(right_op, acc) == 0 && strcmp(left_op, acc) != 0) {
-                            fprintf(out, "    addq %s, %s\n", left_op, acc);
+                            fprintf(out, "    add%s %s, %s\n", suf, left_op, acc);
                         } else if (strcmp(left_op, acc) != 0 && strcmp(right_op, acc) != 0 && left_op[0] == '%' && right_op[0] == '%') {
-                            fprintf(out, "    leaq (%s, %s), %s\n", left_op, right_op, acc);
+                            fprintf(out, "    lea%s (%s, %s), %s\n", suf, left_op, right_op, acc);
                         } else {
-                            if (strcmp(left_op, acc) != 0) fprintf(out, "    movq %s, %s\n", left_op, acc);
+                            if (strcmp(left_op, acc) != 0) fprintf(out, "    mov%s %s, %s\n", suf, left_op, acc);
                             if (strcmp(right_op, "$1") == 0) {
-                                fprintf(out, "    incq %s\n", acc);
+                                fprintf(out, "    inc%s %s\n", suf, acc);
                             } else if (strcmp(right_op, "$0") != 0) {
-                                fprintf(out, "    addq %s, %s\n", right_op, acc);
+                                fprintf(out, "    add%s %s, %s\n", suf, right_op, acc);
                             }
                         }
                     }
-                    if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
+                    if (dest_is_mem) fprintf(out, "    mov%s %s, %s\n", suf, acc, dest);
                     break;
                 }
 
                 case SIR_SUB: {
                     bool dest_is_mem = (dest[0] != '%');
-                    const char* acc = dest_is_mem ? "%rax" : dest;
+                    int dest_size = (inst->dest && inst->dest->type) ? type_get_size(inst->dest->type) : 8;
+                    const char* ax = (dest_size <= 4) ? "%eax" : "%rax";
+                    const char* acc = dest_is_mem ? ax : dest;
+                    const char* suf = (dest_size <= 4) ? "l" : "q";
                     
                     const char* left_op = op0;
                     if (inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[0]) {
-                        if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
-                            left_op = "%rax";
+                        if (inst->operands[0]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[0]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
+                            left_op = ax;
                         }
                     }
                     const char* right_op = op1;
                     if (inst->num_operands > 1 && inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[1]) {
-                        if (inst->operands[1]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[1]->as.vreg] == 2) {
-                            right_op = "%rax";
+                        if (inst->operands[1]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[1]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
+                            right_op = ax;
                         }
                     }
                     
                     if (inst->operands[1]->kind == SIR_VAL_CONST_INT && strcmp(left_op, acc) != 0) {
                         int64_t imm = inst->operands[1]->as.int_val;
-                        fprintf(out, "    leaq %lld(%s), %s\n", (long long)-imm, left_op, acc);
+                        fprintf(out, "    lea%s %lld(%s), %s\n", suf, (long long)-imm, left_op, acc);
                     } else {
                         if (strcmp(right_op, acc) == 0 && strcmp(left_op, acc) != 0) {
-                            fprintf(out, "    negq %s\n", acc);
-                            fprintf(out, "    addq %s, %s\n", left_op, acc);
+                            fprintf(out, "    neg%s %s\n", suf, acc);
+                            fprintf(out, "    add%s %s, %s\n", suf, left_op, acc);
                         } else {
-                            if (strcmp(left_op, acc) != 0) fprintf(out, "    movq %s, %s\n", left_op, acc);
+                            if (strcmp(left_op, acc) != 0) fprintf(out, "    mov%s %s, %s\n", suf, left_op, acc);
                             if (strcmp(right_op, "$1") == 0) {
-                                fprintf(out, "    decq %s\n", acc);
+                                fprintf(out, "    dec%s %s\n", suf, acc);
                             } else if (strcmp(right_op, "$0") != 0) {
-                                fprintf(out, "    subq %s, %s\n", right_op, acc);
+                                fprintf(out, "    sub%s %s, %s\n", suf, right_op, acc);
                             }
                         }
                     }
-                    if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
+                    if (dest_is_mem) fprintf(out, "    mov%s %s, %s\n", suf, acc, dest);
                     break;
                 }
 
@@ -797,6 +810,10 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                 case SIR_ICMP_GT:
                 case SIR_ICMP_GE: {
                     bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
+                    int cmp_size = (inst->operands[0]->type) ? type_get_size(inst->operands[0]->type) : 8;
+                    const char* suf = (cmp_size <= 4) ? "l" : "q";
+                    const char* ax = (cmp_size <= 4) ? "%eax" : "%rax";
+                    
                     const char* cc = "e";
                     if (inst->opcode == SIR_ICMP_NE) cc = "ne";
                     else if (inst->opcode == SIR_ICMP_LT) cc = is_unsigned ? "b" : "l";
@@ -806,13 +823,13 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     
                     const char* left_op = op0;
                     if (op0[0] != '%') {
-                        fprintf(out, "    movq %s, %%rax\n", op0);
-                        left_op = "%rax";
+                        fprintf(out, "    mov%s %s, %s\n", suf, op0, ax);
+                        left_op = ax;
                     }
                     if (strcmp(op1, "$0") == 0) {
-                        fprintf(out, "    testq %s, %s\n", left_op, left_op);
+                        fprintf(out, "    test%s %s, %s\n", suf, left_op, left_op);
                     } else {
-                        fprintf(out, "    cmpq %s, %s\n", op1, left_op);
+                        fprintf(out, "    cmp%s %s, %s\n", suf, op1, left_op);
                     }
                     bool can_fuse = false;
                     SirInst* next_inst = inst->next;
@@ -1104,12 +1121,16 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                         }
                         bool skip_store = false;
                         if (!ret_is_float && inst->next && (inst->next->opcode == SIR_ADD || inst->next->opcode == SIR_SUB || inst->next->opcode == SIR_MUL || inst->next->opcode == SIR_AND || inst->next->opcode == SIR_OR || inst->next->opcode == SIR_XOR)) {
-                            if ((inst->next->operands[0] == inst->dest || inst->next->operands[1] == inst->dest) && allocator.use_count[inst->dest->as.vreg] == 2) {
-                                skip_store = true;
+                            if (inst->next->operands[0] == inst->dest || inst->next->operands[1] == inst->dest) {
+                                if (allocator.use_count[inst->dest->as.vreg] == 2 || (inst->next->next && inst->next->next->opcode == SIR_RET)) {
+                                    skip_store = true;
+                                }
                             }
                         }
-                        if (!skip_store && strcmp(dest, "%rax") != 0) {
-                            fprintf(out, "    movq %%rax, %s\n", dest);
+                        if (!skip_store && strcmp(dest, "%rax") != 0 && strcmp(dest, "%eax") != 0) {
+                            int w = (inst->dest->type && type_get_size(inst->dest->type) <= 4) ? 0 : 1;
+                            if (w) fprintf(out, "    movq %%rax, %s\n", dest);
+                            else fprintf(out, "    movl %%eax, %s\n", dest);
                         }
                     }
                     break;
@@ -1118,12 +1139,14 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     if (inst->num_operands > 0) {
                         bool already_in_rax = false;
                         if (inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[0]) {
-                            if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
+                            if (inst->operands[0]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[0]->as.vreg] == 2 || true)) {
                                 already_in_rax = true;
                             }
                         }
-                        if (!already_in_rax && strcmp(op0, "%rax") != 0) {
-                            fprintf(out, "    movq %s, %%rax\n", op0);
+                        if (!already_in_rax && strcmp(op0, "%rax") != 0 && strcmp(op0, "%eax") != 0) {
+                            int w = (inst->operands[0]->type && type_get_size(inst->operands[0]->type) <= 4) ? 0 : 1;
+                            if (w) fprintf(out, "    movq %s, %%rax\n", op0);
+                            else fprintf(out, "    movl %s, %%eax\n", op0);
                         }
                         bool ret_is_float = (inst->operands[0]->type && (inst->operands[0]->type->kind == TY_F32 || inst->operands[0]->type->kind == TY_F64));
                         if (ret_is_float) {

@@ -204,11 +204,15 @@ void emit_mov_reg_imm64(PeCodeBuffer* cb, int reg, uint64_t imm) {
     emit32(cb, (uint32_t)(imm >> 32));
 }
 
-static void emit_mov_reg_reg(PeCodeBuffer* cb, int dst, int src) {
-    if (dst == src) return; // 消除冗余的寄存器间移动
-    emit_rex(cb, 1, src > 7, 0, dst > 7);
+static void emit_mov_reg_reg_w(PeCodeBuffer* cb, int w, int dst, int src) {
+    if (dst == src) return;
+    if (w || src > 7 || dst > 7) emit_rex(cb, w, src > 7, 0, dst > 7);
     emit8(cb, 0x89);
     emit_modrm(cb, 3, src & 7, dst & 7);
+}
+
+static void emit_mov_reg_reg(PeCodeBuffer* cb, int dst, int src) {
+    emit_mov_reg_reg_w(cb, 1, dst, src);
 }
 
 static void emit_alu_reg_reg(PeCodeBuffer* cb, int w, int opc, int dst, int src) {
@@ -406,7 +410,7 @@ static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, in
                 emit_rex(cb, 1, scratch > 7, 0, 0);
                 emit8(cb, 0x63); // movsxd r64, m32
             } else {
-                emit_rex(cb, 0, scratch > 7, 0, 0);
+                if (scratch > 7) emit_rex(cb, 0, scratch > 7, 0, 0);
                 emit8(cb, 0x8B); // mov r32, m32
             }
         } else {
@@ -422,14 +426,15 @@ static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, in
 // 智能结果存储器
 static void store_result_impl(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, int src, LinkCtx* ctx) {
     if (!val || val->kind != SIR_VAL_VREG) return;
+    int w = (val->type && type_get_size(val->type) <= 4) ? 0 : 1;
     int color = reg_alloc_get_color(alloc, val->as.vreg);
     if (color != -1) {
         int dst = get_phys_reg(color);
-        if (dst != src) emit_mov_reg_reg(cb, dst, src);
+        if (dst != src) emit_mov_reg_reg_w(cb, w, dst, src);
     } else {
         int offset = reg_alloc_get_offset(alloc, val->as.vreg, 8);
-        emit_rex(cb, 1, src > 7, 0, 0);
-        emit8(cb, 0x89); // mov m64, r64
+        if (w || src > 7) emit_rex(cb, w, src > 7, 0, 0);
+        emit8(cb, 0x89); // mov m64/m32, r64/r32
         emit_mem(cb, src, REG_RSP, ctx->frame_size + offset);
     }
 }
@@ -651,6 +656,63 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             int call_stack_space = max_call_args > 4 ? (max_call_args - 4) * 8 : 0;
             int shadow_space = (has_extern_call || max_call_args > 4) ? 32 : 0;
             int local_and_args = allocator.current_offset + shadow_space + call_stack_space;
+
+            // 优化: 序言前置快路径剥离 (Shrink-Wrapping / Fast Path Peephole)
+            bool fast_path_emitted = false;
+            if (func->first_block && func->first_block->first_inst) {
+                SirInst* i1 = func->first_block->first_inst;
+                if (i1->opcode == SIR_GET_PARAM && i1->operands[0]->as.int_val == 0) {
+                    SirInst* i2 = i1->next;
+                    if (i2 && i2->opcode >= SIR_ICMP_EQ && i2->opcode <= SIR_ICMP_GE && i2->operands[0] == i1->dest && i2->operands[1]->kind == SIR_VAL_CONST_INT) {
+                        SirInst* i3 = i2->next;
+                        if (i3 && i3->opcode == SIR_BR && i3->operands[0] == i2->dest) {
+                            SirBlock* t_block = i3->operands[1]->as.block;
+                            SirBlock* f_block = i3->operands[2]->as.block;
+                            SirBlock* ret_block = NULL;
+                            SirBlock* slow_block = NULL;
+                            bool cond_is_true = false;
+                            
+                            if (t_block->first_inst && t_block->first_inst == t_block->last_inst && t_block->first_inst->opcode == SIR_RET && t_block->first_inst->operands[0] == i1->dest) {
+                                ret_block = t_block; slow_block = f_block; cond_is_true = true;
+                            } else if (f_block->first_inst && f_block->first_inst == f_block->last_inst && f_block->first_inst->opcode == SIR_RET && f_block->first_inst->operands[0] == i1->dest) {
+                                ret_block = f_block; slow_block = t_block; cond_is_true = false;
+                            }
+                            
+                            if (ret_block) {
+                                int32_t imm = (int32_t)i2->operands[1]->as.int_val;
+                                int w = (i1->dest->type && type_get_size(i1->dest->type) <= 4) ? 0 : 1;
+                                
+                                // cmp rcx/ecx, imm
+                                emit_alu_reg_imm32(&linker->text_section, w, 7, REG_RCX, imm);
+                                
+                                uint8_t jcc_slow = 0;
+                                bool is_unsigned = type_is_unsigned(i1->dest->type);
+                                if (i2->opcode == SIR_ICMP_EQ) jcc_slow = cond_is_true ? 0x85 : 0x84;
+                                else if (i2->opcode == SIR_ICMP_NE) jcc_slow = cond_is_true ? 0x84 : 0x85;
+                                else if (i2->opcode == SIR_ICMP_LT) jcc_slow = cond_is_true ? (is_unsigned ? 0x83 : 0x8D) : (is_unsigned ? 0x82 : 0x8C);
+                                else if (i2->opcode == SIR_ICMP_LE) jcc_slow = cond_is_true ? (is_unsigned ? 0x87 : 0x8F) : (is_unsigned ? 0x86 : 0x8E);
+                                else if (i2->opcode == SIR_ICMP_GT) jcc_slow = cond_is_true ? (is_unsigned ? 0x86 : 0x8E) : (is_unsigned ? 0x87 : 0x8F);
+                                else if (i2->opcode == SIR_ICMP_GE) jcc_slow = cond_is_true ? (is_unsigned ? 0x82 : 0x8C) : (is_unsigned ? 0x83 : 0x8D);
+                                
+                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, jcc_slow);
+                                uint32_t jmp_slow_off = (uint32_t)linker->text_section.size;
+                                emit32(&linker->text_section, 0); // 占位符
+                                
+                                // mov rax/eax, rcx/ecx
+                                emit_mov_reg_reg_w(&linker->text_section, w, REG_RAX, REG_RCX);
+                                // ret
+                                emit8(&linker->text_section, 0xC3);
+                                
+                                // 回填 jcc_slow
+                                int32_t rel_slow = (int32_t)(linker->text_section.size - (jmp_slow_off + 4));
+                                memcpy(linker->text_section.buffer + jmp_slow_off, &rel_slow, 4);
+                                
+                                fast_path_emitted = true;
+                            }
+                        }
+                    }
+                }
+            }
 
             // 序言 (Prologue)
             int num_callee_pushes = 0;
@@ -936,7 +998,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 if (c != -1) dest_reg = get_phys_reg(c);
                                 if (inst->dest->type && type_get_size(inst->dest->type) <= 4) w = 0;
                                 
-                                if (inst->next && allocator.use_count[inst->dest->as.vreg] == 2) {
+                                if (inst->next && (allocator.use_count[inst->dest->as.vreg] == 2 || inst->next->opcode == SIR_RET)) {
                                     if (inst->next->opcode == SIR_RET && inst->next->num_operands > 0 && inst->next->operands[0] == inst->dest) {
                                         dest_reg = REG_RAX;
                                         is_ret_peephole = true;
@@ -954,7 +1016,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             int left = REG_RAX;
                             bool left_already_in_rax = false;
                             if (inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[0]) {
-                                if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
+                                if (inst->operands[0]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[0]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
                                     left_already_in_rax = true;
                                 }
                             }
@@ -1030,7 +1092,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 int right = REG_RAX;
                                 bool right_already_in_rax = false;
                                 if (inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[1]) {
-                                    if (inst->operands[1]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[1]->as.vreg] == 2) {
+                                    if (inst->operands[1]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[1]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
                                         right_already_in_rax = true;
                                     }
                                 }
@@ -1090,7 +1152,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                             emit_sib(&linker->text_section, 0, left & 7, b);
                                         }
                                     } else {
-                                        if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
+                                        if (left != dest_reg) emit_mov_reg_reg_w(&linker->text_section, w, dest_reg, left);
                                         if (inst->opcode == SIR_ADD) emit_alu_reg_reg(&linker->text_section, w, 0x01, dest_reg, right);
                                         else if (inst->opcode == SIR_SUB) emit_alu_reg_reg(&linker->text_section, w, 0x29, dest_reg, right);
                                         else if (inst->opcode == SIR_AND) emit_alu_reg_reg(&linker->text_section, w, 0x21, dest_reg, right);
@@ -1677,7 +1739,8 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 }
                                 if (!already_in_rcx) {
                                     int val = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RAX, &ctx);
-                                    if (val != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, val);
+                                    int w = (inst->operands[1]->type && type_get_size(inst->operands[1]->type) <= 4) ? 0 : 1;
+                                    if (val != REG_RCX) emit_mov_reg_reg_w(&linker->text_section, w, REG_RCX, val);
                                 }
                                 bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64));
                                 if (is_float) {
@@ -1838,8 +1901,10 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 }
                                 bool skip_store = false;
                                 if (!ret_is_float && inst->next && (inst->next->opcode == SIR_ADD || inst->next->opcode == SIR_SUB || inst->next->opcode == SIR_MUL || inst->next->opcode == SIR_AND || inst->next->opcode == SIR_OR || inst->next->opcode == SIR_XOR)) {
-                                    if ((inst->next->operands[0] == inst->dest || inst->next->operands[1] == inst->dest) && allocator.use_count[inst->dest->as.vreg] == 2) {
-                                        skip_store = true;
+                                    if (inst->next->operands[0] == inst->dest || inst->next->operands[1] == inst->dest) {
+                                        if (allocator.use_count[inst->dest->as.vreg] == 2 || (inst->next->next && inst->next->next->opcode == SIR_RET)) {
+                                            skip_store = true;
+                                        }
                                     }
                                 }
                                 if (!skip_store) {
@@ -1985,13 +2050,14 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             if (inst->num_operands > 0) {
                                 bool already_in_rax = false;
                                 if (inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[0]) {
-                                    if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
+                                    if (inst->operands[0]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[0]->as.vreg] == 2 || true)) {
                                         already_in_rax = true;
                                     }
                                 }
                                 if (!already_in_rax) {
                                     int val = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                                    if (val != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, val);
+                                    int w = (inst->operands[0]->type && type_get_size(inst->operands[0]->type) <= 4) ? 0 : 1;
+                                    if (val != REG_RAX) emit_mov_reg_reg_w(&linker->text_section, w, REG_RAX, val);
                                 }
                                 
                                 bool ret_is_float = (inst->operands[0]->type && (inst->operands[0]->type->kind == TY_F32 || inst->operands[0]->type->kind == TY_F64));
