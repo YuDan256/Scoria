@@ -567,12 +567,26 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
     if (opt_level == 0) return;
 
     for (SirFunction* func = builder->module->first_func; func; func = func->next) {
+        uint32_t max_vreg = 0;
+        for (SirBlock* block = func->first_block; block; block = block->next) {
+            for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
+                    if (inst->dest->as.vreg > max_vreg) max_vreg = inst->dest->as.vreg;
+                }
+                for (int i = 0; i < inst->num_operands; i++) {
+                    if (inst->operands[i] && inst->operands[i]->kind == SIR_VAL_VREG) {
+                        if (inst->operands[i]->as.vreg > max_vreg) max_vreg = inst->operands[i]->as.vreg;
+                    }
+                }
+            }
+        }
+
         bool changed;
         
         // 1. 死代码消除 (Dead Code Elimination)
         do {
             changed = false;
-            uint32_t* use_counts = (uint32_t*)calloc(builder->next_vreg, sizeof(uint32_t));
+            uint32_t* use_counts = (uint32_t*)calloc(max_vreg + 1, sizeof(uint32_t));
             
             // 统计使用次数
             for (SirBlock* block = func->first_block; block; block = block->next) {
