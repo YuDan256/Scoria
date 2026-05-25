@@ -34,7 +34,8 @@ typedef enum {
     
     // 其他
     SIR_CAST,    // 类型转换
-    SIR_GET_PARAM // 获取函数参数
+    SIR_GET_PARAM, // 获取函数参数
+    SIR_SELECT   // 条件选择
 } SirOpcode;
 
 // =========================================================

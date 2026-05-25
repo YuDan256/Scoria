@@ -425,6 +425,19 @@ void ir_build_ret(IrBuilder* builder, SirValue* val) {
     }
 }
 
+SirValue* ir_build_select(IrBuilder* builder, SirValue* cond, SirValue* true_val, SirValue* false_val) {
+    if (!cond || !true_val || !false_val) return NULL;
+    if (cond->kind == SIR_VAL_CONST_BOOL) {
+        return cond->as.bool_val ? true_val : false_val;
+    }
+    SirInst* inst = create_inst(builder, SIR_SELECT, 3);
+    inst->operands[0] = cond;
+    inst->operands[1] = true_val;
+    inst->operands[2] = false_val;
+    inst->dest = create_vreg(builder, true_val->type);
+    return inst->dest;
+}
+
 SirValue* ir_get_param(IrBuilder* builder, int index, ScoriaType* type) {
     SirInst* inst = create_inst(builder, SIR_GET_PARAM, 1);
     inst->operands[0] = ir_const_int(builder, type_get_basic(TY_I32), index);

@@ -153,7 +153,7 @@ static void generate_function(FILE* out, SirFunction* func) {
     }
 
     // 4. 遍历基本块和指令 (指令选择 Instruction Selection)
-    char op0[64], op1[64], dest[64];
+    char op0[64], op1[64], op2[64], dest[64];
     
     for (SirBlock* block = func->first_block; block; block = block->next) {
         fprintf(out, ".L%s_%u:\n", block->name, block->id);
@@ -162,6 +162,7 @@ static void generate_function(FILE* out, SirFunction* func) {
             // 解析操作数
             if (inst->num_operands > 0) get_operand_str(op0, inst->operands[0], &allocator, 8, total_frame_size);
             if (inst->num_operands > 1) get_operand_str(op1, inst->operands[1], &allocator, 8, total_frame_size);
+            if (inst->num_operands > 2) get_operand_str(op2, inst->operands[2], &allocator, 8, total_frame_size);
             if (inst->dest) get_operand_str(dest, inst->dest, &allocator, 8, total_frame_size);
 
             switch (inst->opcode) {
@@ -433,6 +434,27 @@ static void generate_function(FILE* out, SirFunction* func) {
                         }
                         fprintf(out, "    jmp .L%s_%u\n", def_block->name, def_block->id);
                     }
+                    break;
+                }
+
+                case SIR_SELECT: {
+                    bool dest_is_mem = (dest[0] != '%');
+                    const char* acc = dest_is_mem ? "%rax" : dest;
+                    
+                    if (strcmp(op2, acc) != 0) fprintf(out, "    movq %s, %s\n", op2, acc);
+                    
+                    const char* t_scratch = (strcmp(acc, "%rcx") == 0) ? "%rdx" : "%rcx";
+                    if (strcmp(op1, t_scratch) != 0) fprintf(out, "    movq %s, %s\n", op1, t_scratch);
+                    
+                    if (op0[0] == '%') {
+                        fprintf(out, "    testq %s, %s\n", op0, op0);
+                    } else {
+                        fprintf(out, "    cmpq $0, %s\n", op0);
+                    }
+                    
+                    fprintf(out, "    cmovneq %s, %s\n", t_scratch, acc);
+                    
+                    if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
                 }
 

@@ -644,6 +644,36 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
 
                 for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
                     switch (inst->opcode) {
+                        case SIR_SELECT: {
+                            int dest_reg = REG_RAX;
+                            if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
+                                int c = reg_alloc_get_color(&allocator, inst->dest->as.vreg);
+                                if (c != -1) dest_reg = get_phys_reg(c);
+                            }
+                            
+                            int f_val = load_operand(&linker->text_section, &allocator, inst->operands[2], dest_reg, &ctx);
+                            if (f_val != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, f_val);
+                            
+                            int t_scratch = (dest_reg == REG_RCX) ? REG_RDX : REG_RCX;
+                            int t_val = load_operand(&linker->text_section, &allocator, inst->operands[1], t_scratch, &ctx);
+                            if (t_val != t_scratch) emit_mov_reg_reg(&linker->text_section, t_scratch, t_val);
+                            
+                            int cond_scratch = (t_scratch == REG_RCX) ? REG_R8 : REG_RCX;
+                            if (cond_scratch == dest_reg) cond_scratch = REG_R9;
+                            int cond = load_operand(&linker->text_section, &allocator, inst->operands[0], cond_scratch, &ctx);
+                            
+                            emit_rex(&linker->text_section, 1, cond > 7, 0, cond > 7);
+                            emit8(&linker->text_section, 0x85); // test cond, cond
+                            emit_modrm(&linker->text_section, 3, cond & 7, cond & 7);
+                            
+                            emit_rex(&linker->text_section, 1, dest_reg > 7, 0, t_scratch > 7);
+                            emit8(&linker->text_section, 0x0F);
+                            emit8(&linker->text_section, 0x45); // cmovne
+                            emit_modrm(&linker->text_section, 3, dest_reg & 7, t_scratch & 7);
+                            
+                            store_result(&linker->text_section, &allocator, inst->dest, dest_reg);
+                            break;
+                        }
                         case SIR_GET_PARAM: {
                             int param_idx = (int)inst->operands[0]->as.int_val;
                             if (param_idx < 4) {

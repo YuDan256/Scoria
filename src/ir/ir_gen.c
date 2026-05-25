@@ -7,6 +7,28 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr);
 static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr);
 static void gen_statement(IrBuilder* builder, AstNode* stmt);
 
+static bool is_simple_assign(AstNode* stmt, AstNode** out_target, AstNode** out_val) {
+    if (!stmt) return false;
+    if (stmt->kind == AST_BLOCK_STMT && stmt->as.block.stmt_count == 1) {
+        stmt = stmt->as.block.statements[0];
+    }
+    if (stmt->kind == AST_EXPR_STMT && stmt->as.expr_stmt.expr->kind == AST_ASSIGN_EXPR) {
+        AstNode* assign = stmt->as.expr_stmt.expr;
+        if (assign->as.assign.op.kind == TK_ASSIGN && assign->as.assign.target->kind == AST_IDENT_EXPR) {
+            ScoriaType* t = assign->as.assign.target->expr_type;
+            // 仅对标量整数/指针进行 CMOV 优化 (浮点数和结构体不支持简单的 CMOV)
+            if (!t || t->kind == TY_F32 || t->kind == TY_F64 || type_get_size(t) > 8) return false;
+            
+            *out_target = assign->as.assign.target;
+            *out_val = assign->as.assign.value;
+            if ((*out_val)->kind == AST_LITERAL_EXPR || (*out_val)->kind == AST_IDENT_EXPR) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static bool check_mutated(AstNode* node, Symbol* sym) {
     if (!node) return false;
     switch (node->kind) {
@@ -712,6 +734,30 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
             break;
         }
         case AST_IF_STMT: {
+            AstNode* then_target = NULL;
+            AstNode* then_val = NULL;
+            AstNode* else_target = NULL;
+            AstNode* else_val = NULL;
+
+            // 模式匹配：如果 if 和 else 都是对同一个变量的简单赋值，降维为 SELECT
+            if (stmt->as.if_stmt.else_branch &&
+                is_simple_assign(stmt->as.if_stmt.then_branch, &then_target, &then_val) &&
+                is_simple_assign(stmt->as.if_stmt.else_branch, &else_target, &else_val) &&
+                then_target->resolved_symbol == else_target->resolved_symbol &&
+                then_target->resolved_symbol != NULL) {
+                
+                SirValue* cond = gen_expression(builder, stmt->as.if_stmt.condition);
+                SirValue* t_val = gen_expression(builder, then_val);
+                SirValue* f_val = gen_expression(builder, else_val);
+                
+                SirValue* select_val = ir_build_select(builder, cond, t_val, f_val);
+                SirValue* lval = gen_lvalue(builder, then_target);
+                if (lval) {
+                    ir_build_store(builder, select_val, lval);
+                }
+                break;
+            }
+
             SirValue* cond = gen_expression(builder, stmt->as.if_stmt.condition);
             
             if (cond && cond->kind == SIR_VAL_CONST_BOOL) {
