@@ -197,8 +197,14 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
         if (block != func->first_block) {
             SirBlock* prev = func->first_block;
             while (prev->next != block) prev = prev->next;
-            if (prev->last_inst && (prev->last_inst->opcode == SIR_JMP || prev->last_inst->opcode == SIR_RET)) {
-                fprintf(out, "    .p2align 4\n");
+            if (prev->last_inst) {
+                if (prev->last_inst->opcode == SIR_RET) {
+                    fprintf(out, "    .p2align 4\n");
+                } else if (prev->last_inst->opcode == SIR_JMP) {
+                    if (prev->last_inst->operands[0]->as.block != block) {
+                        fprintf(out, "    .p2align 4\n");
+                    }
+                }
             }
         }
         fprintf(out, ".L%s_%u:\n", block->name, block->id);

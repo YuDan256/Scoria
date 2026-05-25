@@ -602,18 +602,20 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                 // cmp rcx/ecx, imm
                 emit_alu_reg_imm32(&linker->text_section, func->fp_w, 7, REG_RCX, func->fp_imm);
                 
-                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, func->fp_jcc_pe);
+                // 优化: 使用 2 字节的短跳转 (Short Jump) 替代 6 字节的近跳转
+                uint8_t short_jcc = func->fp_jcc_pe - 0x10;
+                emit8(&linker->text_section, short_jcc);
                 uint32_t jmp_slow_off = (uint32_t)linker->text_section.size;
-                emit32(&linker->text_section, 0); // 占位符
+                emit8(&linker->text_section, 0); // 8-bit 占位符
                 
                 // mov rax/eax, rcx/ecx
                 emit_mov_reg_reg_w(&linker->text_section, func->fp_w, REG_RAX, REG_RCX);
                 // ret
                 emit8(&linker->text_section, 0xC3);
                 
-                // 回填 jcc_slow
-                int32_t rel_slow = (int32_t)(linker->text_section.size - (jmp_slow_off + 4));
-                memcpy(linker->text_section.buffer + jmp_slow_off, &rel_slow, 4);
+                // 回填 short jcc
+                int8_t rel_slow = (int8_t)(linker->text_section.size - (jmp_slow_off + 1));
+                linker->text_section.buffer[jmp_slow_off] = (uint8_t)rel_slow;
             }
 
             uint32_t max_vreg = 0;
@@ -710,9 +712,18 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                 if (block != func->first_block) {
                     SirBlock* prev = func->first_block;
                     while (prev->next != block) prev = prev->next;
-                    if (prev->last_inst && (prev->last_inst->opcode == SIR_JMP || prev->last_inst->opcode == SIR_RET)) {
-                        while (linker->text_section.size % 16 != 0) {
-                            emit8(&linker->text_section, 0x90); // nop
+                    if (prev->last_inst) {
+                        if (prev->last_inst->opcode == SIR_RET) {
+                            while (linker->text_section.size % 16 != 0) {
+                                emit8(&linker->text_section, 0x90); // nop
+                            }
+                        } else if (prev->last_inst->opcode == SIR_JMP) {
+                            // 只有当 JMP 的目标不是当前块时，才说明当前块不可通过 Fall-through 到达
+                            if (prev->last_inst->operands[0]->as.block != block) {
+                                while (linker->text_section.size % 16 != 0) {
+                                    emit8(&linker->text_section, 0x90); // nop
+                                }
+                            }
                         }
                     }
                 }
