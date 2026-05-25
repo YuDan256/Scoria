@@ -11,9 +11,10 @@ void reg_alloc_init(RegAllocator* allocator, uint32_t max_vreg) {
     allocator->live_end = (int*)calloc(max_vreg + 1, sizeof(int));
     allocator->adj_matrix = (bool*)calloc((max_vreg + 1) * (max_vreg + 1), sizeof(bool));
     allocator->degree = (int*)calloc(max_vreg + 1, sizeof(int));
+    allocator->use_count = (int*)calloc(max_vreg + 1, sizeof(int));
 
     if (!allocator->vreg_offsets || !allocator->vreg_colors || !allocator->live_start ||
-        !allocator->live_end || !allocator->adj_matrix || !allocator->degree) {
+        !allocator->live_end || !allocator->adj_matrix || !allocator->degree || !allocator->use_count) {
         fprintf(stderr, "Fatal error: Out of memory in reg_alloc_init\n");
         exit(1);
     }
@@ -33,12 +34,16 @@ void reg_alloc_free(RegAllocator* allocator) {
     free(allocator->live_end);
     free(allocator->adj_matrix);
     free(allocator->degree);
+    free(allocator->use_count);
 }
 
-static void update_live_interval(RegAllocator* allocator, SirValue* val, int inst_idx) {
+static void update_live_interval(RegAllocator* allocator, SirValue* val, int inst_idx, int weight) {
     if (!val || val->kind != SIR_VAL_VREG) return;
     uint32_t vreg = val->as.vreg;
     if (vreg > allocator->max_vreg) return;
+    
+    allocator->use_count[vreg] += weight;
+    
     if (inst_idx < allocator->live_start[vreg]) allocator->live_start[vreg] = inst_idx;
     if (inst_idx > allocator->live_end[vreg]) allocator->live_end[vreg] = inst_idx;
 }
@@ -51,19 +56,46 @@ void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func) {
     }
     int* block_start = (int*)calloc(max_block_id + 1, sizeof(int));
     int* block_end = (int*)calloc(max_block_id + 1, sizeof(int));
+    int* block_depth = (int*)calloc(max_block_id + 1, sizeof(int));
+
+    // 估算基本块的循环深度 (通过向后跳转边)
+    for (SirBlock* block = func->first_block; block; block = block->next) {
+        SirInst* last = block->last_inst;
+        if (!last) continue;
+        SirBlock* target1 = NULL;
+        SirBlock* target2 = NULL;
+        if (last->opcode == SIR_JMP) {
+            target1 = last->operands[0]->as.block;
+        } else if (last->opcode == SIR_BR) {
+            target1 = last->operands[1]->as.block;
+            target2 = last->operands[2]->as.block;
+        }
+        
+        if (target1 && target1->id <= block->id) {
+            for (uint32_t id = target1->id; id <= block->id; id++) block_depth[id]++;
+        }
+        if (target2 && target2->id <= block->id) {
+            for (uint32_t id = target2->id; id <= block->id; id++) block_depth[id]++;
+        }
+    }
 
     int inst_idx = 0;
     for (SirBlock* block = func->first_block; block; block = block->next) {
         block_start[block->id] = inst_idx;
+        
+        int weight = 1;
+        for (int d = 0; d < block_depth[block->id]; d++) weight *= 10; // 循环内指令权重 x10
+        
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
             for (int i = 0; i < inst->num_operands; i++) {
-                update_live_interval(allocator, inst->operands[i], inst_idx);
+                update_live_interval(allocator, inst->operands[i], inst_idx, weight);
             }
-            update_live_interval(allocator, inst->dest, inst_idx);
+            update_live_interval(allocator, inst->dest, inst_idx, weight);
             inst_idx++;
         }
         block_end[block->id] = inst_idx > block_start[block->id] ? inst_idx - 1 : inst_idx;
     }
+    free(block_depth);
 
     // 处理循环 (向后跳转)：延长在循环头活跃的变量的生命周期到循环尾
     for (SirBlock* block = func->first_block; block; block = block->next) {
@@ -144,8 +176,15 @@ void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func) {
                     best_node = i; // 优先选择度数小于 K 的节点
                 } else if (allocator->degree[i] < NUM_PHYS_REGS && allocator->degree[i] > allocator->degree[best_node]) {
                     best_node = i; // 在可着色节点中选度数大的，尽早移除
-                } else if (allocator->degree[i] >= NUM_PHYS_REGS && allocator->degree[i] > allocator->degree[best_node]) {
-                    best_node = i; // 在必须溢出的节点中选度数大的 (启发式 Spill)
+                } else if (allocator->degree[i] >= NUM_PHYS_REGS && allocator->degree[best_node] >= NUM_PHYS_REGS) {
+                    // Chaitin-Briggs 启发式 Spill: 选择 (使用代价 / 冲突度数) 最小的节点溢出
+                    double weight_i = (double)allocator->use_count[i] / allocator->degree[i];
+                    double weight_best = (double)allocator->use_count[best_node] / allocator->degree[best_node];
+                    if (weight_i < weight_best) {
+                        best_node = i;
+                    } else if (weight_i == weight_best && allocator->degree[i] > allocator->degree[best_node]) {
+                        best_node = i;
+                    }
                 }
             }
         }

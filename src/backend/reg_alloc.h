@@ -20,6 +20,7 @@ typedef struct {
     // 冲突图 (Interference Graph)
     bool* adj_matrix;
     int* degree;
+    int* use_count; // 动态使用频率 (用于 Spill 启发式评估)
 } RegAllocator;
 
 void reg_alloc_init(RegAllocator* allocator, uint32_t max_vreg);
