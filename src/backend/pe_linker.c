@@ -255,6 +255,7 @@ typedef struct {
     uint32_t* func_offsets;
     int func_count;
     SirExternFunc* first_extern;
+    int frame_size;
 } LinkCtx;
 
 // 全局重定位表 (用于跨函数回填)
@@ -402,14 +403,14 @@ static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, in
             emit_rex(cb, 1, scratch > 7, 0, 0);
             emit8(cb, 0x8B); // mov r64, m64
         }
-        emit_mem(cb, scratch, REG_RBP, offset);
+        emit_mem(cb, scratch, REG_RSP, ctx->frame_size + offset);
         return scratch;
     }
     return scratch;
 }
 
 // 智能结果存储器
-static void store_result(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, int src) {
+static void store_result_impl(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, int src, LinkCtx* ctx) {
     if (!val || val->kind != SIR_VAL_VREG) return;
     int color = reg_alloc_get_color(alloc, val->as.vreg);
     if (color != -1) {
@@ -419,9 +420,10 @@ static void store_result(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, i
         int offset = reg_alloc_get_offset(alloc, val->as.vreg, 8);
         emit_rex(cb, 1, src > 7, 0, 0);
         emit8(cb, 0x89); // mov m64, r64
-        emit_mem(cb, src, REG_RBP, offset);
+        emit_mem(cb, src, REG_RSP, ctx->frame_size + offset);
     }
 }
+#define store_result(cb, alloc, val, src) store_result_impl(cb, alloc, val, src, &ctx)
 
 uint32_t g_print_str_relocs[1024];
 int g_print_str_reloc_count = 0;
@@ -617,11 +619,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             int shadow_space = has_call ? 32 : 0;
             int total_frame_size = allocator.current_offset + shadow_space + call_stack_space; // 预留 Shadow Space 和溢出参数空间
             total_frame_size = (total_frame_size + 15) & ~15; // 保持 16 字节对齐
+            ctx.frame_size = total_frame_size;
 
             // 序言 (Prologue)
-            emit8(&linker->text_section, 0x55); // push rbp
-            emit_mov_reg_reg(&linker->text_section, REG_RBP, REG_RSP);
-            
             int num_callee_pushes = 0;
             if (allocator.used_callee_saved[0]) { emit8(&linker->text_section, 0x53); num_callee_pushes++; } // push rbx
             if (allocator.used_callee_saved[1]) { emit8(&linker->text_section, 0x56); num_callee_pushes++; } // push rsi
@@ -660,7 +660,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                     store_result(&linker->text_section, &allocator, inst->dest, src_reg);
                                 }
                             } else {
-                                int offset = 16 + param_idx * 8;
+                                int offset = 8 + total_frame_size + param_idx * 8;
                                 int size = type_get_size(inst->dest->type);
                                 bool is_signed = type_is_signed(inst->dest->type);
                                 
@@ -682,7 +682,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                     emit_rex(&linker->text_section, 1, 0, 0, 0);
                                     emit8(&linker->text_section, 0x8B);
                                 }
-                                emit_mem(&linker->text_section, REG_RAX, REG_RBP, offset);
+                                emit_mem(&linker->text_section, REG_RAX, REG_RSP, offset);
                                 store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                             }
                             break;
@@ -690,8 +690,8 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_ALLOCA: {
                             int offset = alloca_offsets[inst->dest->as.vreg];
                             emit_rex(&linker->text_section, 1, 0, 0, 0);
-                            emit8(&linker->text_section, 0x8D); // lea rax, [rbp + offset]
-                            emit_mem(&linker->text_section, REG_RAX, REG_RBP, offset);
+                            emit8(&linker->text_section, 0x8D); // lea rax, [rsp + offset]
+                            emit_mem(&linker->text_section, REG_RAX, REG_RSP, total_frame_size + offset);
                             store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                             break;
                         }
@@ -1606,12 +1606,11 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 }
                             }
                             // 跋 (Epilogue)
-                            if (num_callee_pushes > 0) {
+                            if (stack_sub_size > 0) {
                                 emit_rex(&linker->text_section, 1, 0, 0, 0);
-                                emit8(&linker->text_section, 0x8D);
-                                emit_mem(&linker->text_section, REG_RSP, REG_RBP, -(num_callee_pushes * 8)); // lea rsp, [rbp - K*8]
-                            } else {
-                                emit_mov_reg_reg(&linker->text_section, REG_RSP, REG_RBP);
+                                emit8(&linker->text_section, 0x81); // add rsp, imm32
+                                emit_modrm(&linker->text_section, 3, 0, REG_RSP);
+                                emit32(&linker->text_section, (uint32_t)stack_sub_size);
                             }
                             
                             if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5F); } // pop r15
@@ -1622,7 +1621,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             if (allocator.used_callee_saved[1]) emit8(&linker->text_section, 0x5E); // pop rsi
                             if (allocator.used_callee_saved[0]) emit8(&linker->text_section, 0x5B); // pop rbx
                             
-                            emit8(&linker->text_section, 0x5D); // pop rbp
                             emit8(&linker->text_section, 0xC3); // ret
                             break;
                         }

@@ -30,7 +30,7 @@ static int get_string_id(const char* str, uint32_t len) {
 }
 
 // 辅助函数：将 SirValue 转换为 x86_64 汇编操作数格式
-static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int size) {
+static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int size, int frame_size) {
     if (!val) {
         strcpy(buf, "");
         return;
@@ -73,7 +73,7 @@ static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int s
             } else {
                 // 溢出到了栈内存
                 int offset = reg_alloc_get_offset(alloc, val->as.vreg, 8);
-                sprintf(buf, "%d(%%rbp)", offset);
+                sprintf(buf, "%d(%%rsp)", frame_size + offset);
             }
             break;
         }
@@ -138,9 +138,6 @@ static void generate_function(FILE* out, SirFunction* func) {
     total_frame_size = (total_frame_size + 15) & ~15;
 
     // 2. 函数序言 (Prologue)
-    fprintf(out, "    pushq %%rbp\n");
-    fprintf(out, "    movq %%rsp, %%rbp\n");
-    
     int num_callee_pushes = 0;
     if (allocator.used_callee_saved[0]) { fprintf(out, "    pushq %%rbx\n"); num_callee_pushes++; }
     if (allocator.used_callee_saved[1]) { fprintf(out, "    pushq %%rsi\n"); num_callee_pushes++; }
@@ -163,14 +160,14 @@ static void generate_function(FILE* out, SirFunction* func) {
         
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
             // 解析操作数
-            if (inst->num_operands > 0) get_operand_str(op0, inst->operands[0], &allocator, 8);
-            if (inst->num_operands > 1) get_operand_str(op1, inst->operands[1], &allocator, 8);
-            if (inst->dest) get_operand_str(dest, inst->dest, &allocator, 8);
+            if (inst->num_operands > 0) get_operand_str(op0, inst->operands[0], &allocator, 8, total_frame_size);
+            if (inst->num_operands > 1) get_operand_str(op1, inst->operands[1], &allocator, 8, total_frame_size);
+            if (inst->dest) get_operand_str(dest, inst->dest, &allocator, 8, total_frame_size);
 
             switch (inst->opcode) {
                 case SIR_ALLOCA: {
                     int offset = alloca_offsets[inst->dest->as.vreg];
-                    fprintf(out, "    leaq %d(%%rbp), %%rax\n", offset);
+                    fprintf(out, "    leaq %d(%%rsp), %%rax\n", total_frame_size + offset);
                     fprintf(out, "    movq %%rax, %s\n", dest);
                     break;
                 }
@@ -379,7 +376,7 @@ static void generate_function(FILE* out, SirFunction* func) {
 
                 case SIR_SWITCH: {
                     char cond_str[64];
-                    get_operand_str(cond_str, inst->operands[0], &allocator, 8);
+                    get_operand_str(cond_str, inst->operands[0], &allocator, 8, total_frame_size);
                     fprintf(out, "    movq %s, %%rax\n", cond_str);
 
                     int case_count = (inst->num_operands - 2) / 2;
@@ -429,7 +426,7 @@ static void generate_function(FILE* out, SirFunction* func) {
                         // 退化为 If-Else 链
                         for (int i = 0; i < case_count; i++) {
                             char val_str[64];
-                            get_operand_str(val_str, inst->operands[2 + i * 2], &allocator, 8);
+                            get_operand_str(val_str, inst->operands[2 + i * 2], &allocator, 8, total_frame_size);
                             fprintf(out, "    cmpq %s, %%rax\n", val_str);
                             SirBlock* target = inst->operands[2 + i * 2 + 1]->as.block;
                             fprintf(out, "    je .L%s_%u\n", target->name, target->id);
@@ -455,21 +452,21 @@ static void generate_function(FILE* out, SirFunction* func) {
                             }
                         }
                     } else {
-                        int offset = 16 + param_idx * 8;
+                        int offset = 8 + total_frame_size + param_idx * 8;
                         int size = type_get_size(inst->dest->type);
                         bool is_signed = type_is_signed(inst->dest->type);
                         
                         if (size == 1) {
-                            if (is_signed) fprintf(out, "    movsbq %d(%%rbp), %%rax\n", offset);
-                            else fprintf(out, "    movzbq %d(%%rbp), %%rax\n", offset);
+                            if (is_signed) fprintf(out, "    movsbq %d(%%rsp), %%rax\n", offset);
+                            else fprintf(out, "    movzbq %d(%%rsp), %%rax\n", offset);
                         } else if (size == 2) {
-                            if (is_signed) fprintf(out, "    movswq %d(%%rbp), %%rax\n", offset);
-                            else fprintf(out, "    movzwq %d(%%rbp), %%rax\n", offset);
+                            if (is_signed) fprintf(out, "    movswq %d(%%rsp), %%rax\n", offset);
+                            else fprintf(out, "    movzwq %d(%%rsp), %%rax\n", offset);
                         } else if (size == 4) {
-                            if (is_signed) fprintf(out, "    movslq %d(%%rbp), %%rax\n", offset);
-                            else fprintf(out, "    movl %d(%%rbp), %%eax\n", offset);
+                            if (is_signed) fprintf(out, "    movslq %d(%%rsp), %%rax\n", offset);
+                            else fprintf(out, "    movl %d(%%rsp), %%eax\n", offset);
                         } else {
-                            fprintf(out, "    movq %d(%%rbp), %%rax\n", offset);
+                            fprintf(out, "    movq %d(%%rsp), %%rax\n", offset);
                         }
                         fprintf(out, "    movq %%rax, %s\n", dest);
                     }
@@ -730,7 +727,7 @@ static void generate_function(FILE* out, SirFunction* func) {
                 case SIR_CALL:
                     if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "scribe") == 0) {
                         char arg_str[64];
-                        get_operand_str(arg_str, inst->operands[1], &allocator, 8);
+                        get_operand_str(arg_str, inst->operands[1], &allocator, 8, total_frame_size);
                         fprintf(out, "    movq %s, %%rcx\n", arg_str);
                         
                         ScoriaType* arg_type = inst->operands[1]->type;
@@ -766,7 +763,7 @@ static void generate_function(FILE* out, SirFunction* func) {
                     int num_args = inst->num_operands - 1;
                     for (int i = num_args - 1; i >= 4; i--) {
                         char arg_str[64];
-                        get_operand_str(arg_str, inst->operands[i+1], &allocator, 8);
+                        get_operand_str(arg_str, inst->operands[i+1], &allocator, 8, total_frame_size);
                         if (inst->operands[i+1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[i+1]->type || inst->operands[i+1]->type->kind == TY_F64)) {
                             fprintf(out, "    movabsq %s, %%rax\n", arg_str);
                         } else {
@@ -779,7 +776,7 @@ static void generate_function(FILE* out, SirFunction* func) {
                     const char* arg_regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
                     if (reg_args == 1) {
                         char arg_str[64];
-                        get_operand_str(arg_str, inst->operands[1], &allocator, 8);
+                        get_operand_str(arg_str, inst->operands[1], &allocator, 8, total_frame_size);
                         if (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[1]->type || inst->operands[1]->type->kind == TY_F64)) {
                             fprintf(out, "    movabsq %s, %%rcx\n", arg_str);
                         } else {
@@ -792,8 +789,8 @@ static void generate_function(FILE* out, SirFunction* func) {
                         }
                     } else if (reg_args == 2) {
                         char arg_str0[64], arg_str1[64];
-                        get_operand_str(arg_str0, inst->operands[1], &allocator, 8);
-                        get_operand_str(arg_str1, inst->operands[2], &allocator, 8);
+                        get_operand_str(arg_str0, inst->operands[1], &allocator, 8, total_frame_size);
+                        get_operand_str(arg_str1, inst->operands[2], &allocator, 8, total_frame_size);
                         
                         if (strcmp(arg_str0, "%rdx") == 0) {
                             fprintf(out, "    movq %%rdx, %%r10\n");
@@ -822,7 +819,7 @@ static void generate_function(FILE* out, SirFunction* func) {
                     } else {
                         for (int i = 0; i < reg_args; i++) {
                             char arg_str[64];
-                            get_operand_str(arg_str, inst->operands[i+1], &allocator, 8);
+                            get_operand_str(arg_str, inst->operands[i+1], &allocator, 8, total_frame_size);
                             if (inst->operands[i+1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[i+1]->type || inst->operands[i+1]->type->kind == TY_F64)) {
                                 fprintf(out, "    movabsq %s, %%rax\n", arg_str);
                             } else {
@@ -845,7 +842,7 @@ static void generate_function(FILE* out, SirFunction* func) {
                         fprintf(out, "    call %s\n", inst->operands[0]->as.global_name);
                     } else {
                         char callee_str[64];
-                        get_operand_str(callee_str, inst->operands[0], &allocator, 8);
+                        get_operand_str(callee_str, inst->operands[0], &allocator, 8, total_frame_size);
                         fprintf(out, "    call *%s\n", callee_str);
                     }
                     
@@ -867,10 +864,8 @@ static void generate_function(FILE* out, SirFunction* func) {
                         }
                     }
                     // 5. 函数跋 (Epilogue)
-                    if (num_callee_pushes > 0) {
-                        fprintf(out, "    leaq -%d(%%rbp), %%rsp\n", num_callee_pushes * 8);
-                    } else {
-                        fprintf(out, "    movq %%rbp, %%rsp\n");
+                    if (stack_sub_size > 0) {
+                        fprintf(out, "    addq $%d, %%rsp\n", stack_sub_size);
                     }
                     
                     if (allocator.used_callee_saved[6]) fprintf(out, "    popq %%r15\n");
@@ -881,7 +876,6 @@ static void generate_function(FILE* out, SirFunction* func) {
                     if (allocator.used_callee_saved[1]) fprintf(out, "    popq %%rsi\n");
                     if (allocator.used_callee_saved[0]) fprintf(out, "    popq %%rbx\n");
                     
-                    fprintf(out, "    popq %%rbp\n");
                     fprintf(out, "    ret\n");
                     break;
 
