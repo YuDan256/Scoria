@@ -783,6 +783,13 @@ static void generate_function(FILE* out, SirFunction* func) {
                     
                     // Windows x64 ABI: rcx, rdx, r8, r9, 然后是栈
                     int num_args = inst->num_operands - 1;
+                    
+                    bool is_tail_call = false;
+                    if (inst->next && inst->next->opcode == SIR_RET && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                        if (inst->next->num_operands == 0 || (inst->dest && inst->next->operands[0]->kind == SIR_VAL_VREG && inst->next->operands[0]->as.vreg == inst->dest->as.vreg)) {
+                            if (num_args <= 4) is_tail_call = true;
+                        }
+                    }
                     for (int i = num_args - 1; i >= 4; i--) {
                         char arg_str[64];
                         get_operand_str(arg_str, inst->operands[i+1], &allocator, 8, total_frame_size);
@@ -860,6 +867,23 @@ static void generate_function(FILE* out, SirFunction* func) {
                     }
                     // 针对可变参数函数 (如 printf/scribe)，清空 %al
                     fprintf(out, "    xorq %%rax, %%rax\n");
+                    
+                    if (is_tail_call) {
+                        fprintf(out, "    # Tail Call Optimization\n");
+                        if (stack_sub_size > 0) fprintf(out, "    addq $%d, %%rsp\n", stack_sub_size);
+                        if (allocator.used_callee_saved[6]) fprintf(out, "    popq %%r15\n");
+                        if (allocator.used_callee_saved[5]) fprintf(out, "    popq %%r14\n");
+                        if (allocator.used_callee_saved[4]) fprintf(out, "    popq %%r13\n");
+                        if (allocator.used_callee_saved[3]) fprintf(out, "    popq %%r12\n");
+                        if (allocator.used_callee_saved[2]) fprintf(out, "    popq %%rdi\n");
+                        if (allocator.used_callee_saved[1]) fprintf(out, "    popq %%rsi\n");
+                        if (allocator.used_callee_saved[0]) fprintf(out, "    popq %%rbx\n");
+                        
+                        fprintf(out, "    jmp %s\n", inst->operands[0]->as.global_name);
+                        inst = inst->next; // 跳过 RET
+                        break;
+                    }
+
                     if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
                         fprintf(out, "    call %s\n", inst->operands[0]->as.global_name);
                     } else {

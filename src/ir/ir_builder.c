@@ -300,6 +300,22 @@ SirValue* ir_build_alloca(IrBuilder* builder, ScoriaType* type, int size) {
 
 SirValue* ir_build_load(IrBuilder* builder, SirValue* ptr) {
     if (!ptr) return NULL;
+    
+    // 冗余 Load 消除 (Store-to-Load Forwarding)
+    if (builder->current_block) {
+        SirInst* scan = builder->current_block->last_inst;
+        while (scan) {
+            if (scan->opcode == SIR_STORE) {
+                if (scan->operands[1] == ptr) {
+                    return scan->operands[0]; // 直接转发最近一次 Store 的值
+                }
+                break; // 遇到其他 Store，为防止指针别名 (Aliasing)，停止扫描
+            }
+            if (scan->opcode == SIR_CALL) break; // Call 可能修改内存
+            scan = scan->prev;
+        }
+    }
+
     SirInst* inst = create_inst(builder, SIR_LOAD, 1);
     inst->operands[0] = ptr;
     

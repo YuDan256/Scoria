@@ -1372,6 +1372,13 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             int arg_regs[] = {REG_RCX, REG_RDX, 8, 9};
                             int num_args = inst->num_operands - 1;
                             
+                            bool is_tail_call = false;
+                            if (inst->next && inst->next->opcode == SIR_RET && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                                if (inst->next->num_operands == 0 || (inst->dest && inst->next->operands[0]->kind == SIR_VAL_VREG && inst->next->operands[0]->as.vreg == inst->dest->as.vreg)) {
+                                    if (num_args <= 4) is_tail_call = true; // 仅对参数<=4的调用进行 TCO，避免覆盖 Caller 栈参数
+                                }
+                            }
+                            
                             // 1. 处理栈传递的参数 (i >= 4)
                             for (int i = num_args - 1; i >= 4; i--) {
                                 int val = load_operand(&linker->text_section, &allocator, inst->operands[i+1], REG_RAX, &ctx);
@@ -1436,6 +1443,58 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             emit8(&linker->text_section, 0x31);
                             emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
                             
+                            if (is_tail_call) {
+                                // 尾调用优化：提前执行 Epilogue
+                                if (stack_sub_size > 0) {
+                                    emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                    emit8(&linker->text_section, 0x81);
+                                    emit_modrm(&linker->text_section, 3, 0, REG_RSP);
+                                    emit32(&linker->text_section, (uint32_t)stack_sub_size);
+                                }
+                                if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5F); }
+                                if (allocator.used_callee_saved[5]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5E); }
+                                if (allocator.used_callee_saved[4]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5D); }
+                                if (allocator.used_callee_saved[3]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5C); }
+                                if (allocator.used_callee_saved[2]) emit8(&linker->text_section, 0x5F);
+                                if (allocator.used_callee_saved[1]) emit8(&linker->text_section, 0x5E);
+                                if (allocator.used_callee_saved[0]) emit8(&linker->text_section, 0x5B);
+                                
+                                bool is_extern = false;
+                                int target_idx = 0;
+                                int current_idx = 0;
+                                for (SirExternFunc* ext = ctx.first_extern; ext; ext = ext->next) {
+                                    if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
+                                        is_extern = true;
+                                        target_idx = current_idx;
+                                        break;
+                                    }
+                                    current_idx++;
+                                }
+
+                                if (is_extern) {
+                                    emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x25); // jmp [rip + rel32]
+                                    if (ctx.pass == 1) {
+                                        g_extern_relocs[g_extern_reloc_count] = (uint32_t)linker->text_section.size;
+                                        g_extern_idxs[g_extern_reloc_count] = target_idx;
+                                        g_extern_reloc_count++;
+                                    }
+                                    emit32(&linker->text_section, 0);
+                                } else {
+                                    uint32_t target_offset = 0;
+                                    for (int f = 0; f < ctx.func_count; f++) {
+                                        if (strcmp(ctx.funcs[f], inst->operands[0]->as.global_name) == 0) {
+                                            target_offset = ctx.func_offsets[f];
+                                            break;
+                                        }
+                                    }
+                                    emit8(&linker->text_section, 0xE9); // jmp rel32
+                                    emit32(&linker->text_section, (uint32_t)(target_offset - (linker->text_section.size + 4)));
+                                }
+                                
+                                inst = inst->next; // 跳过紧跟的 RET 指令
+                                break;
+                            }
+
                             if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
                                 bool is_extern = false;
                                 int target_idx = 0;
