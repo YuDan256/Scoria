@@ -195,6 +195,7 @@ void emit_mov_reg_imm64(PeCodeBuffer* cb, int reg, uint64_t imm) {
 }
 
 static void emit_mov_reg_reg(PeCodeBuffer* cb, int dst, int src) {
+    if (dst == src) return; // 消除冗余的寄存器间移动
     emit_rex(cb, 1, src > 7, 0, dst > 7);
     emit8(cb, 0x89);
     emit_modrm(cb, 3, src & 7, dst & 7);
@@ -942,6 +943,24 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                             int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
+                            
+                            // 优化：无符号除以 2 的幂转换为逻辑右移 (shr)
+                            if (is_unsigned && inst->opcode == SIR_DIV && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
+                                int64_t imm = inst->operands[1]->as.int_val;
+                                if (imm > 0 && (imm & (imm - 1)) == 0) {
+                                    int shift = 0;
+                                    while ((imm >> shift) > 1) shift++;
+                                    if (shift > 0) {
+                                        emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                        emit8(&linker->text_section, 0xC1); // shr rax, imm8
+                                        emit_modrm(&linker->text_section, 3, 5, REG_RAX);
+                                        emit8(&linker->text_section, (uint8_t)shift);
+                                    }
+                                    store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
+                                    break;
+                                }
+                            }
+                            
                             int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                             if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
                             

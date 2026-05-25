@@ -216,6 +216,59 @@ static SirInst* create_inst(IrBuilder* builder, SirOpcode opcode, int num_operan
 
 SirValue* ir_build_binary(IrBuilder* builder, SirOpcode op, SirValue* left, SirValue* right) {
     if (!left || !right) return NULL;
+
+    // 常量折叠 (Constant Folding)
+    if (left->kind == SIR_VAL_CONST_INT && right->kind == SIR_VAL_CONST_INT) {
+        int64_t l = left->as.int_val;
+        int64_t r = right->as.int_val;
+        int64_t res = 0;
+        bool is_cmp = false;
+        bool cmp_res = false;
+        switch (op) {
+            case SIR_ADD: res = l + r; break;
+            case SIR_SUB: res = l - r; break;
+            case SIR_MUL: res = l * r; break;
+            case SIR_DIV: if (r != 0) res = l / r; else goto no_fold; break;
+            case SIR_MOD: if (r != 0) res = l % r; else goto no_fold; break;
+            case SIR_AND: res = l & r; break;
+            case SIR_OR:  res = l | r; break;
+            case SIR_XOR: res = l ^ r; break;
+            case SIR_SHL: res = l << r; break;
+            case SIR_SHR: res = l >> r; break;
+            case SIR_ICMP_EQ: is_cmp = true; cmp_res = (l == r); break;
+            case SIR_ICMP_NE: is_cmp = true; cmp_res = (l != r); break;
+            case SIR_ICMP_LT: is_cmp = true; cmp_res = (l < r); break;
+            case SIR_ICMP_LE: is_cmp = true; cmp_res = (l <= r); break;
+            case SIR_ICMP_GT: is_cmp = true; cmp_res = (l > r); break;
+            case SIR_ICMP_GE: is_cmp = true; cmp_res = (l >= r); break;
+            default: goto no_fold;
+        }
+        if (is_cmp) return ir_const_bool(builder, cmp_res);
+        return ir_const_int(builder, left->type, res);
+    } else if (left->kind == SIR_VAL_CONST_FLOAT && right->kind == SIR_VAL_CONST_FLOAT) {
+        double l = left->as.float_val;
+        double r = right->as.float_val;
+        double res = 0.0;
+        bool is_cmp = false;
+        bool cmp_res = false;
+        switch (op) {
+            case SIR_FADD: res = l + r; break;
+            case SIR_FSUB: res = l - r; break;
+            case SIR_FMUL: res = l * r; break;
+            case SIR_FDIV: if (r != 0.0) res = l / r; else goto no_fold; break;
+            case SIR_FCMP_EQ: is_cmp = true; cmp_res = (l == r); break;
+            case SIR_FCMP_NE: is_cmp = true; cmp_res = (l != r); break;
+            case SIR_FCMP_LT: is_cmp = true; cmp_res = (l < r); break;
+            case SIR_FCMP_LE: is_cmp = true; cmp_res = (l <= r); break;
+            case SIR_FCMP_GT: is_cmp = true; cmp_res = (l > r); break;
+            case SIR_FCMP_GE: is_cmp = true; cmp_res = (l >= r); break;
+            default: goto no_fold;
+        }
+        if (is_cmp) return ir_const_bool(builder, cmp_res);
+        return ir_const_float(builder, left->type, res);
+    }
+
+no_fold:;
     SirInst* inst = create_inst(builder, op, 2);
     inst->operands[0] = left;
     inst->operands[1] = right;
@@ -288,6 +341,20 @@ void ir_build_memcpy(IrBuilder* builder, SirValue* dest_ptr, SirValue* src_ptr, 
 
 SirValue* ir_build_cast(IrBuilder* builder, SirValue* val, ScoriaType* target_type) {
     if (!val) return NULL;
+    
+    // 常量类型转换折叠
+    if (val->kind == SIR_VAL_CONST_INT) {
+        if (target_type->kind == TY_F32 || target_type->kind == TY_F64) {
+            return ir_const_float(builder, target_type, (double)val->as.int_val);
+        }
+        return ir_const_int(builder, target_type, val->as.int_val);
+    } else if (val->kind == SIR_VAL_CONST_FLOAT) {
+        if (target_type->kind != TY_F32 && target_type->kind != TY_F64) {
+            return ir_const_int(builder, target_type, (int64_t)val->as.float_val);
+        }
+        return ir_const_float(builder, target_type, val->as.float_val);
+    }
+    
     SirInst* inst = create_inst(builder, SIR_CAST, 1);
     inst->operands[0] = val;
     inst->dest = create_vreg(builder, target_type);
@@ -316,6 +383,13 @@ void ir_build_jmp(IrBuilder* builder, SirBlock* target) {
 
 void ir_build_br(IrBuilder* builder, SirValue* cond, SirBlock* true_block, SirBlock* false_block) {
     if (!cond) return;
+    
+    // 分支折叠 (Branch Folding)
+    if (cond->kind == SIR_VAL_CONST_BOOL) {
+        ir_build_jmp(builder, cond->as.bool_val ? true_block : false_block);
+        return;
+    }
+    
     SirInst* inst = create_inst(builder, SIR_BR, 3);
     inst->operands[0] = cond;
     
