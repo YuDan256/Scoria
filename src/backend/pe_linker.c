@@ -273,21 +273,21 @@ typedef struct {
 } LinkCtx;
 
 // 全局重定位表 (用于跨函数回填)
-#define MAX_STR_RELOCS 1024
-uint32_t g_str_relocs[MAX_STR_RELOCS];
-uint32_t g_str_rdata_offs[MAX_STR_RELOCS];
+#define MAX_RELOCS 65536
+uint32_t g_str_relocs[MAX_RELOCS];
+uint32_t g_str_rdata_offs[MAX_RELOCS];
 int g_str_reloc_count = 0;
 
-uint32_t g_data_relocs[1024];
-uint32_t g_data_offs[1024];
+uint32_t g_data_relocs[MAX_RELOCS];
+uint32_t g_data_offs[MAX_RELOCS];
 int g_data_reloc_count = 0;
 
-uint32_t g_func_relocs[1024];
-uint32_t g_func_offs[1024];
+uint32_t g_func_relocs[MAX_RELOCS];
+uint32_t g_func_offs[MAX_RELOCS];
 int g_func_reloc_count = 0;
 
-uint32_t g_extern_relocs[1024];
-int g_extern_idxs[1024];
+uint32_t g_extern_relocs[MAX_RELOCS];
+int g_extern_idxs[MAX_RELOCS];
 int g_extern_reloc_count = 0;
 
 // 智能操作数加载器：处理常量、物理寄存器、栈溢出和 RIP 寻址
@@ -440,19 +440,19 @@ static void store_result_impl(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* v
 }
 #define store_result(cb, alloc, val, src) store_result_impl(cb, alloc, val, src, &ctx)
 
-uint32_t g_print_str_relocs[1024];
+uint32_t g_print_str_relocs[MAX_RELOCS];
 int g_print_str_reloc_count = 0;
 
-uint32_t g_print_int_relocs[1024];
+uint32_t g_print_int_relocs[MAX_RELOCS];
 int g_print_int_reloc_count = 0;
 
-uint32_t g_print_hex_relocs[1024];
+uint32_t g_print_hex_relocs[MAX_RELOCS];
 int g_print_hex_reloc_count = 0;
 
-uint32_t g_print_float_relocs[1024];
+uint32_t g_print_float_relocs[MAX_RELOCS];
 int g_print_float_reloc_count = 0;
 
-uint32_t g_print_bool_relocs[1024];
+uint32_t g_print_bool_relocs[MAX_RELOCS];
 int g_print_bool_reloc_count = 0;
 
 uint32_t g_verum_rdata_off = 0;
@@ -464,32 +464,47 @@ uint32_t g_float_10_rdata_off = 0;
 uint32_t g_princeps_offset = 0;
 uint32_t g_init_offset = 0;
 
-uint32_t g_crea_relocs[1024];
+uint32_t g_crea_relocs[MAX_RELOCS];
 int g_crea_reloc_count = 0;
 
-uint32_t g_neca_relocs[1024];
+uint32_t g_neca_relocs[MAX_RELOCS];
 int g_neca_reloc_count = 0;
 
 static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_level) {
     builtins_analyze_usage(module);
-    uint32_t* block_offsets = (uint32_t*)calloc(1024, sizeof(uint32_t)); // 记录基本块的机器码偏移量
     
-    const char** func_names = (const char**)malloc(256 * sizeof(const char*));
-    uint32_t* func_offsets = (uint32_t*)malloc(256 * sizeof(uint32_t));
+    uint32_t max_block_id = 0;
+    for (SirFunction* func = module->first_func; func; func = func->next) {
+        for (SirBlock* block = func->first_block; block; block = block->next) {
+            if (block->id > max_block_id) max_block_id = block->id;
+        }
+    }
+    uint32_t* block_offsets = (uint32_t*)calloc(max_block_id + 1, sizeof(uint32_t)); // 记录基本块的机器码偏移量
+    
+    int func_capacity = 256;
+    const char** func_names = (const char**)malloc(func_capacity * sizeof(const char*));
+    uint32_t* func_offsets = (uint32_t*)malloc(func_capacity * sizeof(uint32_t));
     int func_count = 0;
 
-    const char** strings = (const char**)malloc(1024 * sizeof(const char*));
-    uint32_t* string_lens = (uint32_t*)malloc(1024 * sizeof(uint32_t));
-    uint32_t* string_offsets = (uint32_t*)malloc(1024 * sizeof(uint32_t));
+    int string_capacity = 1024;
+    const char** strings = (const char**)malloc(string_capacity * sizeof(const char*));
+    uint32_t* string_lens = (uint32_t*)malloc(string_capacity * sizeof(uint32_t));
+    uint32_t* string_offsets = (uint32_t*)malloc(string_capacity * sizeof(uint32_t));
     int string_count = 0;
     g_str_reloc_count = 0;
 
-    const char** global_names = (const char**)malloc(1024 * sizeof(const char*));
-    uint32_t* global_offsets = (uint32_t*)malloc(1024 * sizeof(uint32_t));
+    int global_capacity = 1024;
+    const char** global_names = (const char**)malloc(global_capacity * sizeof(const char*));
+    uint32_t* global_offsets = (uint32_t*)malloc(global_capacity * sizeof(uint32_t));
     int global_count = 0;
 
     // 预扫描：收集所有全局变量并写入 .data 段
     for (SirGlobalVar* g = module->first_global; g; g = g->next) {
+        if (global_count >= global_capacity) {
+            global_capacity *= 2;
+            global_names = (const char**)realloc(global_names, global_capacity * sizeof(const char*));
+            global_offsets = (uint32_t*)realloc(global_offsets, global_capacity * sizeof(uint32_t));
+        }
         while (linker->data_section.size % 8 != 0) buf_append(&linker->data_section, 0);
         global_names[global_count] = g->name;
         global_offsets[global_count] = (uint32_t)linker->data_section.size;
@@ -499,6 +514,11 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
 
     // 预扫描：收集所有函数名 (解决前向引用问题)
     for (SirFunction* func = module->first_func; func; func = func->next) {
+        if (func_count >= func_capacity) {
+            func_capacity *= 2;
+            func_names = (const char**)realloc(func_names, func_capacity * sizeof(const char*));
+            func_offsets = (uint32_t*)realloc(func_offsets, func_capacity * sizeof(uint32_t));
+        }
         func_names[func_count] = func->name;
         func_count++;
     }
@@ -517,6 +537,12 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                             }
                         }
                         if (!found) {
+                            if (string_count >= string_capacity) {
+                                string_capacity *= 2;
+                                strings = (const char**)realloc(strings, string_capacity * sizeof(const char*));
+                                string_lens = (uint32_t*)realloc(string_lens, string_capacity * sizeof(uint32_t));
+                                string_offsets = (uint32_t*)realloc(string_offsets, string_capacity * sizeof(uint32_t));
+                            }
                             strings[string_count] = inst->operands[i]->as.string_val.str;
                             string_lens[string_count] = inst->operands[i]->as.string_val.len;
                             string_offsets[string_count] = (uint32_t)linker->rdata_section.size;
@@ -622,16 +648,10 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
             int local_stack_size = 0;
             int max_call_args = 0;
             bool has_call = false;
-            int* alloca_offsets = calloc(10000, sizeof(int));
 
             // 预扫描：计算最大寄存器、ALLOCA 空间和最大调用参数数
             for (SirBlock* block = func->first_block; block; block = block->next) {
                 for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
-                    if (inst->opcode == SIR_CALL) {
-                        has_call = true;
-                        int args = inst->num_operands - 1;
-                        if (args > max_call_args) max_call_args = args;
-                    }
                     if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
                         if (inst->dest->as.vreg > max_vreg) max_vreg = inst->dest->as.vreg;
                     }
@@ -639,6 +659,18 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                         if (inst->operands[i] && inst->operands[i]->kind == SIR_VAL_VREG) {
                             if (inst->operands[i]->as.vreg > max_vreg) max_vreg = inst->operands[i]->as.vreg;
                         }
+                    }
+                }
+            }
+
+            int* alloca_offsets = calloc(max_vreg + 1, sizeof(int));
+
+            for (SirBlock* block = func->first_block; block; block = block->next) {
+                for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                    if (inst->opcode == SIR_CALL) {
+                        has_call = true;
+                        int args = inst->num_operands - 1;
+                        if (args > max_call_args) max_call_args = args;
                     }
                     if (inst->opcode == SIR_ALLOCA) {
                         int alloc_size = (int)inst->operands[0]->as.int_val;
@@ -728,7 +760,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                     }
                 }
                 
-                if (block->id < 1024) block_offsets[block->id] = (uint32_t)linker->text_section.size;
+                if (block->id <= max_block_id) block_offsets[block->id] = (uint32_t)linker->text_section.size;
 
                 for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
                     switch (inst->opcode) {
@@ -1465,9 +1497,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 else if (inst->opcode == SIR_ICMP_GE) { jcc = is_unsigned ? 0x83 : 0x8D; inv_jcc = is_unsigned ? 0x82 : 0x8C; }
                                 
                                 uint32_t t_id = next_inst->operands[1]->as.block->id;
-                                uint32_t t_off = t_id < 1024 ? block_offsets[t_id] : 0;
+                                uint32_t t_off = t_id <= max_block_id ? block_offsets[t_id] : 0;
                                 uint32_t f_id = next_inst->operands[2]->as.block->id;
-                                uint32_t f_off = f_id < 1024 ? block_offsets[f_id] : 0;
+                                uint32_t f_off = f_id <= max_block_id ? block_offsets[f_id] : 0;
 
                                 if (block->next && next_inst->operands[2]->as.block == block->next) {
                                     emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, jcc);
@@ -1561,9 +1593,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 else if (inst->opcode == SIR_FCMP_GE) { jcc = 0x83; inv_jcc = 0x82; }
                                 
                                 uint32_t t_id = next_inst->operands[1]->as.block->id;
-                                uint32_t t_off = t_id < 1024 ? block_offsets[t_id] : 0;
+                                uint32_t t_off = t_id <= max_block_id ? block_offsets[t_id] : 0;
                                 uint32_t f_id = next_inst->operands[2]->as.block->id;
-                                uint32_t f_off = f_id < 1024 ? block_offsets[f_id] : 0;
+                                uint32_t f_off = f_id <= max_block_id ? block_offsets[f_id] : 0;
 
                                 if (block->next && next_inst->operands[2]->as.block == block->next) {
                                     emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, jcc);
@@ -1601,7 +1633,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 break; // fall-through
                             }
                             uint32_t t_id = inst->operands[0]->as.block->id;
-                            uint32_t t_off = t_id < 1024 ? block_offsets[t_id] : 0;
+                            uint32_t t_off = t_id <= max_block_id ? block_offsets[t_id] : 0;
                             emit8(&linker->text_section, 0xE9); // jmp rel32
                             emit32(&linker->text_section, (uint32_t)(t_off - (linker->text_section.size + 4)));
                             break;
@@ -1892,9 +1924,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                             emit_modrm(&linker->text_section, 3, cond & 7, cond & 7);
                             
                             uint32_t t_id = inst->operands[1]->as.block->id;
-                            uint32_t t_off = t_id < 1024 ? block_offsets[t_id] : 0;
+                            uint32_t t_off = t_id <= max_block_id ? block_offsets[t_id] : 0;
                             uint32_t f_id = inst->operands[2]->as.block->id;
-                            uint32_t f_off = f_id < 1024 ? block_offsets[f_id] : 0;
+                            uint32_t f_off = f_id <= max_block_id ? block_offsets[f_id] : 0;
 
                             if (block->next && inst->operands[2]->as.block == block->next) {
                                 emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x85); // jne true_block
@@ -1942,7 +1974,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
 
                                 // ja default_block
                                 uint32_t def_id = def_block->id;
-                                uint32_t def_off = def_id < 1024 ? block_offsets[def_id] : 0;
+                                uint32_t def_off = def_id <= max_block_id ? block_offsets[def_id] : 0;
                                 emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x87);
                                 emit32(&linker->text_section, (uint32_t)(def_off - (linker->text_section.size + 4)));
 
@@ -1987,7 +2019,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                         }
                                     }
                                     uint32_t t_id = target->id;
-                                    uint32_t t_off = t_id < 1024 ? block_offsets[t_id] : 0;
+                                    uint32_t t_off = t_id <= max_block_id ? block_offsets[t_id] : 0;
                                     int32_t rel_target = (int32_t)(t_off - table_start);
                                     emit32(&linker->text_section, (uint32_t)rel_target);
                                 }
@@ -2006,13 +2038,13 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
 
                                     SirBlock* target = inst->operands[2 + i * 2 + 1]->as.block;
                                     uint32_t t_id = target->id;
-                                    uint32_t t_off = t_id < 1024 ? block_offsets[t_id] : 0;
+                                    uint32_t t_off = t_id <= max_block_id ? block_offsets[t_id] : 0;
 
                                     emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x84); // je
                                     emit32(&linker->text_section, (uint32_t)(t_off - (linker->text_section.size + 4)));
                                 }
                                 uint32_t def_id = def_block->id;
-                                uint32_t def_off = def_id < 1024 ? block_offsets[def_id] : 0;
+                                uint32_t def_off = def_id <= max_block_id ? block_offsets[def_id] : 0;
                                 emit8(&linker->text_section, 0xE9); // jmp
                                 emit32(&linker->text_section, (uint32_t)(def_off - (linker->text_section.size + 4)));
                             }

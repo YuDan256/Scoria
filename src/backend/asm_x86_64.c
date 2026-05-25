@@ -16,7 +16,7 @@ typedef struct {
     int id;
 } StringConst;
 
-static StringConst g_strings[1024];
+static StringConst g_strings[65536];
 static int g_string_count = 0;
 
 static int get_string_id(const char* str, uint32_t len) {
@@ -108,15 +108,9 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
     int local_stack_size = 0;
     int max_call_args = 0;
     bool has_call = false;
-    int* alloca_offsets = calloc(10000, sizeof(int));
 
     for (SirBlock* block = func->first_block; block; block = block->next) {
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
-            if (inst->opcode == SIR_CALL) {
-                has_call = true;
-                int args = inst->num_operands - 1;
-                if (args > max_call_args) max_call_args = args;
-            }
             if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
                 if (inst->dest->as.vreg > max_vreg) max_vreg = inst->dest->as.vreg;
             }
@@ -124,6 +118,18 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                 if (inst->operands[i] && inst->operands[i]->kind == SIR_VAL_VREG) {
                     if (inst->operands[i]->as.vreg > max_vreg) max_vreg = inst->operands[i]->as.vreg;
                 }
+            }
+        }
+    }
+
+    int* alloca_offsets = calloc(max_vreg + 1, sizeof(int));
+
+    for (SirBlock* block = func->first_block; block; block = block->next) {
+        for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+            if (inst->opcode == SIR_CALL) {
+                has_call = true;
+                int args = inst->num_operands - 1;
+                if (args > max_call_args) max_call_args = args;
             }
             if (inst->opcode == SIR_ALLOCA) {
                 int alloc_size = (int)inst->operands[0]->as.int_val;

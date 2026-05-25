@@ -170,8 +170,12 @@ void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func, int o
             current_live[v] = bl->live_out[v];
         }
 
-        SirInst** insts = (SirInst**)malloc(sizeof(SirInst*) * 10000);
         int i_count = 0;
+        for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+            i_count++;
+        }
+        SirInst** insts = (SirInst**)malloc(sizeof(SirInst*) * (i_count > 0 ? i_count : 1));
+        i_count = 0;
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
             insts[i_count++] = inst;
         }

@@ -1061,7 +1061,9 @@ void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count, int opt_
             int param_offset = hidden_ret ? 1 : 0;
             
             // 3. 集中获取所有参数 (避免后续指令破坏传参寄存器 RCX/RDX/R8/R9)
-            SirValue* arg_vals[64] = {0};
+            int total_params = decl->as.func_decl.param_count + (hidden_ret ? 1 : 0);
+            SirValue** arg_vals = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * (total_params > 0 ? total_params : 1));
+            
             if (hidden_ret) {
                 arg_vals[0] = ir_get_param(builder, 0, type_get_via(sym->type->as.func_type.return_type));
                 builder->current_hidden_ret_ptr = arg_vals[0];
