@@ -4,7 +4,7 @@
 #include "../ir/sir.h"
 #include <stdint.h>
 
-#define NUM_PHYS_REGS 7 // 可用的通用物理寄存器数量 (全部为非易失 Callee-Saved)
+#define NUM_PHYS_REGS 11 // 7个 Callee-Saved + 4个 Caller-Saved (r8-r11)
 
 // 图着色寄存器分配器 (Graph Coloring Register Allocator)
 typedef struct {
@@ -17,6 +17,7 @@ typedef struct {
     bool* adj_matrix;
     int* degree;
     int* use_count; // 动态使用频率 (用于 Spill 启发式评估)
+    bool* crosses_call; // 记录虚拟寄存器是否跨越了函数调用
     bool used_callee_saved[NUM_PHYS_REGS]; // 记录哪些物理寄存器被实际使用
 } RegAllocator;
 

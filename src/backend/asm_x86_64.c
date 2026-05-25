@@ -4,11 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-// 物理寄存器映射表 (对应 reg_alloc.h 中的 NUM_PHYS_REGS = 9)
-static const char* phys_regs64[] = {"%rbx", "%rsi", "%rdi", "%r12", "%r13", "%r14", "%r15"};
-static const char* phys_regs32[] = {"%ebx", "%esi", "%edi", "%r12d", "%r13d", "%r14d", "%r15d"};
-static const char* phys_regs16[] = {"%bx", "%si", "%di", "%r12w", "%r13w", "%r14w", "%r15w"};
-static const char* phys_regs8[]  = {"%bl", "%sil", "%dil", "%r12b", "%r13b", "%r14b", "%r15b"};
+// 物理寄存器映射表 (对应 reg_alloc.h 中的 NUM_PHYS_REGS = 11)
+static const char* phys_regs64[] = {"%rbx", "%rsi", "%rdi", "%r12", "%r13", "%r14", "%r15", "%r8", "%r9", "%r10", "%r11"};
+static const char* phys_regs32[] = {"%ebx", "%esi", "%edi", "%r12d", "%r13d", "%r14d", "%r15d", "%r8d", "%r9d", "%r10d", "%r11d"};
+static const char* phys_regs16[] = {"%bx", "%si", "%di", "%r12w", "%r13w", "%r14w", "%r15w", "%r8w", "%r9w", "%r10w", "%r11w"};
+static const char* phys_regs8[]  = {"%bl", "%sil", "%dil", "%r12b", "%r13b", "%r14b", "%r15b", "%r8b", "%r9b", "%r10b", "%r11b"};
 
 typedef struct {
     const char* str;
@@ -793,8 +793,8 @@ static void generate_function(FILE* out, SirFunction* func) {
                         get_operand_str(arg_str1, inst->operands[2], &allocator, 8, total_frame_size);
                         
                         if (strcmp(arg_str0, "%rdx") == 0) {
-                            fprintf(out, "    movq %%rdx, %%r10\n");
-                            strcpy(arg_str0, "%r10");
+                            fprintf(out, "    movq %%rdx, %%rax\n");
+                            strcpy(arg_str0, "%rax");
                         }
                         
                         if (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[1]->type || inst->operands[1]->type->kind == TY_F64)) {

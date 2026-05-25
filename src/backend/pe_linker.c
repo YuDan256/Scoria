@@ -237,8 +237,8 @@ static void emit_alu_reg_imm32(PeCodeBuffer* cb, int opc_ext, int dst, int32_t i
 }
 
 static int get_phys_reg(int color) {
-    int map[] = {REG_RBX, REG_RSI, REG_RDI, REG_R12, REG_R13, REG_R14, REG_R15};
-    if (color >= 0 && color < 7) return map[color];
+    int map[] = {REG_RBX, REG_RSI, REG_RDI, REG_R12, REG_R13, REG_R14, REG_R15, REG_R8, REG_R9, REG_R10, REG_R11};
+    if (color >= 0 && color < 11) return map[color];
     return REG_RAX;
 }
 
@@ -1365,8 +1365,8 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             } else if (reg_args == 2) {
                                 int val0 = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RAX, &ctx);
                                 if (val0 == REG_RDX) {
-                                    emit_mov_reg_reg(&linker->text_section, REG_R10, val0);
-                                    val0 = REG_R10;
+                                    emit_mov_reg_reg(&linker->text_section, REG_RAX, val0);
+                                    val0 = REG_RAX;
                                 }
                                 int val1 = load_operand(&linker->text_section, &allocator, inst->operands[2], REG_RAX, &ctx);
                                 if (val0 != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, val0);

@@ -10,8 +10,9 @@ void reg_alloc_init(RegAllocator* allocator, uint32_t max_vreg) {
     allocator->adj_matrix = (bool*)calloc((max_vreg + 1) * (max_vreg + 1), sizeof(bool));
     allocator->degree = (int*)calloc(max_vreg + 1, sizeof(int));
     allocator->use_count = (int*)calloc(max_vreg + 1, sizeof(int));
+    allocator->crosses_call = (bool*)calloc(max_vreg + 1, sizeof(bool));
 
-    if (!allocator->vreg_offsets || !allocator->vreg_colors ||
+    if (!allocator->vreg_offsets || !allocator->vreg_colors || !allocator->crosses_call ||
         !allocator->adj_matrix || !allocator->degree || !allocator->use_count) {
         fprintf(stderr, "Fatal error: Out of memory in reg_alloc_init\n");
         exit(1);
@@ -27,6 +28,7 @@ void reg_alloc_free(RegAllocator* allocator) {
     free(allocator->adj_matrix);
     free(allocator->degree);
     free(allocator->use_count);
+    free(allocator->crosses_call);
 }
 
 typedef struct {
@@ -175,6 +177,12 @@ void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func) {
         for (int i = i_count - 1; i >= 0; i--) {
             SirInst* inst = insts[i];
             
+            if (inst->opcode == SIR_CALL) {
+                for (uint32_t v = 1; v <= max_v; v++) {
+                    if (current_live[v]) allocator->crosses_call[v] = true;
+                }
+            }
+
             if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
                 uint32_t def_vreg = inst->dest->as.vreg;
                 if (def_vreg <= max_v) {
@@ -279,6 +287,8 @@ void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func) {
         int color = -1;
         for (int c = 0; c < NUM_PHYS_REGS; c++) {
             if (!used_colors[c]) {
+                // 如果变量跨越了函数调用，则不能分配给 Caller-Saved 寄存器 (颜色 7-10)
+                if (allocator->crosses_call[node] && c >= 7) continue;
                 color = c;
                 break;
             }
