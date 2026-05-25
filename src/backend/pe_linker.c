@@ -212,7 +212,7 @@ static void emit_mov_reg_reg(PeCodeBuffer* cb, int dst, int src) {
 }
 
 static void emit_alu_reg_reg(PeCodeBuffer* cb, int w, int opc, int dst, int src) {
-    emit_rex(cb, w, src > 7, 0, dst > 7);
+    if (w || src > 7 || dst > 7) emit_rex(cb, w, src > 7, 0, dst > 7);
     emit8(cb, (uint8_t)opc);
     emit_modrm(cb, 3, src & 7, dst & 7);
 }
@@ -222,19 +222,19 @@ static void emit_alu_reg_imm32(PeCodeBuffer* cb, int w, int opc_ext, int dst, in
     if (imm == 0 && (opc_ext == 0 || opc_ext == 5)) return; // add/sub 0 是空操作
     
     if (imm == 1 && opc_ext == 0) { // inc
-        emit_rex(cb, w, 0, 0, dst > 7);
+        if (w || dst > 7) emit_rex(cb, w, 0, 0, dst > 7);
         emit8(cb, 0xFF);
         emit_modrm(cb, 3, 0, dst & 7);
         return;
     }
     if (imm == 1 && opc_ext == 5) { // dec
-        emit_rex(cb, w, 0, 0, dst > 7);
+        if (w || dst > 7) emit_rex(cb, w, 0, 0, dst > 7);
         emit8(cb, 0xFF);
         emit_modrm(cb, 3, 1, dst & 7);
         return;
     }
 
-    emit_rex(cb, w, 0, 0, dst > 7);
+    if (w || dst > 7) emit_rex(cb, w, 0, 0, dst > 7);
     if (imm >= -128 && imm <= 127) {
         emit8(cb, 0x83);
         emit_modrm(cb, 3, opc_ext, dst & 7);
@@ -897,10 +897,25 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_XOR: {
                             int dest_reg = REG_RAX;
                             int w = 1;
+                            bool is_ret_peephole = false;
                             if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
                                 int c = reg_alloc_get_color(&allocator, inst->dest->as.vreg);
                                 if (c != -1) dest_reg = get_phys_reg(c);
                                 if (inst->dest->type && type_get_size(inst->dest->type) <= 4) w = 0;
+                                
+                                if (inst->next && inst->next->opcode == SIR_RET && inst->next->num_operands > 0 && inst->next->operands[0] == inst->dest) {
+                                    bool used_elsewhere = false;
+                                    for (SirInst* scan = inst->next->next; scan; scan = scan->next) {
+                                        for (int i=0; i<scan->num_operands; i++) {
+                                            if (scan->operands[i] == inst->dest) { used_elsewhere = true; break; }
+                                        }
+                                        if (used_elsewhere) break;
+                                    }
+                                    if (!used_elsewhere) {
+                                        dest_reg = REG_RAX;
+                                        is_ret_peephole = true;
+                                    }
+                                }
                             }
                             
                             int right_color = (inst->operands[1] && inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
@@ -914,7 +929,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 if (inst->opcode == SIR_ADD || inst->opcode == SIR_SUB) {
                                     int32_t lea_imm = (inst->opcode == SIR_SUB) ? -imm : imm;
                                     if (left != dest_reg) {
-                                        emit_rex(&linker->text_section, w, dest_reg > 7, 0, left > 7);
+                                        if (w || dest_reg > 7 || left > 7) emit_rex(&linker->text_section, w, dest_reg > 7, 0, left > 7);
                                         emit8(&linker->text_section, 0x8D); // lea
                                         emit_mem(&linker->text_section, dest_reg, left, lea_imm);
                                     } else {
@@ -978,6 +993,11 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 if (right_scratch == left) right_scratch = (right_scratch == REG_RDX) ? REG_R8 : REG_RDX;
                                 int right = load_operand(&linker->text_section, &allocator, inst->operands[1], right_scratch, &ctx);
                                 
+                                // 交换可交换操作数，使得 left == dest_reg，减少 mov 指令
+                                if (right == dest_reg && left != dest_reg && inst->opcode != SIR_SUB) {
+                                    int temp = left; left = right; right = temp;
+                                }
+                                
                                 if (right == dest_reg && left != dest_reg) {
                                     if (inst->opcode == SIR_SUB) {
                                         emit_rex(&linker->text_section, w, 0, 0, dest_reg > 7);
@@ -998,7 +1018,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 } else {
                                     if (inst->opcode == SIR_ADD && left != dest_reg && right != dest_reg && (left & 7) != 4 && (right & 7) != 4) {
                                         // 优化: lea dest, [left + right]
-                                        emit_rex(&linker->text_section, w, dest_reg > 7, right > 7, left > 7);
+                                        if (w || dest_reg > 7 || right > 7 || left > 7) emit_rex(&linker->text_section, w, dest_reg > 7, right > 7, left > 7);
                                         emit8(&linker->text_section, 0x8D); // lea
                                         int b = left & 7;
                                         if (b == 5) {
@@ -1011,7 +1031,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                         }
                                     } else if (inst->opcode == SIR_ADD && left != dest_reg && right != dest_reg && (left & 7) == 4 && (right & 7) != 4) {
                                         // 交换 left 和 right 避免 SIB index 为 4 (rsp/r12) 被截断
-                                        emit_rex(&linker->text_section, w, dest_reg > 7, left > 7, right > 7);
+                                        if (w || dest_reg > 7 || left > 7 || right > 7) emit_rex(&linker->text_section, w, dest_reg > 7, left > 7, right > 7);
                                         emit8(&linker->text_section, 0x8D); // lea
                                         int b = right & 7;
                                         if (b == 5) {
@@ -1037,7 +1057,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                     }
                                 }
                             }
-                            store_result(&linker->text_section, &allocator, inst->dest, dest_reg);
+                            if (!is_ret_peephole) {
+                                store_result(&linker->text_section, &allocator, inst->dest, dest_reg);
+                            }
                             break;
                         }
                         case SIR_FADD:
@@ -1322,7 +1344,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                                 int32_t imm = (int32_t)inst->operands[1]->as.int_val;
                                 if (imm == 0) {
-                                    emit_rex(&linker->text_section, w, left > 7, 0, left > 7);
+                                    if (w || left > 7) emit_rex(&linker->text_section, w, left > 7, 0, left > 7);
                                     emit8(&linker->text_section, 0x85); // test left, left
                                     emit_modrm(&linker->text_section, 3, left & 7, left & 7);
                                 } else {
@@ -1331,7 +1353,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             } else {
                                 int right_scratch = (left == REG_RCX) ? REG_RDX : REG_RCX;
                                 int right = load_operand(&linker->text_section, &allocator, inst->operands[1], right_scratch, &ctx);
-                                emit_rex(&linker->text_section, w, right > 7, 0, left > 7);
+                                if (w || right > 7 || left > 7) emit_rex(&linker->text_section, w, right > 7, 0, left > 7);
                                 emit8(&linker->text_section, 0x39); // cmp left, right
                                 emit_modrm(&linker->text_section, 3, right & 7, left & 7);
                             }
@@ -1765,7 +1787,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         }
                         case SIR_BR: {
                             int cond = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                            emit_rex(&linker->text_section, 0, cond > 7, 0, cond > 7);
+                            if (cond > 7) emit_rex(&linker->text_section, 0, cond > 7, 0, cond > 7);
                             emit8(&linker->text_section, 0x85); // test cond, cond
                             emit_modrm(&linker->text_section, 3, cond & 7, cond & 7);
                             
@@ -1898,8 +1920,14 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         }
                         case SIR_RET: {
                             if (inst->num_operands > 0) {
-                                int val = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                                if (val != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, val);
+                                bool already_in_rax = false;
+                                if (inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[0]) {
+                                    already_in_rax = true;
+                                }
+                                if (!already_in_rax) {
+                                    int val = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
+                                    if (val != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, val);
+                                }
                                 
                                 bool ret_is_float = (inst->operands[0]->type && (inst->operands[0]->type->kind == TY_F32 || inst->operands[0]->type->kind == TY_F64));
                                 if (ret_is_float) {
