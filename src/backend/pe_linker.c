@@ -612,59 +612,28 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             reg_alloc_build_and_color(&allocator, func);
 
             int call_stack_space = max_call_args > 4 ? (max_call_args - 4) * 8 : 0;
-            int stack_size = allocator.current_offset + 32 + call_stack_space; // 预留 Shadow Space 和溢出参数空间
-            // 保持 16 字节对齐，并补偿 9 个 push (1 个 ret addr + 8 个 rbp/rbx 等) 造成的 8 字节偏移
-            stack_size = (stack_size + 15) & ~15;
-            stack_size += 8;
+            int total_frame_size = allocator.current_offset + 32 + call_stack_space; // 预留 Shadow Space 和溢出参数空间
+            total_frame_size = (total_frame_size + 15) & ~15; // 保持 16 字节对齐
 
             // 序言 (Prologue)
             emit8(&linker->text_section, 0x55); // push rbp
             emit_mov_reg_reg(&linker->text_section, REG_RBP, REG_RSP);
             
-            // 保存 callee-saved 寄存器
-            emit8(&linker->text_section, 0x53); // push rbx
-            emit8(&linker->text_section, 0x56); // push rsi
-            emit8(&linker->text_section, 0x57); // push rdi
-            emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x54); // push r12
-            emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x55); // push r13
-            emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x56); // push r14
-            emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x57); // push r15
+            int num_callee_pushes = 0;
+            if (allocator.used_callee_saved[0]) { emit8(&linker->text_section, 0x53); num_callee_pushes++; } // push rbx
+            if (allocator.used_callee_saved[1]) { emit8(&linker->text_section, 0x56); num_callee_pushes++; } // push rsi
+            if (allocator.used_callee_saved[2]) { emit8(&linker->text_section, 0x57); num_callee_pushes++; } // push rdi
+            if (allocator.used_callee_saved[3]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x54); num_callee_pushes++; } // push r12
+            if (allocator.used_callee_saved[4]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x55); num_callee_pushes++; } // push r13
+            if (allocator.used_callee_saved[5]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x56); num_callee_pushes++; } // push r14
+            if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x57); num_callee_pushes++; } // push r15
 
-            if (stack_size > 0) {
+            int stack_sub_size = total_frame_size - (num_callee_pushes * 8);
+            if (stack_sub_size > 0) {
                 emit_rex(&linker->text_section, 1, 0, 0, 0);
                 emit8(&linker->text_section, 0x81); // sub rsp, imm32
                 emit_modrm(&linker->text_section, 3, 5, REG_RSP);
-                emit32(&linker->text_section, (uint32_t)stack_size);
-            }
-            
-            // 将前 4 个参数寄存器保存到 Shadow Space (支持浮点数与隐藏返回指针)
-            bool hidden_ret = type_get_size(func->type->as.func_type.return_type) > 8;
-            int explicit_param_count = func->type->as.func_type.param_count;
-            int total_phys_params = hidden_ret ? explicit_param_count + 1 : explicit_param_count;
-            
-            for (int i = 0; i < total_phys_params && i < 4; i++) {
-                bool is_float = false;
-                bool is_f32 = false;
-                if (!hidden_ret || i > 0) {
-                    int explicit_idx = hidden_ret ? i - 1 : i;
-                    ScoriaType* ptype = func->type->as.func_type.param_types[explicit_idx];
-                    is_float = (ptype && (ptype->kind == TY_F32 || ptype->kind == TY_F64));
-                    is_f32 = (ptype && ptype->kind == TY_F32);
-                }
-                
-                int offset = 16 + i * 8;
-                if (is_float) {
-                    // movss/movsd [rbp+offset], xmmI
-                    emit8(&linker->text_section, is_f32 ? 0xF3 : 0xF2);
-                    emit_rex(&linker->text_section, 0, 0, 0, 0);
-                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x11);
-                    emit_mem(&linker->text_section, i, REG_RBP, offset);
-                } else {
-                    int regs[] = {REG_RCX, REG_RDX, 8, 9};
-                    emit_rex(&linker->text_section, 1, regs[i] > 7, 0, 0);
-                    emit8(&linker->text_section, 0x89);
-                    emit_mem(&linker->text_section, regs[i] & 7, REG_RBP, offset);
-                }
+                emit32(&linker->text_section, (uint32_t)stack_sub_size);
             }
 
             for (SirBlock* block = func->first_block; block; block = block->next) {
@@ -674,30 +643,45 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                     switch (inst->opcode) {
                         case SIR_GET_PARAM: {
                             int param_idx = (int)inst->operands[0]->as.int_val;
-                            int offset = 16 + param_idx * 8; // 前4个在 shadow space (16~40)，后面的紧跟其后 (48+)
-                            int size = type_get_size(inst->dest->type);
-                            bool is_signed = type_is_signed(inst->dest->type);
-                            
-                            if (size == 1) {
-                                emit_rex(&linker->text_section, 1, 0, 0, 0);
-                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBE : 0xB6); // movsx/movzx rax, byte ptr
-                            } else if (size == 2) {
-                                emit_rex(&linker->text_section, 1, 0, 0, 0);
-                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBF : 0xB7); // movsx/movzx rax, word ptr
-                            } else if (size == 4) {
-                                if (is_signed) {
-                                    emit_rex(&linker->text_section, 1, 0, 0, 0);
-                                    emit8(&linker->text_section, 0x63); // movsxd rax, dword ptr
+                            if (param_idx < 4) {
+                                int regs[] = {REG_RCX, REG_RDX, 8, 9};
+                                int src_reg = regs[param_idx];
+                                bool is_float = (inst->dest->type && (inst->dest->type->kind == TY_F32 || inst->dest->type->kind == TY_F64));
+                                if (is_float) {
+                                    bool is_f32 = (inst->dest->type->kind == TY_F32);
+                                    emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); 
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); 
+                                    emit_modrm(&linker->text_section, 3, param_idx, REG_RAX);
+                                    store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                                 } else {
-                                    emit_rex(&linker->text_section, 0, 0, 0, 0);
-                                    emit8(&linker->text_section, 0x8B); // mov eax, dword ptr
+                                    store_result(&linker->text_section, &allocator, inst->dest, src_reg);
                                 }
                             } else {
-                                emit_rex(&linker->text_section, 1, 0, 0, 0);
-                                emit8(&linker->text_section, 0x8B); // mov rax, qword ptr
+                                int offset = 16 + param_idx * 8;
+                                int size = type_get_size(inst->dest->type);
+                                bool is_signed = type_is_signed(inst->dest->type);
+                                
+                                if (size == 1) {
+                                    emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBE : 0xB6);
+                                } else if (size == 2) {
+                                    emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBF : 0xB7);
+                                } else if (size == 4) {
+                                    if (is_signed) {
+                                        emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                        emit8(&linker->text_section, 0x63);
+                                    } else {
+                                        emit_rex(&linker->text_section, 0, 0, 0, 0);
+                                        emit8(&linker->text_section, 0x8B);
+                                    }
+                                } else {
+                                    emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                    emit8(&linker->text_section, 0x8B);
+                                }
+                                emit_mem(&linker->text_section, REG_RAX, REG_RBP, offset);
+                                store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                             }
-                            emit_mem(&linker->text_section, REG_RAX, REG_RBP, offset);
-                            store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                             break;
                         }
                         case SIR_ALLOCA: {
@@ -1489,17 +1473,21 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 }
                             }
                             // 跋 (Epilogue)
-                            emit_rex(&linker->text_section, 1, 0, 0, 0);
-                            emit8(&linker->text_section, 0x8D);
-                            emit_mem(&linker->text_section, REG_RSP, REG_RBP, -56); // lea rsp, [rbp - 56]
+                            if (num_callee_pushes > 0) {
+                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                emit8(&linker->text_section, 0x8D);
+                                emit_mem(&linker->text_section, REG_RSP, REG_RBP, -(num_callee_pushes * 8)); // lea rsp, [rbp - K*8]
+                            } else {
+                                emit_mov_reg_reg(&linker->text_section, REG_RSP, REG_RBP);
+                            }
                             
-                            emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5F); // pop r15
-                            emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5E); // pop r14
-                            emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5D); // pop r13
-                            emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5C); // pop r12
-                            emit8(&linker->text_section, 0x5F); // pop rdi
-                            emit8(&linker->text_section, 0x5E); // pop rsi
-                            emit8(&linker->text_section, 0x5B); // pop rbx
+                            if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5F); } // pop r15
+                            if (allocator.used_callee_saved[5]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5E); } // pop r14
+                            if (allocator.used_callee_saved[4]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5D); } // pop r13
+                            if (allocator.used_callee_saved[3]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5C); } // pop r12
+                            if (allocator.used_callee_saved[2]) emit8(&linker->text_section, 0x5F); // pop rdi
+                            if (allocator.used_callee_saved[1]) emit8(&linker->text_section, 0x5E); // pop rsi
+                            if (allocator.used_callee_saved[0]) emit8(&linker->text_section, 0x5B); // pop rbx
                             
                             emit8(&linker->text_section, 0x5D); // pop rbp
                             emit8(&linker->text_section, 0xC3); // ret

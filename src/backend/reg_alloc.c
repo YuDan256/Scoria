@@ -20,6 +20,7 @@ void reg_alloc_init(RegAllocator* allocator, uint32_t max_vreg) {
     }
 
     for (uint32_t i = 0; i <= max_vreg; i++) allocator->vreg_colors[i] = -1;
+    for (int i = 0; i < NUM_PHYS_REGS; i++) allocator->used_callee_saved[i] = false;
 
     for (uint32_t i = 0; i <= max_vreg; i++) {
         allocator->live_start[i] = 999999999;
@@ -221,6 +222,9 @@ void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func) {
             }
         }
         allocator->vreg_colors[node] = color; // 如果为 -1，则表示 Spilled
+        if (color != -1) {
+            allocator->used_callee_saved[color] = true;
+        }
     }
 
     free(stack);

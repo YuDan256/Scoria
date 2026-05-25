@@ -912,11 +912,23 @@ void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count) {
             builder->current_hidden_ret_ptr = NULL;
             bool hidden_ret = type_get_size(sym->type->as.func_type.return_type) > 8;
             int param_offset = hidden_ret ? 1 : 0;
+            
+            // 3. 集中获取所有参数 (避免后续指令破坏传参寄存器 RCX/RDX/R8/R9)
+            SirValue* arg_vals[64] = {0};
             if (hidden_ret) {
-                builder->current_hidden_ret_ptr = ir_get_param(builder, 0, type_get_via(sym->type->as.func_type.return_type));
+                arg_vals[0] = ir_get_param(builder, 0, type_get_via(sym->type->as.func_type.return_type));
+                builder->current_hidden_ret_ptr = arg_vals[0];
+            }
+            for (int j = 0; j < decl->as.func_decl.param_count; j++) {
+                Symbol* param_sym = decl->as.func_decl.params[j]->resolved_symbol;
+                if (param_sym) {
+                    ScoriaType* ptype = param_sym->type;
+                    if (type_get_size(ptype) > 8) ptype = type_get_via(ptype);
+                    arg_vals[j + param_offset] = ir_get_param(builder, j + param_offset, ptype);
+                }
             }
 
-            // 3. 处理参数：为参数分配栈空间并存储传入的值
+            // 4. 为参数分配栈空间并存储传入的值
             for (int j = 0; j < decl->as.func_decl.param_count; j++) {
                 AstNode* param_node = decl->as.func_decl.params[j];
                 Symbol* param_sym = param_node->resolved_symbol;
@@ -925,12 +937,9 @@ void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count) {
                     param_sym->ir_val = ir_build_alloca(builder, param_sym->type, param_size);
                     
                     if (param_size > 8) {
-                        // 大于 8 字节的类型 (forma, cohors, acies) 通过隐藏指针传递
-                        SirValue* arg_ptr = ir_get_param(builder, j + param_offset, type_get_via(param_sym->type));
-                        ir_build_memcpy(builder, param_sym->ir_val, arg_ptr, param_size);
+                        ir_build_memcpy(builder, param_sym->ir_val, arg_vals[j + param_offset], param_size);
                     } else {
-                        SirValue* arg_val = ir_get_param(builder, j + param_offset, param_sym->type);
-                        ir_build_store(builder, arg_val, param_sym->ir_val);
+                        ir_build_store(builder, arg_vals[j + param_offset], param_sym->ir_val);
                     }
                 }
             }

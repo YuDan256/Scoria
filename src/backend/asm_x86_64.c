@@ -88,45 +88,7 @@ static void generate_function(FILE* out, SirFunction* func) {
     fprintf(out, "    .type %s, @function\n", func->name);
     fprintf(out, "%s:\n", func->name);
 
-    // 1. 函数序言 (Prologue)
-    fprintf(out, "    pushq %%rbp\n");
-    fprintf(out, "    movq %%rsp, %%rbp\n");
-    
-    // 保存 callee-saved 寄存器
-    fprintf(out, "    pushq %%rbx\n");
-    fprintf(out, "    pushq %%rsi\n");
-    fprintf(out, "    pushq %%rdi\n");
-    fprintf(out, "    pushq %%r12\n");
-    fprintf(out, "    pushq %%r13\n");
-    fprintf(out, "    pushq %%r14\n");
-    fprintf(out, "    pushq %%r15\n");
-    
-    // 将前 4 个参数寄存器保存到 Shadow Space (支持浮点数与隐藏返回指针)
-    bool hidden_ret = type_get_size(func->type->as.func_type.return_type) > 8;
-    int explicit_param_count = func->type->as.func_type.param_count;
-    int total_phys_params = hidden_ret ? explicit_param_count + 1 : explicit_param_count;
-    
-    for (int i = 0; i < total_phys_params && i < 4; i++) {
-        bool is_float = false;
-        bool is_f32 = false;
-        if (!hidden_ret || i > 0) {
-            int explicit_idx = hidden_ret ? i - 1 : i;
-            ScoriaType* ptype = func->type->as.func_type.param_types[explicit_idx];
-            is_float = (ptype && (ptype->kind == TY_F32 || ptype->kind == TY_F64));
-            is_f32 = (ptype && ptype->kind == TY_F32);
-        }
-        
-        int offset = 16 + i * 8;
-        if (is_float) {
-            if (is_f32) fprintf(out, "    movss %%xmm%d, %d(%%rbp)\n", i, offset);
-            else fprintf(out, "    movsd %%xmm%d, %d(%%rbp)\n", i, offset);
-        } else {
-            const char* regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
-            fprintf(out, "    movq %s, %d(%%rbp)\n", regs[i], offset);
-        }
-    }
-
-    // 2. 扫描函数，找到最大的虚拟寄存器 ID 和 ALLOCA 空间
+    // 1. 扫描函数，找到最大的虚拟寄存器 ID 和 ALLOCA 空间
     uint32_t max_vreg = 0;
     int local_stack_size = 72; // 56字节给7个callee-saved + 16字节给caller-saved(r10,r11)
     int max_call_args = 0;
@@ -169,12 +131,25 @@ static void generate_function(FILE* out, SirFunction* func) {
     }
     
     int call_stack_space = max_call_args > 4 ? (max_call_args - 4) * 8 : 0;
-    int stack_size = allocator.current_offset + 32 + call_stack_space; // 预留 Shadow Space 和溢出参数空间
-    // 保持 16 字节对齐，并补偿 9 个 push (1 个 ret addr + 8 个 rbp/rbx 等) 造成的 8 字节偏移
-    stack_size = (stack_size + 15) & ~15;
-    stack_size += 8;
-    if (stack_size > 0) {
-        fprintf(out, "    subq $%d, %%rsp\n", stack_size);
+    int total_frame_size = allocator.current_offset + 32 + call_stack_space;
+    total_frame_size = (total_frame_size + 15) & ~15;
+
+    // 2. 函数序言 (Prologue)
+    fprintf(out, "    pushq %%rbp\n");
+    fprintf(out, "    movq %%rsp, %%rbp\n");
+    
+    int num_callee_pushes = 0;
+    if (allocator.used_callee_saved[0]) { fprintf(out, "    pushq %%rbx\n"); num_callee_pushes++; }
+    if (allocator.used_callee_saved[1]) { fprintf(out, "    pushq %%rsi\n"); num_callee_pushes++; }
+    if (allocator.used_callee_saved[2]) { fprintf(out, "    pushq %%rdi\n"); num_callee_pushes++; }
+    if (allocator.used_callee_saved[3]) { fprintf(out, "    pushq %%r12\n"); num_callee_pushes++; }
+    if (allocator.used_callee_saved[4]) { fprintf(out, "    pushq %%r13\n"); num_callee_pushes++; }
+    if (allocator.used_callee_saved[5]) { fprintf(out, "    pushq %%r14\n"); num_callee_pushes++; }
+    if (allocator.used_callee_saved[6]) { fprintf(out, "    pushq %%r15\n"); num_callee_pushes++; }
+
+    int stack_sub_size = total_frame_size - (num_callee_pushes * 8);
+    if (stack_sub_size > 0) {
+        fprintf(out, "    subq $%d, %%rsp\n", stack_sub_size);
     }
 
     // 4. 遍历基本块和指令 (指令选择 Instruction Selection)
@@ -450,23 +425,38 @@ static void generate_function(FILE* out, SirFunction* func) {
 
                 case SIR_GET_PARAM: {
                     int param_idx = (int)inst->operands[0]->as.int_val;
-                    int offset = 16 + param_idx * 8;
-                    int size = type_get_size(inst->dest->type);
-                    bool is_signed = type_is_signed(inst->dest->type);
-                    
-                    if (size == 1) {
-                        if (is_signed) fprintf(out, "    movsbq %d(%%rbp), %%rax\n", offset);
-                        else fprintf(out, "    movzbq %d(%%rbp), %%rax\n", offset);
-                    } else if (size == 2) {
-                        if (is_signed) fprintf(out, "    movswq %d(%%rbp), %%rax\n", offset);
-                        else fprintf(out, "    movzwq %d(%%rbp), %%rax\n", offset);
-                    } else if (size == 4) {
-                        if (is_signed) fprintf(out, "    movslq %d(%%rbp), %%rax\n", offset);
-                        else fprintf(out, "    movl %d(%%rbp), %%eax\n", offset);
+                    if (param_idx < 4) {
+                        const char* regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
+                        bool is_float = (inst->dest->type && (inst->dest->type->kind == TY_F32 || inst->dest->type->kind == TY_F64));
+                        if (is_float) {
+                            bool is_f32 = (inst->dest->type->kind == TY_F32);
+                            if (is_f32) fprintf(out, "    movd %%xmm%d, %%eax\n", param_idx);
+                            else fprintf(out, "    movq %%xmm%d, %%rax\n", param_idx);
+                            fprintf(out, "    movq %%rax, %s\n", dest);
+                        } else {
+                            if (strcmp(regs[param_idx], dest) != 0) {
+                                fprintf(out, "    movq %s, %s\n", regs[param_idx], dest);
+                            }
+                        }
                     } else {
-                        fprintf(out, "    movq %d(%%rbp), %%rax\n", offset);
+                        int offset = 16 + param_idx * 8;
+                        int size = type_get_size(inst->dest->type);
+                        bool is_signed = type_is_signed(inst->dest->type);
+                        
+                        if (size == 1) {
+                            if (is_signed) fprintf(out, "    movsbq %d(%%rbp), %%rax\n", offset);
+                            else fprintf(out, "    movzbq %d(%%rbp), %%rax\n", offset);
+                        } else if (size == 2) {
+                            if (is_signed) fprintf(out, "    movswq %d(%%rbp), %%rax\n", offset);
+                            else fprintf(out, "    movzwq %d(%%rbp), %%rax\n", offset);
+                        } else if (size == 4) {
+                            if (is_signed) fprintf(out, "    movslq %d(%%rbp), %%rax\n", offset);
+                            else fprintf(out, "    movl %d(%%rbp), %%eax\n", offset);
+                        } else {
+                            fprintf(out, "    movq %d(%%rbp), %%rax\n", offset);
+                        }
+                        fprintf(out, "    movq %%rax, %s\n", dest);
                     }
-                    fprintf(out, "    movq %%rax, %s\n", dest);
                     break;
                 }
 
@@ -753,14 +743,20 @@ static void generate_function(FILE* out, SirFunction* func) {
                         }
                     }
                     // 5. 函数跋 (Epilogue)
-                    fprintf(out, "    leaq -56(%%rbp), %%rsp\n");
-                    fprintf(out, "    popq %%r15\n");
-                    fprintf(out, "    popq %%r14\n");
-                    fprintf(out, "    popq %%r13\n");
-                    fprintf(out, "    popq %%r12\n");
-                    fprintf(out, "    popq %%rdi\n");
-                    fprintf(out, "    popq %%rsi\n");
-                    fprintf(out, "    popq %%rbx\n");
+                    if (num_callee_pushes > 0) {
+                        fprintf(out, "    leaq -%d(%%rbp), %%rsp\n", num_callee_pushes * 8);
+                    } else {
+                        fprintf(out, "    movq %%rbp, %%rsp\n");
+                    }
+                    
+                    if (allocator.used_callee_saved[6]) fprintf(out, "    popq %%r15\n");
+                    if (allocator.used_callee_saved[5]) fprintf(out, "    popq %%r14\n");
+                    if (allocator.used_callee_saved[4]) fprintf(out, "    popq %%r13\n");
+                    if (allocator.used_callee_saved[3]) fprintf(out, "    popq %%r12\n");
+                    if (allocator.used_callee_saved[2]) fprintf(out, "    popq %%rdi\n");
+                    if (allocator.used_callee_saved[1]) fprintf(out, "    popq %%rsi\n");
+                    if (allocator.used_callee_saved[0]) fprintf(out, "    popq %%rbx\n");
+                    
                     fprintf(out, "    popq %%rbp\n");
                     fprintf(out, "    ret\n");
                     break;

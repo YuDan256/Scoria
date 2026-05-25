@@ -21,6 +21,7 @@ typedef struct {
     bool* adj_matrix;
     int* degree;
     int* use_count; // 动态使用频率 (用于 Spill 启发式评估)
+    bool used_callee_saved[NUM_PHYS_REGS]; // 记录哪些物理寄存器被实际使用
 } RegAllocator;
 
 void reg_alloc_init(RegAllocator* allocator, uint32_t max_vreg);
