@@ -311,7 +311,7 @@ SirValue* ir_build_load(IrBuilder* builder, SirValue* ptr) {
                 }
                 break; // 遇到其他 Store，为防止指针别名 (Aliasing)，停止扫描
             }
-            if (scan->opcode == SIR_CALL) break; // Call 可能修改内存
+            if (scan->opcode == SIR_CALL || scan->opcode == SIR_MEMCPY) break; // Call 和 Memcpy 可能修改内存
             scan = scan->prev;
         }
     }

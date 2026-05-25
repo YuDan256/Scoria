@@ -139,7 +139,9 @@ void emit32(PeCodeBuffer* cb, uint32_t v) {
 
 void emit_rex(PeCodeBuffer* cb, int w, int r, int x, int b) {
     uint8_t rex = 0x40 | (w ? 8 : 0) | (r ? 4 : 0) | (x ? 2 : 0) | (b ? 1 : 0);
-    if (rex != 0x40) emit8(cb, rex);
+    // 恢复 REX 前缀发射：在 x86_64 中，访问 sil/dil/spl/bpl 必须有 REX 前缀，
+    // 否则会错误地访问 ah/ch/dh/bh。为了安全起见，只要调用了 emit_rex 就强制发射。
+    emit8(cb, rex);
 }
 
 void emit_modrm(PeCodeBuffer* cb, int mod, int reg, int rm) {
