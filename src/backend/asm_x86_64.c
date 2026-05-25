@@ -156,6 +156,59 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
     int shadow_space = (has_extern_call || max_call_args > 4) ? 32 : 0;
     int local_and_args = allocator.current_offset + shadow_space + call_stack_space;
 
+    // 优化: 序言前置快路径剥离 (Shrink-Wrapping / Fast Path Peephole)
+    bool fast_path_emitted = false;
+    if (func->first_block && func->first_block->first_inst) {
+        SirInst* i1 = func->first_block->first_inst;
+        if (i1->opcode == SIR_GET_PARAM && i1->operands[0]->as.int_val == 0) {
+            SirInst* i2 = i1->next;
+            if (i2 && i2->opcode >= SIR_ICMP_EQ && i2->opcode <= SIR_ICMP_GE && i2->operands[0] == i1->dest && i2->operands[1]->kind == SIR_VAL_CONST_INT) {
+                SirInst* i3 = i2->next;
+                if (i3 && i3->opcode == SIR_BR && i3->operands[0] == i2->dest) {
+                    SirBlock* t_block = i3->operands[1]->as.block;
+                    SirBlock* f_block = i3->operands[2]->as.block;
+                    SirBlock* ret_block = NULL;
+                    SirBlock* slow_block = NULL;
+                    bool cond_is_true = false;
+                    
+                    if (t_block->first_inst && t_block->first_inst == t_block->last_inst && t_block->first_inst->opcode == SIR_RET && t_block->first_inst->operands[0] == i1->dest) {
+                        ret_block = t_block; slow_block = f_block; cond_is_true = true;
+                    } else if (f_block->first_inst && f_block->first_inst == f_block->last_inst && f_block->first_inst->opcode == SIR_RET && f_block->first_inst->operands[0] == i1->dest) {
+                        ret_block = f_block; slow_block = t_block; cond_is_true = false;
+                    }
+                    
+                    if (ret_block) {
+                        int32_t imm = (int32_t)i2->operands[1]->as.int_val;
+                        int w = (i1->dest->type && type_get_size(i1->dest->type) <= 4) ? 0 : 1;
+                        const char* cx = w ? "%rcx" : "%ecx";
+                        const char* ax = w ? "%rax" : "%eax";
+                        const char* cmp_op = w ? "cmpq" : "cmpl";
+                        const char* mov_op = w ? "movq" : "movl";
+                        
+                        fprintf(out, "    %s $%d, %s\n", cmp_op, imm, cx);
+                        
+                        const char* jcc_slow = "je";
+                        bool is_unsigned = type_is_unsigned(i1->dest->type);
+                        if (i2->opcode == SIR_ICMP_EQ) jcc_slow = cond_is_true ? "jne" : "je";
+                        else if (i2->opcode == SIR_ICMP_NE) jcc_slow = cond_is_true ? "je" : "jne";
+                        else if (i2->opcode == SIR_ICMP_LT) jcc_slow = cond_is_true ? (is_unsigned ? "jae" : "jge") : (is_unsigned ? "jb" : "jl");
+                        else if (i2->opcode == SIR_ICMP_LE) jcc_slow = cond_is_true ? (is_unsigned ? "ja" : "jg") : (is_unsigned ? "jbe" : "jle");
+                        else if (i2->opcode == SIR_ICMP_GT) jcc_slow = cond_is_true ? (is_unsigned ? "jbe" : "jle") : (is_unsigned ? "ja" : "jg");
+                        else if (i2->opcode == SIR_ICMP_GE) jcc_slow = cond_is_true ? (is_unsigned ? "jb" : "jl") : (is_unsigned ? "jae" : "jge");
+                        
+                        fprintf(out, "    %s .Lslow_%s\n", jcc_slow, func->name);
+                        fprintf(out, "    %s %s, %s\n", mov_op, cx, ax);
+                        fprintf(out, "    ret\n");
+                        fprintf(out, "    .p2align 4\n");
+                        fprintf(out, ".Lslow_%s:\n", func->name);
+                        
+                        fast_path_emitted = true;
+                    }
+                }
+            }
+        }
+    }
+
     // 2. 函数序言 (Prologue)
     int num_callee_pushes = 0;
     if (allocator.used_callee_saved[0]) { fprintf(out, "    pushq %%rbx\n"); num_callee_pushes++; }
@@ -228,13 +281,16 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     } else if (inst->operands[0]->type) {
                         size = type_get_size(inst->operands[0]->type);
                     }
+                    const char* ax = (size <= 4) ? "%eax" : "%rax";
+                    const char* mov_op = (size <= 4) ? "movl" : "movq";
+                    
                     if (strcmp(op0, "%rcx") == 0 && strcmp(op1, "%rax") == 0) {
                         fprintf(out, "    xchgq %%rax, %%rcx\n");
                     } else if (strcmp(op1, "%rax") == 0) {
                         fprintf(out, "    movq %s, %%rcx\n", op1);
-                        if (strcmp(op0, "%rax") != 0) fprintf(out, "    movq %s, %%rax\n", op0);
+                        if (strcmp(op0, ax) != 0 && strcmp(op0, "%rax") != 0) fprintf(out, "    %s %s, %s\n", mov_op, op0, ax);
                     } else {
-                        if (strcmp(op0, "%rax") != 0) fprintf(out, "    movq %s, %%rax\n", op0);
+                        if (strcmp(op0, ax) != 0 && strcmp(op0, "%rax") != 0) fprintf(out, "    %s %s, %s\n", mov_op, op0, ax);
                         if (strcmp(op1, "%rcx") != 0) fprintf(out, "    movq %s, %%rcx\n", op1);
                     }
                     if (size == 1) fprintf(out, "    movb %%al, (%%rcx)\n");
@@ -247,7 +303,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                 case SIR_LOAD: {
                     int size = type_get_size(inst->dest->type);
                     bool is_signed = type_is_signed(inst->dest->type);
-                    fprintf(out, "    movq %s, %%rax\n", op0);
+                    if (strcmp(op0, "%rax") != 0) fprintf(out, "    movq %s, %%rax\n", op0);
                     if (size == 1) {
                         if (is_signed) fprintf(out, "    movsbq (%%rax), %%rcx\n");
                         else fprintf(out, "    movzbq (%%rax), %%rcx\n");
@@ -260,7 +316,11 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     } else {
                         fprintf(out, "    movq (%%rax), %%rcx\n");
                     }
-                    fprintf(out, "    movq %%rcx, %s\n", dest);
+                    const char* cx = (size <= 4) ? "%ecx" : "%rcx";
+                    const char* mov_op = (size <= 4) ? "movl" : "movq";
+                    if (strcmp(cx, dest) != 0 && strcmp("%rcx", dest) != 0) {
+                        fprintf(out, "    %s %s, %s\n", mov_op, cx, dest);
+                    }
                     break;
                 }
 
@@ -594,15 +654,21 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     int param_idx = (int)inst->operands[0]->as.int_val;
                     if (param_idx < 4) {
                         const char* regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
+                        const char* regs32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
                         bool is_float = (inst->dest->type && (inst->dest->type->kind == TY_F32 || inst->dest->type->kind == TY_F64));
                         if (is_float) {
                             bool is_f32 = (inst->dest->type->kind == TY_F32);
                             if (is_f32) fprintf(out, "    movd %%xmm%d, %%eax\n", param_idx);
                             else fprintf(out, "    movq %%xmm%d, %%rax\n", param_idx);
-                            fprintf(out, "    movq %%rax, %s\n", dest);
+                            if (strcmp(dest, "%rax") != 0 && strcmp(dest, "%eax") != 0) {
+                                fprintf(out, "    %s %%rax, %s\n", is_f32 ? "movl" : "movq", dest);
+                            }
                         } else {
-                            if (strcmp(regs[param_idx], dest) != 0) {
-                                fprintf(out, "    movq %s, %s\n", regs[param_idx], dest);
+                            int dest_size = (inst->dest->type) ? type_get_size(inst->dest->type) : 8;
+                            const char* src_reg = (dest_size <= 4) ? regs32[param_idx] : regs[param_idx];
+                            const char* mov_op = (dest_size <= 4) ? "movl" : "movq";
+                            if (strcmp(src_reg, dest) != 0 && strcmp(regs[param_idx], dest) != 0) {
+                                fprintf(out, "    %s %s, %s\n", mov_op, src_reg, dest);
                             }
                         }
                     } else {
@@ -667,8 +733,33 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                         const char* idx_reg = op1;
                         if (strcmp(op1, acc) == 0) {
                             const char* idx_scratch = (strcmp(acc, "%rcx") == 0) ? "%rdx" : "%rcx";
-                            fprintf(out, "    movq %s, %s\n", op1, idx_scratch);
-                            idx_reg = idx_scratch;
+                            int idx_size = (inst->operands[1]->type) ? type_get_size(inst->operands[1]->type) : 8;
+                            if (idx_size <= 4) {
+                                const char* idx_scratch32 = (strcmp(acc, "%rcx") == 0) ? "%edx" : "%ecx";
+                                fprintf(out, "    movl %s, %s\n", op1, idx_scratch32);
+                                idx_reg = idx_scratch;
+                            } else {
+                                fprintf(out, "    movq %s, %s\n", op1, idx_scratch);
+                                idx_reg = idx_scratch;
+                            }
+                        } else {
+                            int idx_size = (inst->operands[1]->type) ? type_get_size(inst->operands[1]->type) : 8;
+                            if (idx_size <= 4 && op1[0] == '%') {
+                                if (strcmp(op1, "%eax") == 0) idx_reg = "%rax";
+                                else if (strcmp(op1, "%ecx") == 0) idx_reg = "%rcx";
+                                else if (strcmp(op1, "%edx") == 0) idx_reg = "%rdx";
+                                else if (strcmp(op1, "%ebx") == 0) idx_reg = "%rbx";
+                                else if (strcmp(op1, "%esi") == 0) idx_reg = "%rsi";
+                                else if (strcmp(op1, "%edi") == 0) idx_reg = "%rdi";
+                                else if (strcmp(op1, "%r8d") == 0) idx_reg = "%r8";
+                                else if (strcmp(op1, "%r9d") == 0) idx_reg = "%r9";
+                                else if (strcmp(op1, "%r10d") == 0) idx_reg = "%r10";
+                                else if (strcmp(op1, "%r11d") == 0) idx_reg = "%r11";
+                                else if (strcmp(op1, "%r12d") == 0) idx_reg = "%r12";
+                                else if (strcmp(op1, "%r13d") == 0) idx_reg = "%r13";
+                                else if (strcmp(op1, "%r14d") == 0) idx_reg = "%r14";
+                                else if (strcmp(op1, "%r15d") == 0) idx_reg = "%r15";
+                            }
                         }
                         if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
                         
@@ -1004,6 +1095,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     
                     int reg_args = num_args > 4 ? 4 : num_args;
                     const char* arg_regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
+                    const char* arg_regs32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
                     if (reg_args == 1) {
                         bool already_in_rcx = false;
                         if (inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[1]) {
@@ -1013,11 +1105,17 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                         }
                         if (!already_in_rcx) {
                             char arg_str[64];
-                            get_operand_str(arg_str, inst->operands[1], &allocator, 8, total_frame_size);
+                            int arg_size = (inst->operands[1]->type) ? type_get_size(inst->operands[1]->type) : 8;
+                            if (arg_size < 4) arg_size = 4;
+                            get_operand_str(arg_str, inst->operands[1], &allocator, arg_size, total_frame_size);
                             if (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[1]->type || inst->operands[1]->type->kind == TY_F64)) {
                                 fprintf(out, "    movabsq %s, %%rcx\n", arg_str);
                             } else {
-                                if (strcmp(arg_str, "%rcx") != 0) fprintf(out, "    movq %s, %%rcx\n", arg_str);
+                                const char* dst_reg = (arg_size <= 4) ? "%ecx" : "%rcx";
+                                const char* mov_op = (arg_size <= 4) ? "movl" : "movq";
+                                if (strcmp(arg_str, dst_reg) != 0 && strcmp(arg_str, "%rcx") != 0) {
+                                    fprintf(out, "    %s %s, %s\n", mov_op, arg_str, dst_reg);
+                                }
                             }
                         }
                         bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64));
@@ -1027,26 +1125,37 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                         }
                     } else if (reg_args == 2) {
                         char arg_str0[64], arg_str1[64];
-                        get_operand_str(arg_str0, inst->operands[1], &allocator, 8, total_frame_size);
-                        get_operand_str(arg_str1, inst->operands[2], &allocator, 8, total_frame_size);
+                        int arg_s0 = (inst->operands[1]->type) ? type_get_size(inst->operands[1]->type) : 8;
+                        int arg_s1 = (inst->operands[2]->type) ? type_get_size(inst->operands[2]->type) : 8;
+                        if (arg_s0 < 4) arg_s0 = 4; if (arg_s1 < 4) arg_s1 = 4;
+                        get_operand_str(arg_str0, inst->operands[1], &allocator, arg_s0, total_frame_size);
+                        get_operand_str(arg_str1, inst->operands[2], &allocator, arg_s1, total_frame_size);
                         
                         if (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[1]->type || inst->operands[1]->type->kind == TY_F64)) {
                             fprintf(out, "    movabsq %s, %%rax\n", arg_str0);
                             strcpy(arg_str0, "%rax");
+                            arg_s0 = 8;
                         }
                         if (inst->operands[2]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[2]->type || inst->operands[2]->type->kind == TY_F64)) {
                             fprintf(out, "    movabsq %s, %%r10\n", arg_str1);
                             strcpy(arg_str1, "%r10");
+                            arg_s1 = 8;
                         }
                         
-                        if (strcmp(arg_str0, "%rdx") == 0 && strcmp(arg_str1, "%rcx") == 0) {
+                        const char* dst0 = (arg_s0 <= 4) ? "%ecx" : "%rcx";
+                        const char* dst1 = (arg_s1 <= 4) ? "%edx" : "%rdx";
+                        const char* mov0 = (arg_s0 <= 4) ? "movl" : "movq";
+                        const char* mov1 = (arg_s1 <= 4) ? "movl" : "movq";
+
+                        if ((strcmp(arg_str0, "%rdx") == 0 || strcmp(arg_str0, "%edx") == 0) && 
+                            (strcmp(arg_str1, "%rcx") == 0 || strcmp(arg_str1, "%ecx") == 0)) {
                             fprintf(out, "    xchgq %%rcx, %%rdx\n");
-                        } else if (strcmp(arg_str1, "%rcx") == 0) {
-                            fprintf(out, "    movq %s, %%rdx\n", arg_str1);
-                            if (strcmp(arg_str0, "%rcx") != 0) fprintf(out, "    movq %s, %%rcx\n", arg_str0);
+                        } else if (strcmp(arg_str1, "%rcx") == 0 || strcmp(arg_str1, "%ecx") == 0) {
+                            fprintf(out, "    %s %s, %s\n", mov1, arg_str1, dst1);
+                            if (strcmp(arg_str0, dst0) != 0 && strcmp(arg_str0, "%rcx") != 0) fprintf(out, "    %s %s, %s\n", mov0, arg_str0, dst0);
                         } else {
-                            if (strcmp(arg_str0, "%rcx") != 0) fprintf(out, "    movq %s, %%rcx\n", arg_str0);
-                            if (strcmp(arg_str1, "%rdx") != 0) fprintf(out, "    movq %s, %%rdx\n", arg_str1);
+                            if (strcmp(arg_str0, dst0) != 0 && strcmp(arg_str0, "%rcx") != 0) fprintf(out, "    %s %s, %s\n", mov0, arg_str0, dst0);
+                            if (strcmp(arg_str1, dst1) != 0 && strcmp(arg_str1, "%rdx") != 0) fprintf(out, "    %s %s, %s\n", mov1, arg_str1, dst1);
                         }
                         
                         for (int i = 0; i < 2; i++) {
@@ -1059,19 +1168,27 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     } else {
                         for (int i = 0; i < reg_args; i++) {
                             char arg_str[64];
-                            get_operand_str(arg_str, inst->operands[i+1], &allocator, 8, total_frame_size);
+                            int arg_size = (inst->operands[i+1]->type) ? type_get_size(inst->operands[i+1]->type) : 8;
+                            if (arg_size < 4) arg_size = 4;
+                            get_operand_str(arg_str, inst->operands[i+1], &allocator, arg_size, total_frame_size);
                             if (inst->operands[i+1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[i+1]->type || inst->operands[i+1]->type->kind == TY_F64)) {
                                 fprintf(out, "    movabsq %s, %%rax\n", arg_str);
+                                fprintf(out, "    movq %%rax, %d(%%rsp)\n", i * 8);
                             } else {
-                                fprintf(out, "    movq %s, %%rax\n", arg_str);
+                                const char* mov_op = (arg_size <= 4) ? "movl" : "movq";
+                                const char* ax = (arg_size <= 4) ? "%eax" : "%rax";
+                                fprintf(out, "    %s %s, %s\n", mov_op, arg_str, ax);
+                                fprintf(out, "    %s %s, %d(%%rsp)\n", mov_op, ax, i * 8);
                             }
-                            fprintf(out, "    movq %%rax, %d(%%rsp)\n", i * 8);
                         }
                         for (int i = 0; i < reg_args; i++) {
-                            fprintf(out, "    movq %d(%%rsp), %s\n", i * 8, arg_regs[i]);
+                            int arg_size = (inst->operands[i+1]->type) ? type_get_size(inst->operands[i+1]->type) : 8;
+                            const char* mov_op = (arg_size <= 4) ? "movl" : "movq";
+                            const char* dst_reg = (arg_size <= 4) ? arg_regs32[i] : arg_regs[i];
+                            fprintf(out, "    %s %d(%%rsp), %s\n", mov_op, i * 8, dst_reg);
                             bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
                             if (is_float) {
-                                if (inst->operands[i+1]->type->kind == TY_F32) fprintf(out, "    movd %s, %%xmm%d\n", i==0?"%ecx":i==1?"%edx":i==2?"%r8d":"%r9d", i);
+                                if (inst->operands[i+1]->type->kind == TY_F32) fprintf(out, "    movd %s, %%xmm%d\n", arg_regs32[i], i);
                                 else fprintf(out, "    movq %s, %%xmm%d\n", arg_regs[i], i);
                             }
                         }
