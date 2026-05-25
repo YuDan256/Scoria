@@ -182,8 +182,15 @@ static void generate_function(FILE* out, SirFunction* func) {
                     } else if (inst->operands[0]->type) {
                         size = type_get_size(inst->operands[0]->type);
                     }
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    movq %s, %%rcx\n", op1);
+                    if (strcmp(op0, "%rcx") == 0 && strcmp(op1, "%rax") == 0) {
+                        fprintf(out, "    xchgq %%rax, %%rcx\n");
+                    } else if (strcmp(op1, "%rax") == 0) {
+                        fprintf(out, "    movq %s, %%rcx\n", op1);
+                        if (strcmp(op0, "%rax") != 0) fprintf(out, "    movq %s, %%rax\n", op0);
+                    } else {
+                        if (strcmp(op0, "%rax") != 0) fprintf(out, "    movq %s, %%rax\n", op0);
+                        if (strcmp(op1, "%rcx") != 0) fprintf(out, "    movq %s, %%rcx\n", op1);
+                    }
                     if (size == 1) fprintf(out, "    movb %%al, (%%rcx)\n");
                     else if (size == 2) fprintf(out, "    movw %%ax, (%%rcx)\n");
                     else if (size == 4) fprintf(out, "    movl %%eax, (%%rcx)\n");
@@ -471,16 +478,28 @@ static void generate_function(FILE* out, SirFunction* func) {
                 case SIR_SELECT: {
                     bool dest_is_mem = (dest[0] != '%');
                     const char* acc = dest_is_mem ? "%rax" : dest;
-                    
-                    if (strcmp(op2, acc) != 0) fprintf(out, "    movq %s, %s\n", op2, acc);
-                    
                     const char* t_scratch = (strcmp(acc, "%rcx") == 0) ? "%rdx" : "%rcx";
-                    if (strcmp(op1, t_scratch) != 0) fprintf(out, "    movq %s, %s\n", op1, t_scratch);
+                    const char* cond_scratch = (strcmp(t_scratch, "%rcx") == 0) ? "%r8" : "%rcx";
+                    if (strcmp(cond_scratch, acc) == 0) cond_scratch = "%r9";
                     
-                    if (op0[0] == '%') {
-                        fprintf(out, "    testq %s, %s\n", op0, op0);
+                    const char* cond_reg = op0;
+                    if (strcmp(op0, acc) == 0 || strcmp(op0, t_scratch) == 0) {
+                        fprintf(out, "    movq %s, %s\n", op0, cond_scratch);
+                        cond_reg = cond_scratch;
+                    }
+                    
+                    if (strcmp(op1, acc) == 0) {
+                        fprintf(out, "    movq %s, %s\n", op1, t_scratch);
+                        if (strcmp(op2, acc) != 0) fprintf(out, "    movq %s, %s\n", op2, acc);
                     } else {
-                        fprintf(out, "    cmpq $0, %s\n", op0);
+                        if (strcmp(op2, acc) != 0) fprintf(out, "    movq %s, %s\n", op2, acc);
+                        if (strcmp(op1, t_scratch) != 0) fprintf(out, "    movq %s, %s\n", op1, t_scratch);
+                    }
+                    
+                    if (cond_reg[0] == '%') {
+                        fprintf(out, "    testq %s, %s\n", cond_reg, cond_reg);
+                    } else {
+                        fprintf(out, "    cmpq $0, %s\n", cond_reg);
                     }
                     
                     fprintf(out, "    cmovneq %s, %s\n", t_scratch, acc);
@@ -528,8 +547,15 @@ static void generate_function(FILE* out, SirFunction* func) {
 
                 case SIR_MEMCPY: {
                     int size = (int)inst->operands[2]->as.int_val;
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    movq %s, %%rdx\n", op1);
+                    if (strcmp(op0, "%rdx") == 0 && strcmp(op1, "%rax") == 0) {
+                        fprintf(out, "    xchgq %%rax, %%rdx\n");
+                    } else if (strcmp(op1, "%rax") == 0) {
+                        fprintf(out, "    movq %s, %%rdx\n", op1);
+                        if (strcmp(op0, "%rax") != 0) fprintf(out, "    movq %s, %%rax\n", op0);
+                    } else {
+                        if (strcmp(op0, "%rax") != 0) fprintf(out, "    movq %s, %%rax\n", op0);
+                        if (strcmp(op1, "%rdx") != 0) fprintf(out, "    movq %s, %%rdx\n", op1);
+                    }
                     fprintf(out, "    pushq %%rsi\n");
                     fprintf(out, "    pushq %%rdi\n");
                     fprintf(out, "    pushq %%rcx\n");
@@ -549,22 +575,30 @@ static void generate_function(FILE* out, SirFunction* func) {
                     bool dest_is_mem = (dest[0] != '%');
                     const char* acc = dest_is_mem ? "%rax" : dest;
                     
-                    if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
-                    
                     if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
+                        if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
                         int64_t offset = inst->operands[1]->as.int_val * element_size;
                         if (offset != 0) {
                             fprintf(out, "    addq $%lld, %s\n", (long long)offset, acc);
                         }
                     } else {
+                        const char* idx_reg = op1;
+                        if (strcmp(op1, acc) == 0) {
+                            const char* idx_scratch = (strcmp(acc, "%rcx") == 0) ? "%rdx" : "%rcx";
+                            fprintf(out, "    movq %s, %s\n", op1, idx_scratch);
+                            idx_reg = idx_scratch;
+                        }
+                        if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
+                        
                         if (element_size == 1) {
-                            fprintf(out, "    addq %s, %s\n", op1, acc);
-                        } else if ((element_size == 2 || element_size == 4 || element_size == 8) && op1[0] == '%') {
-                            fprintf(out, "    leaq (%s, %s, %d), %s\n", acc, op1, element_size, acc);
+                            fprintf(out, "    addq %s, %s\n", idx_reg, acc);
+                        } else if ((element_size == 2 || element_size == 4 || element_size == 8) && idx_reg[0] == '%') {
+                            fprintf(out, "    leaq (%s, %s, %d), %s\n", acc, idx_reg, element_size, acc);
                         } else {
-                            fprintf(out, "    movq %s, %%rcx\n", op1);
-                            fprintf(out, "    imulq $%d, %%rcx\n", element_size);
-                            fprintf(out, "    addq %%rcx, %s\n", acc);
+                            const char* mul_scratch = (strcmp(acc, "%rcx") == 0) ? "%rdx" : "%rcx";
+                            if (strcmp(idx_reg, mul_scratch) != 0) fprintf(out, "    movq %s, %s\n", idx_reg, mul_scratch);
+                            fprintf(out, "    imulq $%d, %s\n", element_size, mul_scratch);
+                            fprintf(out, "    addq %s, %s\n", mul_scratch, acc);
                         }
                     }
                     if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
@@ -701,11 +735,17 @@ static void generate_function(FILE* out, SirFunction* func) {
                     else if (inst->opcode == SIR_ICMP_GT) cc = is_unsigned ? "a" : "g";
                     else if (inst->opcode == SIR_ICMP_GE) cc = is_unsigned ? "ae" : "ge";
                     
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    if (strcmp(op1, "$0") == 0) {
-                        fprintf(out, "    testq %%rax, %%rax\n");
+                    if (strcmp(op1, "%rax") == 0) {
+                        fprintf(out, "    movq %s, %%rcx\n", op1);
+                        fprintf(out, "    movq %s, %%rax\n", op0);
+                        fprintf(out, "    cmpq %%rcx, %%rax\n");
                     } else {
-                        fprintf(out, "    cmpq %s, %%rax\n", op1);
+                        fprintf(out, "    movq %s, %%rax\n", op0);
+                        if (strcmp(op1, "$0") == 0) {
+                            fprintf(out, "    testq %%rax, %%rax\n");
+                        } else {
+                            fprintf(out, "    cmpq %s, %%rax\n", op1);
+                        }
                     }
                     bool can_fuse = false;
                     SirInst* next_inst = inst->next;
@@ -763,8 +803,15 @@ static void generate_function(FILE* out, SirFunction* func) {
                     else if (inst->opcode == SIR_FCMP_GT) cc = "a";
                     else if (inst->opcode == SIR_FCMP_GE) cc = "ae";
                     
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    movq %s, %%rcx\n", op1);
+                    if (strcmp(op0, "%rcx") == 0 && strcmp(op1, "%rax") == 0) {
+                        fprintf(out, "    xchgq %%rax, %%rcx\n");
+                    } else if (strcmp(op1, "%rax") == 0) {
+                        fprintf(out, "    movq %s, %%rcx\n", op1);
+                        if (strcmp(op0, "%rax") != 0) fprintf(out, "    movq %s, %%rax\n", op0);
+                    } else {
+                        if (strcmp(op0, "%rax") != 0) fprintf(out, "    movq %s, %%rax\n", op0);
+                        if (strcmp(op1, "%rcx") != 0) fprintf(out, "    movq %s, %%rcx\n", op1);
+                    }
                     if (is_f32) {
                         fprintf(out, "    movd %%eax, %%xmm0\n");
                         fprintf(out, "    movd %%ecx, %%xmm1\n");
@@ -891,20 +938,22 @@ static void generate_function(FILE* out, SirFunction* func) {
                         get_operand_str(arg_str0, inst->operands[1], &allocator, 8, total_frame_size);
                         get_operand_str(arg_str1, inst->operands[2], &allocator, 8, total_frame_size);
                         
-                        if (strcmp(arg_str0, "%rdx") == 0) {
-                            fprintf(out, "    movq %%rdx, %%rax\n");
+                        if (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[1]->type || inst->operands[1]->type->kind == TY_F64)) {
+                            fprintf(out, "    movabsq %s, %%rax\n", arg_str0);
                             strcpy(arg_str0, "%rax");
                         }
-                        
-                        if (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[1]->type || inst->operands[1]->type->kind == TY_F64)) {
-                            fprintf(out, "    movabsq %s, %%rcx\n", arg_str0);
-                        } else {
-                            if (strcmp(arg_str0, "%rcx") != 0) fprintf(out, "    movq %s, %%rcx\n", arg_str0);
+                        if (inst->operands[2]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[2]->type || inst->operands[2]->type->kind == TY_F64)) {
+                            fprintf(out, "    movabsq %s, %%r10\n", arg_str1);
+                            strcpy(arg_str1, "%r10");
                         }
                         
-                        if (inst->operands[2]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[2]->type || inst->operands[2]->type->kind == TY_F64)) {
-                            fprintf(out, "    movabsq %s, %%rdx\n", arg_str1);
+                        if (strcmp(arg_str0, "%rdx") == 0 && strcmp(arg_str1, "%rcx") == 0) {
+                            fprintf(out, "    xchgq %%rcx, %%rdx\n");
+                        } else if (strcmp(arg_str1, "%rcx") == 0) {
+                            fprintf(out, "    movq %s, %%rdx\n", arg_str1);
+                            if (strcmp(arg_str0, "%rcx") != 0) fprintf(out, "    movq %s, %%rcx\n", arg_str0);
                         } else {
+                            if (strcmp(arg_str0, "%rcx") != 0) fprintf(out, "    movq %s, %%rcx\n", arg_str0);
                             if (strcmp(arg_str1, "%rdx") != 0) fprintf(out, "    movq %s, %%rdx\n", arg_str1);
                         }
                         
