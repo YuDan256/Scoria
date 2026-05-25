@@ -7,6 +7,84 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr);
 static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr);
 static void gen_statement(IrBuilder* builder, AstNode* stmt);
 
+static bool check_mutated(AstNode* node, Symbol* sym) {
+    if (!node) return false;
+    switch (node->kind) {
+        case AST_ASSIGN_EXPR: {
+            AstNode* target = node->as.assign.target;
+            if (target->kind == AST_IDENT_EXPR && target->resolved_symbol == sym) return true;
+            if (check_mutated(node->as.assign.value, sym)) return true;
+            if (check_mutated(target, sym)) return true;
+            break;
+        }
+        case AST_UNARY_EXPR:
+            if (node->as.unary.op.kind == TK_KW_LOCUS) {
+                AstNode* target = node->as.unary.operand;
+                if (target->kind == AST_IDENT_EXPR && target->resolved_symbol == sym) return true;
+            }
+            if (check_mutated(node->as.unary.operand, sym)) return true;
+            break;
+        case AST_BLOCK_STMT:
+            for (int i=0; i<node->as.block.stmt_count; i++) {
+                if (check_mutated(node->as.block.statements[i], sym)) return true;
+            }
+            break;
+        case AST_IF_STMT:
+            if (check_mutated(node->as.if_stmt.condition, sym)) return true;
+            if (check_mutated(node->as.if_stmt.then_branch, sym)) return true;
+            if (check_mutated(node->as.if_stmt.else_branch, sym)) return true;
+            break;
+        case AST_WHILE_STMT:
+            if (check_mutated(node->as.while_stmt.condition, sym)) return true;
+            if (check_mutated(node->as.while_stmt.body, sym)) return true;
+            break;
+        case AST_FOR_STMT:
+            if (check_mutated(node->as.for_stmt.initializer, sym)) return true;
+            if (check_mutated(node->as.for_stmt.condition, sym)) return true;
+            if (check_mutated(node->as.for_stmt.increment, sym)) return true;
+            if (check_mutated(node->as.for_stmt.body, sym)) return true;
+            break;
+        case AST_RETURN_STMT:
+            if (check_mutated(node->as.return_stmt.value, sym)) return true;
+            break;
+        case AST_EXPR_STMT:
+            if (check_mutated(node->as.expr_stmt.expr, sym)) return true;
+            break;
+        case AST_BINARY_EXPR:
+            if (check_mutated(node->as.binary.left, sym)) return true;
+            if (check_mutated(node->as.binary.right, sym)) return true;
+            break;
+        case AST_CALL_EXPR:
+            if (check_mutated(node->as.call.callee, sym)) return true;
+            for (int i=0; i<node->as.call.arg_count; i++) {
+                if (check_mutated(node->as.call.args[i], sym)) return true;
+            }
+            break;
+        case AST_INDEX_EXPR:
+            if (check_mutated(node->as.index_expr.target, sym)) return true;
+            if (check_mutated(node->as.index_expr.index, sym)) return true;
+            break;
+        case AST_MEMBER_EXPR:
+            if (check_mutated(node->as.member_expr.object, sym)) return true;
+            break;
+        case AST_CAST_EXPR:
+            if (check_mutated(node->as.cast_expr.value, sym)) return true;
+            break;
+        case AST_SWITCH_STMT:
+            if (check_mutated(node->as.switch_stmt.condition, sym)) return true;
+            for (int i=0; i<node->as.switch_stmt.case_count; i++) {
+                for (int j=0; j<node->as.switch_stmt.case_val_counts[i]; j++) {
+                    if (check_mutated(node->as.switch_stmt.case_vals[i][j], sym)) return true;
+                }
+                if (check_mutated(node->as.switch_stmt.case_stmts[i], sym)) return true;
+            }
+            if (check_mutated(node->as.switch_stmt.default_branch, sym)) return true;
+            break;
+        default: break;
+    }
+    return false;
+}
+
 static int roman_char_value(char c) {
     switch (c) {
         case 'I': case 'i': return 1;
@@ -247,6 +325,10 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 } else if (sym->ir_val) {
                     // 结构体、数组和切片作为右值时，退化为指针
                     if (sym->type && (sym->type->kind == TY_FORMA || sym->type->kind == TY_UNIO || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS)) {
+                        return sym->ir_val;
+                    }
+                    // 如果 ir_val 已经是直接值 (如被优化的参数)，直接返回
+                    if (sym->ir_val->type && sym->ir_val->type->kind != TY_VIA) {
                         return sym->ir_val;
                     }
                     // 局部变量或全局变量的 ir_val 是指针，使用时需要 load 出来
@@ -928,18 +1010,24 @@ void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count) {
                 }
             }
 
-            // 4. 为参数分配栈空间并存储传入的值
+            // 4. 为参数分配栈空间并存储传入的值 (或直接使用寄存器)
             for (int j = 0; j < decl->as.func_decl.param_count; j++) {
                 AstNode* param_node = decl->as.func_decl.params[j];
                 Symbol* param_sym = param_node->resolved_symbol;
                 if (param_sym) {
                     int param_size = type_get_size(param_sym->type);
-                    param_sym->ir_val = ir_build_alloca(builder, param_sym->type, param_size);
+                    bool is_scalar = (param_sym->type->kind >= TY_I8 && param_sym->type->kind <= TY_LOGICA);
                     
-                    if (param_size > 8) {
-                        ir_build_memcpy(builder, param_sym->ir_val, arg_vals[j + param_offset], param_size);
+                    if (is_scalar && !check_mutated(decl->as.func_decl.body, param_sym)) {
+                        // 极速优化：参数未被修改且为标量，直接使用寄存器，消除 Alloca 和 Load/Store
+                        param_sym->ir_val = arg_vals[j + param_offset];
                     } else {
-                        ir_build_store(builder, arg_vals[j + param_offset], param_sym->ir_val);
+                        param_sym->ir_val = ir_build_alloca(builder, param_sym->type, param_size);
+                        if (param_size > 8) {
+                            ir_build_memcpy(builder, param_sym->ir_val, arg_vals[j + param_offset], param_size);
+                        } else {
+                            ir_build_store(builder, arg_vals[j + param_offset], param_sym->ir_val);
+                        }
                     }
                 }
             }

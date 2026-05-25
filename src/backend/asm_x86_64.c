@@ -600,7 +600,11 @@ static void generate_function(FILE* out, SirFunction* func) {
                     else if (inst->opcode == SIR_ICMP_GE) cc = is_unsigned ? "ae" : "ge";
                     
                     fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    cmpq %s, %%rax\n", op1);
+                    if (strcmp(op1, "$0") == 0) {
+                        fprintf(out, "    testq %%rax, %%rax\n");
+                    } else {
+                        fprintf(out, "    cmpq %s, %%rax\n", op1);
+                    }
                     fprintf(out, "    set%s %%al\n", cc);
                     fprintf(out, "    movzbq %%al, %%rax\n");
                     fprintf(out, "    movq %%rax, %s\n", dest);
@@ -687,23 +691,67 @@ static void generate_function(FILE* out, SirFunction* func) {
                     }
                     
                     int reg_args = num_args > 4 ? 4 : num_args;
-                    for (int i = 0; i < reg_args; i++) {
-                        char arg_str[64];
-                        get_operand_str(arg_str, inst->operands[i+1], &allocator, 8);
-                        if (inst->operands[i+1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[i+1]->type || inst->operands[i+1]->type->kind == TY_F64)) {
-                            fprintf(out, "    movabsq %s, %%rax\n", arg_str);
-                        } else {
-                            fprintf(out, "    movq %s, %%rax\n", arg_str);
-                        }
-                        fprintf(out, "    movq %%rax, %d(%%rsp)\n", i * 8);
-                    }
-                    
                     const char* arg_regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
-                    for (int i = 0; i < reg_args; i++) {
-                        fprintf(out, "    movq %d(%%rsp), %s\n", i * 8, arg_regs[i]);
-                        bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
+                    if (reg_args == 1) {
+                        char arg_str[64];
+                        get_operand_str(arg_str, inst->operands[1], &allocator, 8);
+                        if (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[1]->type || inst->operands[1]->type->kind == TY_F64)) {
+                            fprintf(out, "    movabsq %s, %%rcx\n", arg_str);
+                        } else {
+                            if (strcmp(arg_str, "%rcx") != 0) fprintf(out, "    movq %s, %%rcx\n", arg_str);
+                        }
+                        bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64));
                         if (is_float) {
-                            fprintf(out, "    movq %s, %%xmm%d\n", arg_regs[i], i);
+                            if (inst->operands[1]->type->kind == TY_F32) fprintf(out, "    movd %%ecx, %%xmm0\n");
+                            else fprintf(out, "    movq %%rcx, %%xmm0\n");
+                        }
+                    } else if (reg_args == 2) {
+                        char arg_str0[64], arg_str1[64];
+                        get_operand_str(arg_str0, inst->operands[1], &allocator, 8);
+                        get_operand_str(arg_str1, inst->operands[2], &allocator, 8);
+                        
+                        if (strcmp(arg_str0, "%rdx") == 0) {
+                            fprintf(out, "    movq %%rdx, %%r10\n");
+                            strcpy(arg_str0, "%r10");
+                        }
+                        
+                        if (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[1]->type || inst->operands[1]->type->kind == TY_F64)) {
+                            fprintf(out, "    movabsq %s, %%rcx\n", arg_str0);
+                        } else {
+                            if (strcmp(arg_str0, "%rcx") != 0) fprintf(out, "    movq %s, %%rcx\n", arg_str0);
+                        }
+                        
+                        if (inst->operands[2]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[2]->type || inst->operands[2]->type->kind == TY_F64)) {
+                            fprintf(out, "    movabsq %s, %%rdx\n", arg_str1);
+                        } else {
+                            if (strcmp(arg_str1, "%rdx") != 0) fprintf(out, "    movq %s, %%rdx\n", arg_str1);
+                        }
+                        
+                        for (int i = 0; i < 2; i++) {
+                            bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
+                            if (is_float) {
+                                if (inst->operands[i+1]->type->kind == TY_F32) fprintf(out, "    movd %s, %%xmm%d\n", i==0?"%ecx":"%edx", i);
+                                else fprintf(out, "    movq %s, %%xmm%d\n", arg_regs[i], i);
+                            }
+                        }
+                    } else {
+                        for (int i = 0; i < reg_args; i++) {
+                            char arg_str[64];
+                            get_operand_str(arg_str, inst->operands[i+1], &allocator, 8);
+                            if (inst->operands[i+1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[i+1]->type || inst->operands[i+1]->type->kind == TY_F64)) {
+                                fprintf(out, "    movabsq %s, %%rax\n", arg_str);
+                            } else {
+                                fprintf(out, "    movq %s, %%rax\n", arg_str);
+                            }
+                            fprintf(out, "    movq %%rax, %d(%%rsp)\n", i * 8);
+                        }
+                        for (int i = 0; i < reg_args; i++) {
+                            fprintf(out, "    movq %d(%%rsp), %s\n", i * 8, arg_regs[i]);
+                            bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
+                            if (is_float) {
+                                if (inst->operands[i+1]->type->kind == TY_F32) fprintf(out, "    movd %s, %%xmm%d\n", i==0?"%ecx":i==1?"%edx":i==2?"%r8d":"%r9d", i);
+                                else fprintf(out, "    movq %s, %%xmm%d\n", arg_regs[i], i);
+                            }
                         }
                     }
                     // 针对可变参数函数 (如 printf/scribe)，清空 %al

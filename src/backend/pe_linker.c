@@ -1084,7 +1084,13 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                                 int32_t imm = (int32_t)inst->operands[1]->as.int_val;
-                                emit_alu_reg_imm32(&linker->text_section, 7, left, imm); // cmp left, imm
+                                if (imm == 0) {
+                                    emit_rex(&linker->text_section, 1, left > 7, 0, left > 7);
+                                    emit8(&linker->text_section, 0x85); // test left, left
+                                    emit_modrm(&linker->text_section, 3, left & 7, left & 7);
+                                } else {
+                                    emit_alu_reg_imm32(&linker->text_section, 7, left, imm); // cmp left, imm
+                                }
                             } else {
                                 int right_scratch = (left == REG_RCX) ? REG_RDX : REG_RCX;
                                 int right = load_operand(&linker->text_section, &allocator, inst->operands[1], right_scratch, &ctx);
@@ -1241,23 +1247,54 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             
                             // 2. 处理寄存器传递的参数 (i < 4)
                             int reg_args = num_args > 4 ? 4 : num_args;
-                            for (int i = 0; i < reg_args; i++) {
-                                int val = load_operand(&linker->text_section, &allocator, inst->operands[i+1], REG_RAX, &ctx);
-                                emit_rex(&linker->text_section, 1, val > 7, 0, 0);
-                                emit8(&linker->text_section, 0x89); // mov [rsp + i*8], val
-                                emit_mem(&linker->text_section, val, REG_RSP, i * 8);
-                            }
-                            for (int i = 0; i < reg_args; i++) {
-                                emit_rex(&linker->text_section, 1, arg_regs[i] > 7, 0, 0);
-                                emit8(&linker->text_section, 0x8B); // mov arg_regs[i], [rsp + i*8]
-                                emit_mem(&linker->text_section, arg_regs[i] & 7, REG_RSP, i * 8);
-                                
-                                bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
+                            if (reg_args == 1) {
+                                int val = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RAX, &ctx);
+                                if (val != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, val);
+                                bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64));
                                 if (is_float) {
-                                    bool is_f32 = (inst->operands[i+1]->type->kind == TY_F32);
-                                    emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, arg_regs[i] > 7); 
+                                    bool is_f32 = (inst->operands[1]->type->kind == TY_F32);
+                                    emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); 
                                     emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); 
-                                    emit_modrm(&linker->text_section, 3, i, arg_regs[i] & 7);
+                                    emit_modrm(&linker->text_section, 3, 0, REG_RCX);
+                                }
+                            } else if (reg_args == 2) {
+                                int val0 = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RAX, &ctx);
+                                if (val0 == REG_RDX) {
+                                    emit_mov_reg_reg(&linker->text_section, REG_R10, val0);
+                                    val0 = REG_R10;
+                                }
+                                int val1 = load_operand(&linker->text_section, &allocator, inst->operands[2], REG_RAX, &ctx);
+                                if (val0 != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, val0);
+                                if (val1 != REG_RDX) emit_mov_reg_reg(&linker->text_section, REG_RDX, val1);
+                                
+                                for (int i = 0; i < 2; i++) {
+                                    bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
+                                    if (is_float) {
+                                        bool is_f32 = (inst->operands[i+1]->type->kind == TY_F32);
+                                        emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); 
+                                        emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); 
+                                        emit_modrm(&linker->text_section, 3, i, arg_regs[i] & 7);
+                                    }
+                                }
+                            } else {
+                                for (int i = 0; i < reg_args; i++) {
+                                    int val = load_operand(&linker->text_section, &allocator, inst->operands[i+1], REG_RAX, &ctx);
+                                    emit_rex(&linker->text_section, 1, val > 7, 0, 0);
+                                    emit8(&linker->text_section, 0x89); // mov [rsp + i*8], val
+                                    emit_mem(&linker->text_section, val, REG_RSP, i * 8);
+                                }
+                                for (int i = 0; i < reg_args; i++) {
+                                    emit_rex(&linker->text_section, 1, arg_regs[i] > 7, 0, 0);
+                                    emit8(&linker->text_section, 0x8B); // mov arg_regs[i], [rsp + i*8]
+                                    emit_mem(&linker->text_section, arg_regs[i] & 7, REG_RSP, i * 8);
+                                    
+                                    bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
+                                    if (is_float) {
+                                        bool is_f32 = (inst->operands[i+1]->type->kind == TY_F32);
+                                        emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, arg_regs[i] > 7); 
+                                        emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); 
+                                        emit_modrm(&linker->text_section, 3, i, arg_regs[i] & 7);
+                                    }
                                 }
                             }
                             emit_rex(&linker->text_section, 1, 0, 0, 0);
