@@ -1120,4 +1120,7 @@ void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count) {
     ir_build_ret(builder, NULL);
     builder->current_func = prev_func;
     ir_builder_set_insert_point(builder, prev_block);
+
+    // 执行 IR 级优化
+    ir_optimize_module(builder);
 }

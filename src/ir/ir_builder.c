@@ -460,3 +460,110 @@ SirValue* ir_get_param(IrBuilder* builder, int index, ScoriaType* type) {
     inst->dest = create_vreg(builder, type);
     return inst->dest;
 }
+
+// =========================================================
+// IR 优化 (IR Optimization)
+// =========================================================
+
+static bool is_side_effect_free(SirOpcode opcode) {
+    switch (opcode) {
+        case SIR_ADD: case SIR_SUB: case SIR_MUL: case SIR_DIV: case SIR_MOD:
+        case SIR_FADD: case SIR_FSUB: case SIR_FMUL: case SIR_FDIV:
+        case SIR_AND: case SIR_OR: case SIR_XOR: case SIR_SHL: case SIR_SHR:
+        case SIR_ICMP_EQ: case SIR_ICMP_NE: case SIR_ICMP_LT: case SIR_ICMP_LE: case SIR_ICMP_GT: case SIR_ICMP_GE:
+        case SIR_FCMP_EQ: case SIR_FCMP_NE: case SIR_FCMP_LT: case SIR_FCMP_LE: case SIR_FCMP_GT: case SIR_FCMP_GE:
+        case SIR_LOAD: case SIR_GEP: case SIR_CAST: case SIR_GET_PARAM: case SIR_SELECT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+void ir_optimize_module(IrBuilder* builder) {
+    if (!builder || !builder->module) return;
+
+    for (SirFunction* func = builder->module->first_func; func; func = func->next) {
+        bool changed;
+        
+        // 1. 死代码消除 (Dead Code Elimination)
+        do {
+            changed = false;
+            uint32_t* use_counts = (uint32_t*)calloc(builder->next_vreg, sizeof(uint32_t));
+            
+            // 统计使用次数
+            for (SirBlock* block = func->first_block; block; block = block->next) {
+                for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                    for (int i = 0; i < inst->num_operands; i++) {
+                        if (inst->operands[i] && inst->operands[i]->kind == SIR_VAL_VREG) {
+                            use_counts[inst->operands[i]->as.vreg]++;
+                        }
+                    }
+                }
+            }
+            
+            // 移除死指令
+            for (SirBlock* block = func->first_block; block; block = block->next) {
+                SirInst* inst = block->first_inst;
+                while (inst) {
+                    SirInst* next_inst = inst->next;
+                    if (inst->dest && inst->dest->kind == SIR_VAL_VREG && is_side_effect_free(inst->opcode)) {
+                        if (use_counts[inst->dest->as.vreg] == 0) {
+                            // 从链表中移除
+                            if (inst->prev) inst->prev->next = inst->next;
+                            else block->first_inst = inst->next;
+                            
+                            if (inst->next) inst->next->prev = inst->prev;
+                            else block->last_inst = inst->prev;
+                            
+                            changed = true;
+                        }
+                    }
+                    inst = next_inst;
+                }
+            }
+            free(use_counts);
+        } while (changed);
+
+        // 2. 跳转穿透 (Jump Threading) - 消除空跳转块
+        do {
+            changed = false;
+            for (SirBlock* block = func->first_block; block; block = block->next) {
+                // 查找所有指令，更新跳转目标
+                for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                    if (inst->opcode == SIR_JMP) {
+                        SirBlock* target = inst->operands[0]->as.block;
+                        if (target != block && target->first_inst && target->first_inst == target->last_inst && target->first_inst->opcode == SIR_JMP) {
+                            inst->operands[0]->as.block = target->first_inst->operands[0]->as.block;
+                            changed = true;
+                        }
+                    } else if (inst->opcode == SIR_BR) {
+                        SirBlock* t_target = inst->operands[1]->as.block;
+                        if (t_target != block && t_target->first_inst && t_target->first_inst == t_target->last_inst && t_target->first_inst->opcode == SIR_JMP) {
+                            inst->operands[1]->as.block = t_target->first_inst->operands[0]->as.block;
+                            changed = true;
+                        }
+                        SirBlock* f_target = inst->operands[2]->as.block;
+                        if (f_target != block && f_target->first_inst && f_target->first_inst == f_target->last_inst && f_target->first_inst->opcode == SIR_JMP) {
+                            inst->operands[2]->as.block = f_target->first_inst->operands[0]->as.block;
+                            changed = true;
+                        }
+                    } else if (inst->opcode == SIR_SWITCH) {
+                        SirBlock* def_target = inst->operands[1]->as.block;
+                        if (def_target != block && def_target->first_inst && def_target->first_inst == def_target->last_inst && def_target->first_inst->opcode == SIR_JMP) {
+                            inst->operands[1]->as.block = def_target->first_inst->operands[0]->as.block;
+                            changed = true;
+                        }
+                        int case_count = (inst->num_operands - 2) / 2;
+                        for (int i = 0; i < case_count; i++) {
+                            SirBlock* c_target = inst->operands[2 + i * 2 + 1]->as.block;
+                            if (c_target != block && c_target->first_inst && c_target->first_inst == c_target->last_inst && c_target->first_inst->opcode == SIR_JMP) {
+                                inst->operands[2 + i * 2 + 1]->as.block = c_target->first_inst->operands[0]->as.block;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        } while (changed);
+    }
+}

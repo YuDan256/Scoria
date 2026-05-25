@@ -64,4 +64,9 @@ SirValue* ir_build_select(IrBuilder* builder, SirValue* cond, SirValue* true_val
 // 获取函数的第 N 个参数 (作为虚拟寄存器)
 SirValue* ir_get_param(IrBuilder* builder, int index, ScoriaType* type);
 
+// ---------------------------------------------------------
+// IR 优化 API
+// ---------------------------------------------------------
+void ir_optimize_module(IrBuilder* builder);
+
 #endif // SCORIA_IR_BUILDER_H
