@@ -169,6 +169,12 @@ static void emit_mem(PeCodeBuffer* cb, int reg, int base, int32_t offset) {
 }
 
 void emit_mov_reg_imm32(PeCodeBuffer* cb, int reg, int32_t imm) {
+    if (imm == 0) {
+        if (reg > 7) emit_rex(cb, 0, 1, 0, 1);
+        emit8(cb, 0x31); // xor r32, r32 (自动零扩展到 64 位)
+        emit_modrm(cb, 3, reg & 7, reg & 7);
+        return;
+    }
     emit_rex(cb, 1, 0, 0, reg > 7);
     emit8(cb, 0xC7);
     emit_modrm(cb, 3, 0, reg & 7);
@@ -176,6 +182,12 @@ void emit_mov_reg_imm32(PeCodeBuffer* cb, int reg, int32_t imm) {
 }
 
 void emit_mov_reg_imm64(PeCodeBuffer* cb, int reg, uint64_t imm) {
+    if (imm == 0) {
+        if (reg > 7) emit_rex(cb, 0, 1, 0, 1);
+        emit8(cb, 0x31); // xor r32, r32
+        emit_modrm(cb, 3, reg & 7, reg & 7);
+        return;
+    }
     emit_rex(cb, 1, 0, 0, reg > 7);
     emit8(cb, 0xB8 | (reg & 7));
     emit32(cb, (uint32_t)(imm & 0xFFFFFFFF));
@@ -196,6 +208,21 @@ static void emit_alu_reg_reg(PeCodeBuffer* cb, int opc, int dst, int src) {
 
 // opc_ext: 0=ADD, 5=SUB, 7=CMP
 static void emit_alu_reg_imm32(PeCodeBuffer* cb, int opc_ext, int dst, int32_t imm) {
+    if (imm == 0 && (opc_ext == 0 || opc_ext == 5)) return; // add/sub 0 是空操作
+    
+    if (imm == 1 && opc_ext == 0) { // inc
+        emit_rex(cb, 1, 0, 0, dst > 7);
+        emit8(cb, 0xFF);
+        emit_modrm(cb, 3, 0, dst & 7);
+        return;
+    }
+    if (imm == 1 && opc_ext == 5) { // dec
+        emit_rex(cb, 1, 0, 0, dst > 7);
+        emit8(cb, 0xFF);
+        emit_modrm(cb, 3, 1, dst & 7);
+        return;
+    }
+
     emit_rex(cb, 1, 0, 0, dst > 7);
     if (imm >= -128 && imm <= 127) {
         emit8(cb, 0x83);
@@ -816,15 +843,46 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             int left = load_operand(&linker->text_section, &allocator, inst->operands[0], dest_reg, &ctx);
                             if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
                             
-                            if (inst->opcode != SIR_MUL && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
+                            if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                                 int32_t imm = (int32_t)inst->operands[1]->as.int_val;
-                                int opc_ext = 0;
-                                if (inst->opcode == SIR_ADD) opc_ext = 0;
-                                else if (inst->opcode == SIR_SUB) opc_ext = 5;
-                                else if (inst->opcode == SIR_AND) opc_ext = 4;
-                                else if (inst->opcode == SIR_OR) opc_ext = 1;
-                                else if (inst->opcode == SIR_XOR) opc_ext = 6;
-                                emit_alu_reg_imm32(&linker->text_section, opc_ext, dest_reg, imm);
+                                if (inst->opcode == SIR_MUL) {
+                                    if (imm == 0) {
+                                        if (dest_reg > 7) emit_rex(&linker->text_section, 0, 1, 0, 1);
+                                        emit8(&linker->text_section, 0x31); // xor r32, r32
+                                        emit_modrm(&linker->text_section, 3, dest_reg & 7, dest_reg & 7);
+                                    } else if (imm == 1) {
+                                        // no-op
+                                    } else if (imm == 2) {
+                                        emit_alu_reg_reg(&linker->text_section, 0x01, dest_reg, dest_reg); // add dest, dest
+                                    } else if (imm > 0 && (imm & (imm - 1)) == 0) {
+                                        int shift = 0;
+                                        while ((imm >> shift) > 1) shift++;
+                                        emit_rex(&linker->text_section, 1, 0, 0, dest_reg > 7);
+                                        emit8(&linker->text_section, 0xC1); // shl r64, imm8
+                                        emit_modrm(&linker->text_section, 3, 4, dest_reg & 7);
+                                        emit8(&linker->text_section, (uint8_t)shift);
+                                    } else {
+                                        // imul r64, r64, imm32
+                                        emit_rex(&linker->text_section, 1, dest_reg > 7, 0, dest_reg > 7);
+                                        if (imm >= -128 && imm <= 127) {
+                                            emit8(&linker->text_section, 0x6B);
+                                            emit_modrm(&linker->text_section, 3, dest_reg & 7, dest_reg & 7);
+                                            emit8(&linker->text_section, (uint8_t)imm);
+                                        } else {
+                                            emit8(&linker->text_section, 0x69);
+                                            emit_modrm(&linker->text_section, 3, dest_reg & 7, dest_reg & 7);
+                                            emit32(&linker->text_section, (uint32_t)imm);
+                                        }
+                                    }
+                                } else {
+                                    int opc_ext = 0;
+                                    if (inst->opcode == SIR_ADD) opc_ext = 0;
+                                    else if (inst->opcode == SIR_SUB) opc_ext = 5;
+                                    else if (inst->opcode == SIR_AND) opc_ext = 4;
+                                    else if (inst->opcode == SIR_OR) opc_ext = 1;
+                                    else if (inst->opcode == SIR_XOR) opc_ext = 6;
+                                    emit_alu_reg_imm32(&linker->text_section, opc_ext, dest_reg, imm);
+                                }
                             } else {
                                 int right_scratch = (dest_reg == REG_RCX) ? REG_RDX : REG_RCX;
                                 int right = load_operand(&linker->text_section, &allocator, inst->operands[1], right_scratch, &ctx);
@@ -958,30 +1016,57 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             break;
                         }
                         case SIR_GEP: {
-                            int ptr = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                            if (ptr != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, ptr);
+                            int dest_reg = REG_RAX;
+                            if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
+                                int c = reg_alloc_get_color(&allocator, inst->dest->as.vreg);
+                                if (c != -1) dest_reg = get_phys_reg(c);
+                            }
+
+                            int ptr = load_operand(&linker->text_section, &allocator, inst->operands[0], dest_reg, &ctx);
+                            if (ptr != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, ptr);
                             
                             int element_size = (int)inst->operands[2]->as.int_val;
 
                             if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                                 int32_t offset = (int32_t)(inst->operands[1]->as.int_val * element_size);
-                                if (offset != 0) emit_alu_reg_imm32(&linker->text_section, 0, REG_RAX, offset);
+                                if (offset != 0) emit_alu_reg_imm32(&linker->text_section, 0, dest_reg, offset);
                             } else {
-                                int idx = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
-                                if (idx != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, idx);
+                                int idx_scratch = (dest_reg == REG_RCX) ? REG_RDX : REG_RCX;
+                                int idx = load_operand(&linker->text_section, &allocator, inst->operands[1], idx_scratch, &ctx);
                                 
-                                if (element_size > 1) {
-                                    // imul rcx, element_size
-                                    emit_rex(&linker->text_section, 1, 0, 0, 0);
-                                    emit8(&linker->text_section, 0x69);
-                                    emit_modrm(&linker->text_section, 3, REG_RCX, REG_RCX);
-                                    emit32(&linker->text_section, element_size);
+                                if (element_size == 1) {
+                                    emit_alu_reg_reg(&linker->text_section, 0x01, dest_reg, idx);
+                                } else if ((element_size == 2 || element_size == 4 || element_size == 8) && (idx & 7) != 4) {
+                                    // lea dest, [dest + idx * scale] (利用 SIB 寻址优化)
+                                    int scale = (element_size == 2) ? 1 : (element_size == 4) ? 2 : 3;
+                                    emit_rex(&linker->text_section, 1, dest_reg > 7, idx > 7, dest_reg > 7);
+                                    emit8(&linker->text_section, 0x8D);
+                                    int b = dest_reg & 7;
+                                    if (b == 5) {
+                                        emit_modrm(&linker->text_section, 1, dest_reg & 7, 4);
+                                        emit_sib(&linker->text_section, scale, idx & 7, b);
+                                        emit8(&linker->text_section, 0);
+                                    } else {
+                                        emit_modrm(&linker->text_section, 0, dest_reg & 7, 4);
+                                        emit_sib(&linker->text_section, scale, idx & 7, b);
+                                    }
+                                } else {
+                                    if (idx != idx_scratch) emit_mov_reg_reg(&linker->text_section, idx_scratch, idx);
+                                    // imul idx_scratch, element_size
+                                    emit_rex(&linker->text_section, 1, idx_scratch > 7, 0, idx_scratch > 7);
+                                    if (element_size >= -128 && element_size <= 127) {
+                                        emit8(&linker->text_section, 0x6B);
+                                        emit_modrm(&linker->text_section, 3, idx_scratch & 7, idx_scratch & 7);
+                                        emit8(&linker->text_section, (uint8_t)element_size);
+                                    } else {
+                                        emit8(&linker->text_section, 0x69);
+                                        emit_modrm(&linker->text_section, 3, idx_scratch & 7, idx_scratch & 7);
+                                        emit32(&linker->text_section, element_size);
+                                    }
+                                    emit_alu_reg_reg(&linker->text_section, 0x01, dest_reg, idx_scratch);
                                 }
-                                
-                                // add rax, rcx
-                                emit_alu_reg_reg(&linker->text_section, 0x01, REG_RAX, REG_RCX);
                             }
-                            store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
+                            store_result(&linker->text_section, &allocator, inst->dest, dest_reg);
                             break;
                         }
                         case SIR_ICMP_LT:
@@ -1247,7 +1332,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         }
                         case SIR_BR: {
                             int cond = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                            emit_alu_reg_imm32(&linker->text_section, 7, cond, 0); // cmp cond, 0
+                            emit_rex(&linker->text_section, 1, cond > 7, 0, cond > 7);
+                            emit8(&linker->text_section, 0x85); // test cond, cond
+                            emit_modrm(&linker->text_section, 3, cond & 7, cond & 7);
                             
                             uint32_t t_id = inst->operands[1]->as.block->id;
                             uint32_t t_off = t_id < 1024 ? block_offsets[t_id] : 0;

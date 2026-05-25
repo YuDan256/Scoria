@@ -293,7 +293,11 @@ static void generate_function(FILE* out, SirFunction* func) {
                     bool dest_is_mem = (dest[0] != '%');
                     const char* acc = dest_is_mem ? "%rax" : dest;
                     if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
-                    fprintf(out, "    addq %s, %s\n", op1, acc);
+                    if (strcmp(op1, "$1") == 0) {
+                        fprintf(out, "    incq %s\n", acc);
+                    } else if (strcmp(op1, "$0") != 0) {
+                        fprintf(out, "    addq %s, %s\n", op1, acc);
+                    }
                     if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
                 }
@@ -302,7 +306,11 @@ static void generate_function(FILE* out, SirFunction* func) {
                     bool dest_is_mem = (dest[0] != '%');
                     const char* acc = dest_is_mem ? "%rax" : dest;
                     if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
-                    fprintf(out, "    subq %s, %s\n", op1, acc);
+                    if (strcmp(op1, "$1") == 0) {
+                        fprintf(out, "    decq %s\n", acc);
+                    } else if (strcmp(op1, "$0") != 0) {
+                        fprintf(out, "    subq %s, %s\n", op1, acc);
+                    }
                     if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
                 }
@@ -311,7 +319,26 @@ static void generate_function(FILE* out, SirFunction* func) {
                     bool dest_is_mem = (dest[0] != '%');
                     const char* acc = dest_is_mem ? "%rax" : dest;
                     if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
-                    fprintf(out, "    imulq %s, %s\n", op1, acc);
+                    
+                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
+                        int64_t imm = inst->operands[1]->as.int_val;
+                        if (imm == 0) {
+                            fprintf(out, "    xorq %s, %s\n", acc, acc);
+                        } else if (imm == 1) {
+                            // no-op
+                        } else if (imm == 2) {
+                            fprintf(out, "    addq %s, %s\n", acc, acc);
+                        } else if (imm > 0 && (imm & (imm - 1)) == 0) {
+                            int shift = 0;
+                            while ((imm >> shift) > 1) shift++;
+                            fprintf(out, "    shlq $%d, %s\n", shift, acc);
+                        } else {
+                            fprintf(out, "    imulq %s, %s\n", op1, acc);
+                        }
+                    } else {
+                        fprintf(out, "    imulq %s, %s\n", op1, acc);
+                    }
+                    
                     if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
                 }
@@ -350,7 +377,11 @@ static void generate_function(FILE* out, SirFunction* func) {
 
                 case SIR_BR:
                     // br cond(op0), true_block(op1), false_block(op2)
-                    fprintf(out, "    cmpq $0, %s\n", op0);
+                    if (op0[0] == '%') {
+                        fprintf(out, "    testq %s, %s\n", op0, op0);
+                    } else {
+                        fprintf(out, "    cmpq $0, %s\n", op0);
+                    }
                     fprintf(out, "    jne .L%s_%u\n", inst->operands[1]->as.block->name, inst->operands[1]->as.block->id);
                     fprintf(out, "    jmp .L%s_%u\n", inst->operands[2]->as.block->name, inst->operands[2]->as.block->id);
                     break;
@@ -459,19 +490,28 @@ static void generate_function(FILE* out, SirFunction* func) {
 
                 case SIR_GEP: {
                     int element_size = (int)inst->operands[2]->as.int_val;
-                    fprintf(out, "    movq %s, %%rax\n", op0);
+                    bool dest_is_mem = (dest[0] != '%');
+                    const char* acc = dest_is_mem ? "%rax" : dest;
+                    
+                    if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
+                    
                     if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
-                        if (inst->operands[1]->as.int_val != 0) {
-                            fprintf(out, "    addq $%lld, %%rax\n", (long long)(inst->operands[1]->as.int_val * element_size));
+                        int64_t offset = inst->operands[1]->as.int_val * element_size;
+                        if (offset != 0) {
+                            fprintf(out, "    addq $%lld, %s\n", (long long)offset, acc);
                         }
                     } else {
-                        fprintf(out, "    movq %s, %%rcx\n", op1);
-                        if (element_size > 1) {
+                        if (element_size == 1) {
+                            fprintf(out, "    addq %s, %s\n", op1, acc);
+                        } else if ((element_size == 2 || element_size == 4 || element_size == 8) && op1[0] == '%') {
+                            fprintf(out, "    leaq (%s, %s, %d), %s\n", acc, op1, element_size, acc);
+                        } else {
+                            fprintf(out, "    movq %s, %%rcx\n", op1);
                             fprintf(out, "    imulq $%d, %%rcx\n", element_size);
+                            fprintf(out, "    addq %%rcx, %s\n", acc);
                         }
-                        fprintf(out, "    addq %%rcx, %%rax\n");
                     }
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                    if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
                 }
 
