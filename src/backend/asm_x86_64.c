@@ -1191,44 +1191,12 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                         break;
                     }
 
-                    bool inline_fast_path = false;
-                    SirFunction* target_func = NULL;
-                    if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
-                        for (SirFunction* f = module->first_func; f; f = f->next) {
-                            if (strcmp(f->name, inst->operands[0]->as.global_name) == 0) {
-                                target_func = f;
-                                break;
-                            }
-                        }
-                        if (target_func && target_func->has_fast_path) {
-                            inline_fast_path = true;
-                        }
-                    }
-
-                    if (inline_fast_path) {
-                        const char* cx = target_func->fp_w ? "%rcx" : "%ecx";
-                        const char* ax = target_func->fp_w ? "%rax" : "%eax";
-                        const char* cmp_op = target_func->fp_w ? "cmpq" : "cmpl";
-                        const char* mov_op = target_func->fp_w ? "movq" : "movl";
-                        
-                        fprintf(out, "    # Inline Fast Path\n");
-                        fprintf(out, "    %s $%d, %s\n", cmp_op, target_func->fp_imm, cx);
-                        fprintf(out, "    %s .Ldo_call_%p\n", target_func->fp_jcc_asm, (void*)inst);
-                        fprintf(out, "    %s %s, %s\n", mov_op, cx, ax);
-                        fprintf(out, "    jmp .Lafter_call_%p\n", (void*)inst);
-                        fprintf(out, ".Ldo_call_%p:\n", (void*)inst);
-                    }
-
                     if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
                         fprintf(out, "    call %s\n", inst->operands[0]->as.global_name);
                     } else {
                         char callee_str[64];
                         get_operand_str(callee_str, inst->operands[0], &allocator, 8, total_frame_size);
                         fprintf(out, "    call *%s\n", callee_str);
-                    }
-
-                    if (inline_fast_path) {
-                        fprintf(out, ".Lafter_call_%p:\n", (void*)inst);
                     }
                     
                     if (inst->dest) {

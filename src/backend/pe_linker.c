@@ -612,7 +612,12 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                 emit_mov_reg_reg_w(&linker->text_section, func->fp_w, REG_RAX, REG_RCX);
                 // ret
                 emit8(&linker->text_section, 0xC3);
-                
+                    
+                // 优化: 将慢路径 (Prologue) 对齐到 16 字节，提升分支目标获取效率
+                while (linker->text_section.size % 16 != 0) {
+                    emit8(&linker->text_section, 0x90); // nop
+                }
+                    
                 // 回填 short jcc
                 int8_t rel_slow = (int8_t)(linker->text_section.size - (jmp_slow_off + 1));
                 linker->text_section.buffer[jmp_slow_off] = (uint8_t)rel_slow;
@@ -1835,47 +1840,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 break;
                             }
 
-                            bool inline_fast_path = false;
-                            SirFunction* target_func = NULL;
-                            if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
-                                for (SirFunction* f = module->first_func; f; f = f->next) {
-                                    if (strcmp(f->name, inst->operands[0]->as.global_name) == 0) {
-                                        target_func = f;
-                                        break;
-                                    }
-                                }
-                                if (target_func && target_func->has_fast_path) {
-                                    inline_fast_path = true;
-                                }
-                            }
-
-                            uint32_t jmp_do_call_off = 0;
-                            uint32_t jmp_after_call_off = 0;
-
-                            if (inline_fast_path) {
-                                // 极速优化：调用点快路径内联 (Partial Inlining)
-                                // cmp rcx/ecx, imm
-                                emit_alu_reg_imm32(&linker->text_section, target_func->fp_w, 7, REG_RCX, target_func->fp_imm);
-                                
-                                // jcc_slow .Ldo_call (short jump)
-                                uint8_t short_jcc = target_func->fp_jcc_pe - 0x10;
-                                emit8(&linker->text_section, short_jcc);
-                                jmp_do_call_off = (uint32_t)linker->text_section.size;
-                                emit8(&linker->text_section, 0); // 占位符
-                                
-                                // mov rax/eax, rcx/ecx
-                                emit_mov_reg_reg_w(&linker->text_section, target_func->fp_w, REG_RAX, REG_RCX);
-                                
-                                // jmp .Lafter_call (short jump)
-                                emit8(&linker->text_section, 0xEB);
-                                jmp_after_call_off = (uint32_t)linker->text_section.size;
-                                emit8(&linker->text_section, 0); // 占位符
-                                
-                                // .Ldo_call:
-                                int8_t rel_do_call = (int8_t)(linker->text_section.size - (jmp_do_call_off + 1));
-                                linker->text_section.buffer[jmp_do_call_off] = (uint8_t)rel_do_call;
-                            }
-
                             if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
                                 if (is_extern) {
                                     emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15); // call [rip + rel32]
@@ -1901,12 +1865,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 emit_rex(&linker->text_section, 1, 0, 0, callee_reg > 7);
                                 emit8(&linker->text_section, 0xFF);
                                 emit_modrm(&linker->text_section, 3, 2, callee_reg & 7); // call r/m64
-                            }
-
-                            if (inline_fast_path) {
-                                // .Lafter_call:
-                                int8_t rel_after_call = (int8_t)(linker->text_section.size - (jmp_after_call_off + 1));
-                                linker->text_section.buffer[jmp_after_call_off] = (uint8_t)rel_after_call;
                             }
                             
                             if (inst->dest) {
