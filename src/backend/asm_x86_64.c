@@ -91,7 +91,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
 
     // 1. 扫描函数，找到最大的虚拟寄存器 ID 和 ALLOCA 空间
     uint32_t max_vreg = 0;
-    int local_stack_size = 56; // 56字节给7个callee-saved
+    int local_stack_size = 0;
     int max_call_args = 0;
     bool has_call = false;
     int* alloca_offsets = calloc(10000, sizeof(int));
@@ -158,10 +158,6 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
     char op0[64], op1[64], op2[64], dest[64];
     
     for (SirBlock* block = func->first_block; block; block = block->next) {
-        // 优化: 循环头部 16 字节对齐
-        if (strncmp(block->name, "dum.cond", 8) == 0 || strncmp(block->name, "per.cond", 8) == 0) {
-            fprintf(out, "    .p2align 4\n");
-        }
         fprintf(out, ".L%s_%u:\n", block->name, block->id);
         
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {

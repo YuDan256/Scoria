@@ -594,7 +594,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             }
 
             uint32_t max_vreg = 0;
-            int local_stack_size = 56; // 56字节给7个callee-saved
+            int local_stack_size = 0;
             int max_call_args = 0;
             bool has_call = false;
             int* alloca_offsets = calloc(10000, sizeof(int));
@@ -661,12 +661,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             }
 
             for (SirBlock* block = func->first_block; block; block = block->next) {
-                // 优化: 循环头部 16 字节对齐 (提升分支预测和取指效率)
-                if (strncmp(block->name, "dum.cond", 8) == 0 || strncmp(block->name, "per.cond", 8) == 0) {
-                    while (linker->text_section.size % 16 != 0) {
-                        emit8(&linker->text_section, 0x90); // nop
-                    }
-                }
                 if (block->id < 1024) block_offsets[block->id] = (uint32_t)linker->text_section.size;
 
                 for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
@@ -1002,7 +996,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                         }
                                     }
                                 } else {
-                                    if (inst->opcode == SIR_ADD && left != dest_reg && right != dest_reg) {
+                                    if (inst->opcode == SIR_ADD && left != dest_reg && right != dest_reg && (left & 7) != 4 && (right & 7) != 4) {
                                         // 优化: lea dest, [left + right]
                                         emit_rex(&linker->text_section, w, dest_reg > 7, right > 7, left > 7);
                                         emit8(&linker->text_section, 0x8D); // lea
@@ -1014,6 +1008,19 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                         } else {
                                             emit_modrm(&linker->text_section, 0, dest_reg & 7, 4);
                                             emit_sib(&linker->text_section, 0, right & 7, b);
+                                        }
+                                    } else if (inst->opcode == SIR_ADD && left != dest_reg && right != dest_reg && (left & 7) == 4 && (right & 7) != 4) {
+                                        // 交换 left 和 right 避免 SIB index 为 4 (rsp/r12) 被截断
+                                        emit_rex(&linker->text_section, w, dest_reg > 7, left > 7, right > 7);
+                                        emit8(&linker->text_section, 0x8D); // lea
+                                        int b = right & 7;
+                                        if (b == 5) {
+                                            emit_modrm(&linker->text_section, 1, dest_reg & 7, 4);
+                                            emit_sib(&linker->text_section, 0, left & 7, b);
+                                            emit8(&linker->text_section, 0);
+                                        } else {
+                                            emit_modrm(&linker->text_section, 0, dest_reg & 7, 4);
+                                            emit_sib(&linker->text_section, 0, left & 7, b);
                                         }
                                     } else {
                                         if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
@@ -1311,19 +1318,20 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             int left_scratch = (right_phys == REG_RAX) ? REG_RCX : REG_RAX;
                             int left = load_operand(&linker->text_section, &allocator, inst->operands[0], left_scratch, &ctx);
                             
+                            int w = (inst->operands[0]->type && type_get_size(inst->operands[0]->type) <= 4) ? 0 : 1;
                             if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                                 int32_t imm = (int32_t)inst->operands[1]->as.int_val;
                                 if (imm == 0) {
-                                    emit_rex(&linker->text_section, 1, left > 7, 0, left > 7);
+                                    emit_rex(&linker->text_section, w, left > 7, 0, left > 7);
                                     emit8(&linker->text_section, 0x85); // test left, left
                                     emit_modrm(&linker->text_section, 3, left & 7, left & 7);
                                 } else {
-                                    emit_alu_reg_imm32(&linker->text_section, 1, 7, left, imm); // cmp left, imm
+                                    emit_alu_reg_imm32(&linker->text_section, w, 7, left, imm); // cmp left, imm
                                 }
                             } else {
                                 int right_scratch = (left == REG_RCX) ? REG_RDX : REG_RCX;
                                 int right = load_operand(&linker->text_section, &allocator, inst->operands[1], right_scratch, &ctx);
-                                emit_rex(&linker->text_section, 1, right > 7, 0, left > 7);
+                                emit_rex(&linker->text_section, w, right > 7, 0, left > 7);
                                 emit8(&linker->text_section, 0x39); // cmp left, right
                                 emit_modrm(&linker->text_section, 3, right & 7, left & 7);
                             }
@@ -1757,7 +1765,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         }
                         case SIR_BR: {
                             int cond = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                            emit_rex(&linker->text_section, 1, cond > 7, 0, cond > 7);
+                            emit_rex(&linker->text_section, 0, cond > 7, 0, cond > 7);
                             emit8(&linker->text_section, 0x85); // test cond, cond
                             emit_modrm(&linker->text_section, 3, cond & 7, cond & 7);
                             
