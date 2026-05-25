@@ -40,17 +40,6 @@ static char* read_file(const char* path) {
 }
 
 int main(int argc, char** argv) {
-    char* debug_argv[] = {
-        "scoria",                            // argv[0]: 程序本身的假名字
-        "D:/VS2022/Scoria/tests/omnis.sco",  // argv[1]: 绝对路径以防万一
-        "-o", "omnis.exe",                   // argv[2], argv[3]
-        "--emitte-asm",                      // argv[4]
-        "-O1",                               // argv[5]
-        "--verbosus"                         // argv[6]
-    };
-    argc = 7;           // 强制设置参数数量
-    argv = debug_argv;  // 强制替换参数向量
-
     logger_init();
 
     const char* source_paths[64];

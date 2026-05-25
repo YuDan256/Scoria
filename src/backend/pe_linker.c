@@ -686,6 +686,13 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
             allocator.current_offset = local_stack_size;
             reg_alloc_build_and_color(&allocator, func, opt_level);
 
+            // 预留栈空间：只为被溢出 (Spilled) 的虚拟寄存器分配栈内存
+            for (uint32_t i = 1; i <= max_vreg; i++) {
+                if (reg_alloc_get_color(&allocator, i) == -1) {
+                    reg_alloc_get_offset(&allocator, i, 8); // 强制分配 8 字节偏移量
+                }
+            }
+
             bool has_extern_call = false;
             for (SirBlock* block = func->first_block; block; block = block->next) {
                 for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
@@ -1002,7 +1009,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 if (c != -1) dest_reg = get_phys_reg(c);
                                 if (inst->dest->type && type_get_size(inst->dest->type) <= 4) w = 0;
                                 
-                                if (inst->next && (allocator.use_count[inst->dest->as.vreg] == 2 || inst->next->opcode == SIR_RET)) {
+                                if (opt_level > 0 && inst->next && (allocator.use_count[inst->dest->as.vreg] == 2 || inst->next->opcode == SIR_RET)) {
                                     if (inst->next->opcode == SIR_RET && inst->next->num_operands > 0 && inst->next->operands[0] == inst->dest) {
                                         dest_reg = REG_RAX;
                                         is_ret_peephole = true;
@@ -1019,7 +1026,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                             
                             int left = REG_RAX;
                             bool left_already_in_rax = false;
-                            if (inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[0]) {
+                            if (opt_level > 0 && inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[0]) {
                                 if (inst->operands[0]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[0]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
                                     left_already_in_rax = true;
                                 }
@@ -1095,7 +1102,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                             } else {
                                 int right = REG_RAX;
                                 bool right_already_in_rax = false;
-                                if (inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[1]) {
+                                if (opt_level > 0 && inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[1]) {
                                     if (inst->operands[1]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[1]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
                                         right_already_in_rax = true;
                                     }
@@ -1736,7 +1743,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                             int reg_args = num_args > 4 ? 4 : num_args;
                             if (reg_args == 1) {
                                 bool already_in_rcx = false;
-                                if (inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[1]) {
+                                if (opt_level > 0 && inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[1]) {
                                     if (inst->operands[1]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[1]->as.vreg] == 2) {
                                         already_in_rcx = true;
                                     }
@@ -1904,7 +1911,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                     emit_modrm(&linker->text_section, 3, 0, REG_RAX);
                                 }
                                 bool skip_store = false;
-                                if (!ret_is_float && inst->next && (inst->next->opcode == SIR_ADD || inst->next->opcode == SIR_SUB || inst->next->opcode == SIR_MUL || inst->next->opcode == SIR_AND || inst->next->opcode == SIR_OR || inst->next->opcode == SIR_XOR)) {
+                                if (opt_level > 0 && !ret_is_float && inst->next && (inst->next->opcode == SIR_ADD || inst->next->opcode == SIR_SUB || inst->next->opcode == SIR_MUL || inst->next->opcode == SIR_AND || inst->next->opcode == SIR_OR || inst->next->opcode == SIR_XOR)) {
                                     if (inst->next->operands[0] == inst->dest || inst->next->operands[1] == inst->dest) {
                                         if (allocator.use_count[inst->dest->as.vreg] == 2 || (inst->next->next && inst->next->next->opcode == SIR_RET)) {
                                             skip_store = true;
@@ -2053,7 +2060,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                         case SIR_RET: {
                             if (inst->num_operands > 0) {
                                 bool already_in_rax = false;
-                                if (inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[0]) {
+                                if (opt_level > 0 && inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[0]) {
                                     if (inst->operands[0]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[0]->as.vreg] == 2 || true)) {
                                         already_in_rax = true;
                                     }
