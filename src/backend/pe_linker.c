@@ -177,10 +177,18 @@ void emit_mov_reg_imm32(PeCodeBuffer* cb, int reg, int32_t imm) {
         emit_modrm(cb, 3, reg & 7, reg & 7);
         return;
     }
-    emit_rex(cb, 1, 0, 0, reg > 7);
-    emit8(cb, 0xC7);
-    emit_modrm(cb, 3, 0, reg & 7);
-    emit32(cb, (uint32_t)imm);
+    if (imm > 0) {
+        // 优化: mov r32, imm32 (自动零扩展到 64 位，省去 REX 前缀，指令更短)
+        if (reg > 7) emit_rex(cb, 0, 0, 0, 1);
+        emit8(cb, 0xB8 | (reg & 7));
+        emit32(cb, (uint32_t)imm);
+    } else {
+        // mov r64, imm32 (符号扩展)
+        emit_rex(cb, 1, 0, 0, reg > 7);
+        emit8(cb, 0xC7);
+        emit_modrm(cb, 3, 0, reg & 7);
+        emit32(cb, (uint32_t)imm);
+    }
 }
 
 void emit_mov_reg_imm64(PeCodeBuffer* cb, int reg, uint64_t imm) {
@@ -573,6 +581,10 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
 
         int current_func_idx = 0;
         for (SirFunction* func = module->first_func; func; func = func->next) {
+            // 优化: 函数入口 16 字节对齐 (提升 I-Cache 命中率)
+            while (linker->text_section.size % 16 != 0) {
+                emit8(&linker->text_section, 0x90); // nop
+            }
             func_offsets[current_func_idx++] = (uint32_t)linker->text_section.size;
 
             if (strcmp(func->name, "princeps") == 0) {
@@ -637,12 +649,24 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             int stack_sub_size = total_frame_size - (num_callee_pushes * 8);
             if (stack_sub_size > 0) {
                 emit_rex(&linker->text_section, 1, 0, 0, 0);
-                emit8(&linker->text_section, 0x81); // sub rsp, imm32
-                emit_modrm(&linker->text_section, 3, 5, REG_RSP);
-                emit32(&linker->text_section, (uint32_t)stack_sub_size);
+                if (stack_sub_size <= 127) {
+                    emit8(&linker->text_section, 0x83); // 优化: sub rsp, imm8
+                    emit_modrm(&linker->text_section, 3, 5, REG_RSP);
+                    emit8(&linker->text_section, (uint8_t)stack_sub_size);
+                } else {
+                    emit8(&linker->text_section, 0x81); // sub rsp, imm32
+                    emit_modrm(&linker->text_section, 3, 5, REG_RSP);
+                    emit32(&linker->text_section, (uint32_t)stack_sub_size);
+                }
             }
 
             for (SirBlock* block = func->first_block; block; block = block->next) {
+                // 优化: 循环头部 16 字节对齐 (提升分支预测和取指效率)
+                if (strncmp(block->name, "dum.cond", 8) == 0 || strncmp(block->name, "per.cond", 8) == 0) {
+                    while (linker->text_section.size % 16 != 0) {
+                        emit8(&linker->text_section, 0x90); // nop
+                    }
+                }
                 if (block->id < 1024) block_offsets[block->id] = (uint32_t)linker->text_section.size;
 
                 for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
@@ -1649,9 +1673,15 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 // 尾调用优化：提前执行 Epilogue
                                 if (stack_sub_size > 0) {
                                     emit_rex(&linker->text_section, 1, 0, 0, 0);
-                                    emit8(&linker->text_section, 0x81);
-                                    emit_modrm(&linker->text_section, 3, 0, REG_RSP);
-                                    emit32(&linker->text_section, (uint32_t)stack_sub_size);
+                                    if (stack_sub_size <= 127) {
+                                        emit8(&linker->text_section, 0x83);
+                                        emit_modrm(&linker->text_section, 3, 0, REG_RSP);
+                                        emit8(&linker->text_section, (uint8_t)stack_sub_size);
+                                    } else {
+                                        emit8(&linker->text_section, 0x81);
+                                        emit_modrm(&linker->text_section, 3, 0, REG_RSP);
+                                        emit32(&linker->text_section, (uint32_t)stack_sub_size);
+                                    }
                                 }
                                 if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5F); }
                                 if (allocator.used_callee_saved[5]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5E); }
@@ -1875,9 +1905,15 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             // 跋 (Epilogue)
                             if (stack_sub_size > 0) {
                                 emit_rex(&linker->text_section, 1, 0, 0, 0);
-                                emit8(&linker->text_section, 0x81); // add rsp, imm32
-                                emit_modrm(&linker->text_section, 3, 0, REG_RSP);
-                                emit32(&linker->text_section, (uint32_t)stack_sub_size);
+                                if (stack_sub_size <= 127) {
+                                    emit8(&linker->text_section, 0x83); // 优化: add rsp, imm8
+                                    emit_modrm(&linker->text_section, 3, 0, REG_RSP);
+                                    emit8(&linker->text_section, (uint8_t)stack_sub_size);
+                                } else {
+                                    emit8(&linker->text_section, 0x81); // add rsp, imm32
+                                    emit_modrm(&linker->text_section, 3, 0, REG_RSP);
+                                    emit32(&linker->text_section, (uint32_t)stack_sub_size);
+                                }
                             }
                             
                             if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5F); } // pop r15

@@ -83,7 +83,8 @@ static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int s
     }
 }
 
-static void generate_function(FILE* out, SirFunction* func) {
+static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
+    fprintf(out, "    .p2align 4\n"); // 优化: 函数入口 16 字节对齐
     fprintf(out, "    .globl %s\n", func->name);
     fprintf(out, "    .type %s, @function\n", func->name);
     fprintf(out, "%s:\n", func->name);
@@ -157,6 +158,10 @@ static void generate_function(FILE* out, SirFunction* func) {
     char op0[64], op1[64], op2[64], dest[64];
     
     for (SirBlock* block = func->first_block; block; block = block->next) {
+        // 优化: 循环头部 16 字节对齐
+        if (strncmp(block->name, "dum.cond", 8) == 0 || strncmp(block->name, "per.cond", 8) == 0) {
+            fprintf(out, "    .p2align 4\n");
+        }
         fprintf(out, ".L%s_%u:\n", block->name, block->id);
         
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
@@ -986,8 +991,19 @@ static void generate_function(FILE* out, SirFunction* func) {
                             }
                         }
                     }
-                    // 针对可变参数函数 (如 printf/scribe)，清空 %al
-                    fprintf(out, "    xorq %%rax, %%rax\n");
+                    bool is_extern = false;
+                    if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                        for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) {
+                            if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
+                                is_extern = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (is_extern) {
+                        // 针对可变参数函数 (如 printf/scribe)，清空 %al
+                        fprintf(out, "    xorq %%rax, %%rax\n");
+                    }
                     
                     if (is_tail_call) {
                         fprintf(out, "    # Tail Call Optimization\n");
@@ -1080,7 +1096,7 @@ void asm_x86_64_generate(FILE* out, SirModule* module) {
 
     // 遍历生成所有函数
     for (SirFunction* func = module->first_func; func; func = func->next) {
-        generate_function(out, func);
+        generate_function(out, func, module);
     }
 
     // 追加内置汇编例程
