@@ -631,10 +631,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
 
             int call_stack_space = max_call_args > 4 ? (max_call_args - 4) * 8 : 0;
             int shadow_space = has_call ? 32 : 0;
-            int total_frame_size = allocator.current_offset + shadow_space + call_stack_space; // 预留 Shadow Space 和溢出参数空间
-            total_frame_size = (total_frame_size + 15) & ~15; // 保持 16 字节对齐
-            total_frame_size += 8; // 保证 call 前 rsp 16 字节对齐
-            ctx.frame_size = total_frame_size;
+            int local_and_args = allocator.current_offset + shadow_space + call_stack_space;
 
             // 序言 (Prologue)
             int num_callee_pushes = 0;
@@ -646,7 +643,12 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             if (allocator.used_callee_saved[5]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x56); num_callee_pushes++; } // push r14
             if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x57); num_callee_pushes++; } // push r15
 
-            int stack_sub_size = total_frame_size - (num_callee_pushes * 8);
+            int stack_sub_size = local_and_args;
+            if ((stack_sub_size + num_callee_pushes * 8 + 8) % 16 != 0) {
+                stack_sub_size += 8;
+            }
+            int total_frame_size = stack_sub_size + num_callee_pushes * 8;
+            ctx.frame_size = total_frame_size;
             if (stack_sub_size > 0) {
                 emit_rex(&linker->text_section, 1, 0, 0, 0);
                 if (stack_sub_size <= 127) {

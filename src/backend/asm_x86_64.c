@@ -135,9 +135,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
     
     int call_stack_space = max_call_args > 4 ? (max_call_args - 4) * 8 : 0;
     int shadow_space = has_call ? 32 : 0;
-    int total_frame_size = allocator.current_offset + shadow_space + call_stack_space;
-    total_frame_size = (total_frame_size + 15) & ~15;
-    total_frame_size += 8; // 保证 call 前 rsp 16 字节对齐
+    int local_and_args = allocator.current_offset + shadow_space + call_stack_space;
 
     // 2. 函数序言 (Prologue)
     int num_callee_pushes = 0;
@@ -149,7 +147,11 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
     if (allocator.used_callee_saved[5]) { fprintf(out, "    pushq %%r14\n"); num_callee_pushes++; }
     if (allocator.used_callee_saved[6]) { fprintf(out, "    pushq %%r15\n"); num_callee_pushes++; }
 
-    int stack_sub_size = total_frame_size - (num_callee_pushes * 8);
+    int stack_sub_size = local_and_args;
+    if ((stack_sub_size + num_callee_pushes * 8 + 8) % 16 != 0) {
+        stack_sub_size += 8;
+    }
+    int total_frame_size = stack_sub_size + num_callee_pushes * 8;
     if (stack_sub_size > 0) {
         fprintf(out, "    subq $%d, %%rsp\n", stack_sub_size);
     }
