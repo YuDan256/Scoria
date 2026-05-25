@@ -272,89 +272,6 @@ typedef struct {
     int frame_size;
 } LinkCtx;
 
-static void prune_dead_blocks(SirFunction* func, SirBlock* new_entry) {
-    if (!func->first_block) return;
-    
-    uint32_t max_block_id = 0;
-    for (SirBlock* b = func->first_block; b; b = b->next) {
-        if (b->id > max_block_id) max_block_id = b->id;
-    }
-    
-    bool* reachable = (bool*)calloc(max_block_id + 1, sizeof(bool));
-    SirBlock** stack = (SirBlock**)malloc(sizeof(SirBlock*) * (max_block_id + 1));
-    if (!reachable || !stack) {
-        if (reachable) free(reachable);
-        if (stack) free(stack);
-        return;
-    }
-    int top = 0;
-    
-    SirBlock* entry = new_entry ? new_entry : func->first_block;
-    reachable[entry->id] = true;
-    stack[top++] = entry;
-    
-    while (top > 0) {
-        SirBlock* b = stack[--top];
-        if (!b->last_inst) continue;
-        
-        if (b->last_inst->opcode == SIR_JMP) {
-            SirBlock* target = b->last_inst->operands[0]->as.block;
-            if (!reachable[target->id]) {
-                reachable[target->id] = true;
-                stack[top++] = target;
-            }
-        } else if (b->last_inst->opcode == SIR_BR) {
-            SirBlock* t_target = b->last_inst->operands[1]->as.block;
-            SirBlock* f_target = b->last_inst->operands[2]->as.block;
-            if (!reachable[t_target->id]) {
-                reachable[t_target->id] = true;
-                stack[top++] = t_target;
-            }
-            if (!reachable[f_target->id]) {
-                reachable[f_target->id] = true;
-                stack[top++] = f_target;
-            }
-        } else if (b->last_inst->opcode == SIR_SWITCH) {
-            SirBlock* def_target = b->last_inst->operands[1]->as.block;
-            if (!reachable[def_target->id]) {
-                reachable[def_target->id] = true;
-                stack[top++] = def_target;
-            }
-            int case_count = (b->last_inst->num_operands - 2) / 2;
-            for (int i = 0; i < case_count; i++) {
-                SirBlock* c_target = b->last_inst->operands[2 + i * 2 + 1]->as.block;
-                if (!reachable[c_target->id]) {
-                    reachable[c_target->id] = true;
-                    stack[top++] = c_target;
-                }
-            }
-        }
-    }
-    
-    SirBlock* new_first = NULL;
-    SirBlock* new_last = NULL;
-    for (SirBlock* b = func->first_block; b; b = b->next) {
-        if (reachable[b->id]) {
-            if (!new_first) new_first = b;
-            else new_last->next = b;
-            new_last = b;
-        }
-    }
-    if (new_last) new_last->next = NULL;
-    func->first_block = new_first;
-    func->last_block = new_last;
-    
-    free(reachable);
-    free(stack);
-}
-
-typedef struct {
-    bool active;
-    int32_t imm;
-    int w;
-    uint8_t jcc_slow;
-} FastPathInfo;
-
 // 全局重定位表 (用于跨函数回填)
 #define MAX_STR_RELOCS 1024
 uint32_t g_str_relocs[MAX_STR_RELOCS];
@@ -586,47 +503,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
         func_count++;
     }
 
-    FastPathInfo* fp_infos = (FastPathInfo*)calloc(func_count, sizeof(FastPathInfo));
-    int f_idx = 0;
-    for (SirFunction* func = module->first_func; func; func = func->next, f_idx++) {
-        if (func->first_block && func->first_block->first_inst) {
-            SirInst* i1 = func->first_block->first_inst;
-            if (i1->opcode == SIR_GET_PARAM && i1->operands[0]->as.int_val == 0) {
-                SirInst* i2 = i1->next;
-                if (i2 && i2->opcode >= SIR_ICMP_EQ && i2->opcode <= SIR_ICMP_GE && i2->operands[0] == i1->dest && i2->operands[1]->kind == SIR_VAL_CONST_INT) {
-                    SirInst* i3 = i2->next;
-                    if (i3 && i3->opcode == SIR_BR && i3->operands[0] == i2->dest) {
-                        SirBlock* t_block = i3->operands[1]->as.block;
-                        SirBlock* f_block = i3->operands[2]->as.block;
-                        SirBlock* ret_block = NULL;
-                        SirBlock* slow_block = NULL;
-                        bool cond_is_true = false;
-                        
-                        if (t_block->first_inst && t_block->first_inst == t_block->last_inst && t_block->first_inst->opcode == SIR_RET && t_block->first_inst->operands[0] == i1->dest) {
-                            ret_block = t_block; slow_block = f_block; cond_is_true = true;
-                        } else if (f_block->first_inst && f_block->first_inst == f_block->last_inst && f_block->first_inst->opcode == SIR_RET && f_block->first_inst->operands[0] == i1->dest) {
-                            ret_block = f_block; slow_block = t_block; cond_is_true = false;
-                        }
-                        
-                        if (ret_block) {
-                            fp_infos[f_idx].active = true;
-                            fp_infos[f_idx].imm = (int32_t)i2->operands[1]->as.int_val;
-                            fp_infos[f_idx].w = (i1->dest->type && type_get_size(i1->dest->type) <= 4) ? 0 : 1;
-                            
-                            bool is_unsigned = type_is_unsigned(i1->dest->type);
-                            if (i2->opcode == SIR_ICMP_EQ) fp_infos[f_idx].jcc_slow = cond_is_true ? 0x85 : 0x84;
-                            else if (i2->opcode == SIR_ICMP_NE) fp_infos[f_idx].jcc_slow = cond_is_true ? 0x84 : 0x85;
-                            else if (i2->opcode == SIR_ICMP_LT) fp_infos[f_idx].jcc_slow = cond_is_true ? (is_unsigned ? 0x83 : 0x8D) : (is_unsigned ? 0x82 : 0x8C);
-                            else if (i2->opcode == SIR_ICMP_LE) fp_infos[f_idx].jcc_slow = cond_is_true ? (is_unsigned ? 0x87 : 0x8F) : (is_unsigned ? 0x86 : 0x8E);
-                            else if (i2->opcode == SIR_ICMP_GT) fp_infos[f_idx].jcc_slow = cond_is_true ? (is_unsigned ? 0x86 : 0x8E) : (is_unsigned ? 0x87 : 0x8F);
-                            else if (i2->opcode == SIR_ICMP_GE) fp_infos[f_idx].jcc_slow = cond_is_true ? (is_unsigned ? 0x82 : 0x8C) : (is_unsigned ? 0x83 : 0x8D);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     // 预扫描：收集所有字符串常量并写入 .rdata 段
     for (SirFunction* func = module->first_func; func; func = func->next) {
         for (SirBlock* block = func->first_block; block; block = block->next) {
@@ -722,43 +598,22 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                 g_init_offset = (uint32_t)linker->text_section.size;
             }
 
-            if (fp_infos[current_func_idx - 1].active) {
-                FastPathInfo* fp = &fp_infos[current_func_idx - 1];
+            if (func->has_fast_path) {
                 // cmp rcx/ecx, imm
-                emit_alu_reg_imm32(&linker->text_section, fp->w, 7, REG_RCX, fp->imm);
+                emit_alu_reg_imm32(&linker->text_section, func->fp_w, 7, REG_RCX, func->fp_imm);
                 
-                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, fp->jcc_slow);
+                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, func->fp_jcc_pe);
                 uint32_t jmp_slow_off = (uint32_t)linker->text_section.size;
                 emit32(&linker->text_section, 0); // 占位符
                 
                 // mov rax/eax, rcx/ecx
-                emit_mov_reg_reg_w(&linker->text_section, fp->w, REG_RAX, REG_RCX);
+                emit_mov_reg_reg_w(&linker->text_section, func->fp_w, REG_RAX, REG_RCX);
                 // ret
                 emit8(&linker->text_section, 0xC3);
                 
                 // 回填 jcc_slow
                 int32_t rel_slow = (int32_t)(linker->text_section.size - (jmp_slow_off + 4));
                 memcpy(linker->text_section.buffer + jmp_slow_off, &rel_slow, 4);
-                
-                // 仅在第一遍汇编时切断树根并大扫除
-                if (pass == 0) {
-                    SirInst* i1 = func->first_block->first_inst;
-                    SirInst* i2 = i1->next;
-                    SirInst* i3 = i2->next;
-                    bool cond_is_true = false;
-                    SirBlock* t_block = i3->operands[1]->as.block;
-                    if (t_block->first_inst && t_block->first_inst == t_block->last_inst && t_block->first_inst->opcode == SIR_RET && t_block->first_inst->operands[0] == i1->dest) {
-                        cond_is_true = true;
-                    }
-                    
-                    i1->next = i3;
-                    i3->prev = i1;
-                    i3->opcode = SIR_JMP;
-                    i3->num_operands = 1;
-                    i3->operands[0] = cond_is_true ? i3->operands[2] : i3->operands[1];
-                    
-                    prune_dead_blocks(func, func->first_block);
-                }
             }
 
             uint32_t max_vreg = 0;
@@ -2218,7 +2073,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
     free(strings);
     free(string_lens);
     free(string_offsets);
-    free(fp_infos);
 }
 
 bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const char* output_filename) {

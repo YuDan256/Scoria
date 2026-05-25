@@ -106,6 +106,13 @@ typedef struct SirFunction {
     SirBlock* first_block;
     SirBlock* last_block;
     
+    // 序言前置快路径 (Fast Path) 信息
+    bool has_fast_path;
+    int32_t fp_imm;
+    int fp_w;
+    const char* fp_jcc_asm;
+    uint8_t fp_jcc_pe;
+    
     struct SirFunction* next;
 } SirFunction;
 

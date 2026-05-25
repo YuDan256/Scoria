@@ -472,6 +472,82 @@ SirValue* ir_get_param(IrBuilder* builder, int index, ScoriaType* type) {
 // IR 优化 (IR Optimization)
 // =========================================================
 
+static void prune_dead_blocks(SirFunction* func, SirBlock* new_entry) {
+    if (!func->first_block) return;
+    
+    uint32_t max_block_id = 0;
+    for (SirBlock* b = func->first_block; b; b = b->next) {
+        if (b->id > max_block_id) max_block_id = b->id;
+    }
+    
+    bool* reachable = (bool*)calloc(max_block_id + 1, sizeof(bool));
+    SirBlock** stack = (SirBlock**)malloc(sizeof(SirBlock*) * (max_block_id + 1));
+    if (!reachable || !stack) {
+        if (reachable) free(reachable);
+        if (stack) free(stack);
+        return;
+    }
+    int top = 0;
+    
+    SirBlock* entry = new_entry ? new_entry : func->first_block;
+    reachable[entry->id] = true;
+    stack[top++] = entry;
+    
+    while (top > 0) {
+        SirBlock* b = stack[--top];
+        if (!b->last_inst) continue;
+        
+        if (b->last_inst->opcode == SIR_JMP) {
+            SirBlock* target = b->last_inst->operands[0]->as.block;
+            if (!reachable[target->id]) {
+                reachable[target->id] = true;
+                stack[top++] = target;
+            }
+        } else if (b->last_inst->opcode == SIR_BR) {
+            SirBlock* t_target = b->last_inst->operands[1]->as.block;
+            SirBlock* f_target = b->last_inst->operands[2]->as.block;
+            if (!reachable[t_target->id]) {
+                reachable[t_target->id] = true;
+                stack[top++] = t_target;
+            }
+            if (!reachable[f_target->id]) {
+                reachable[f_target->id] = true;
+                stack[top++] = f_target;
+            }
+        } else if (b->last_inst->opcode == SIR_SWITCH) {
+            SirBlock* def_target = b->last_inst->operands[1]->as.block;
+            if (!reachable[def_target->id]) {
+                reachable[def_target->id] = true;
+                stack[top++] = def_target;
+            }
+            int case_count = (b->last_inst->num_operands - 2) / 2;
+            for (int i = 0; i < case_count; i++) {
+                SirBlock* c_target = b->last_inst->operands[2 + i * 2 + 1]->as.block;
+                if (!reachable[c_target->id]) {
+                    reachable[c_target->id] = true;
+                    stack[top++] = c_target;
+                }
+            }
+        }
+    }
+    
+    SirBlock* new_first = NULL;
+    SirBlock* new_last = NULL;
+    for (SirBlock* b = func->first_block; b; b = b->next) {
+        if (reachable[b->id]) {
+            if (!new_first) new_first = b;
+            else new_last->next = b;
+            new_last = b;
+        }
+    }
+    if (new_last) new_last->next = NULL;
+    func->first_block = new_first;
+    func->last_block = new_last;
+    
+    free(reachable);
+    free(stack);
+}
+
 static bool is_side_effect_free(SirOpcode opcode) {
     switch (opcode) {
         case SIR_ADD: case SIR_SUB: case SIR_MUL: case SIR_DIV: case SIR_MOD:
@@ -531,7 +607,64 @@ void ir_optimize_module(IrBuilder* builder) {
             free(use_counts);
         } while (changed);
 
-        // 2. 跳转穿透 (Jump Threading) - 消除空跳转块
+        // 2. 序言前置快路径剥离 (Shrink-Wrapping / Fast Path Peephole)
+        if (func->first_block && func->first_block->first_inst) {
+            SirInst* i1 = func->first_block->first_inst;
+            if (i1->opcode == SIR_GET_PARAM && i1->operands[0]->as.int_val == 0) {
+                SirInst* i2 = i1->next;
+                if (i2 && i2->opcode >= SIR_ICMP_EQ && i2->opcode <= SIR_ICMP_GE && i2->operands[0] == i1->dest && i2->operands[1]->kind == SIR_VAL_CONST_INT) {
+                    SirInst* i3 = i2->next;
+                    if (i3 && i3->opcode == SIR_BR && i3->operands[0] == i2->dest) {
+                        SirBlock* t_block = i3->operands[1]->as.block;
+                        SirBlock* f_block = i3->operands[2]->as.block;
+                        SirBlock* ret_block = NULL;
+                        SirBlock* slow_block = NULL;
+                        bool cond_is_true = false;
+                        
+                        if (t_block->first_inst && t_block->first_inst == t_block->last_inst && t_block->first_inst->opcode == SIR_RET && t_block->first_inst->operands[0] == i1->dest) {
+                            ret_block = t_block; slow_block = f_block; cond_is_true = true;
+                        } else if (f_block->first_inst && f_block->first_inst == f_block->last_inst && f_block->first_inst->opcode == SIR_RET && f_block->first_inst->operands[0] == i1->dest) {
+                            ret_block = f_block; slow_block = t_block; cond_is_true = false;
+                        }
+                        
+                        if (ret_block) {
+                            func->has_fast_path = true;
+                            func->fp_imm = (int32_t)i2->operands[1]->as.int_val;
+                            func->fp_w = (i1->dest->type && type_get_size(i1->dest->type) <= 4) ? 0 : 1;
+                            
+                            bool is_unsigned = type_is_unsigned(i1->dest->type);
+                            
+                            // ASM JCC
+                            if (i2->opcode == SIR_ICMP_EQ) func->fp_jcc_asm = cond_is_true ? "jne" : "je";
+                            else if (i2->opcode == SIR_ICMP_NE) func->fp_jcc_asm = cond_is_true ? "je" : "jne";
+                            else if (i2->opcode == SIR_ICMP_LT) func->fp_jcc_asm = cond_is_true ? (is_unsigned ? "jae" : "jge") : (is_unsigned ? "jb" : "jl");
+                            else if (i2->opcode == SIR_ICMP_LE) func->fp_jcc_asm = cond_is_true ? (is_unsigned ? "ja" : "jg") : (is_unsigned ? "jbe" : "jle");
+                            else if (i2->opcode == SIR_ICMP_GT) func->fp_jcc_asm = cond_is_true ? (is_unsigned ? "jbe" : "jle") : (is_unsigned ? "ja" : "jg");
+                            else if (i2->opcode == SIR_ICMP_GE) func->fp_jcc_asm = cond_is_true ? (is_unsigned ? "jb" : "jl") : (is_unsigned ? "jae" : "jge");
+                            
+                            // PE JCC
+                            if (i2->opcode == SIR_ICMP_EQ) func->fp_jcc_pe = cond_is_true ? 0x85 : 0x84;
+                            else if (i2->opcode == SIR_ICMP_NE) func->fp_jcc_pe = cond_is_true ? 0x84 : 0x85;
+                            else if (i2->opcode == SIR_ICMP_LT) func->fp_jcc_pe = cond_is_true ? (is_unsigned ? 0x83 : 0x8D) : (is_unsigned ? 0x82 : 0x8C);
+                            else if (i2->opcode == SIR_ICMP_LE) func->fp_jcc_pe = cond_is_true ? (is_unsigned ? 0x87 : 0x8F) : (is_unsigned ? 0x86 : 0x8E);
+                            else if (i2->opcode == SIR_ICMP_GT) func->fp_jcc_pe = cond_is_true ? (is_unsigned ? 0x86 : 0x8E) : (is_unsigned ? 0x87 : 0x8F);
+                            else if (i2->opcode == SIR_ICMP_GE) func->fp_jcc_pe = cond_is_true ? (is_unsigned ? 0x82 : 0x8C) : (is_unsigned ? 0x83 : 0x8D);
+                            
+                            // 切断树根，死块大扫除
+                            i1->next = i3;
+                            i3->prev = i1;
+                            i3->opcode = SIR_JMP;
+                            i3->num_operands = 1;
+                            i3->operands[0] = cond_is_true ? i3->operands[2] : i3->operands[1];
+                            
+                            prune_dead_blocks(func, func->first_block);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. 跳转穿透 (Jump Threading) - 消除空跳转块
         do {
             changed = false;
             for (SirBlock* block = func->first_block; block; block = block->next) {
