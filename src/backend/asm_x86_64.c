@@ -545,13 +545,22 @@ static void generate_function(FILE* out, SirFunction* func) {
                     bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                     fprintf(out, "    movq %s, %%rax\n", op0);
                     
-                    // 优化：无符号除以 2 的幂转换为逻辑右移 (shr)
-                    if (is_unsigned && inst->opcode == SIR_DIV && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
+                    // 优化：除以 2 的幂转换为移位
+                    if (inst->opcode == SIR_DIV && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                         int64_t imm = inst->operands[1]->as.int_val;
                         if (imm > 0 && (imm & (imm - 1)) == 0) {
                             int shift = 0;
                             while ((imm >> shift) > 1) shift++;
-                            if (shift > 0) fprintf(out, "    shrq $%d, %%rax\n", shift);
+                            if (shift > 0) {
+                                if (is_unsigned) {
+                                    fprintf(out, "    shrq $%d, %%rax\n", shift);
+                                } else {
+                                    fprintf(out, "    cqo\n");
+                                    fprintf(out, "    andq $%lld, %%rdx\n", (long long)((1ULL << shift) - 1));
+                                    fprintf(out, "    addq %%rdx, %%rax\n");
+                                    fprintf(out, "    sarq $%d, %%rax\n", shift);
+                                }
+                            }
                             fprintf(out, "    movq %%rax, %s\n", dest);
                             break;
                         }
