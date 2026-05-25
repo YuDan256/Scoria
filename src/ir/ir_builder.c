@@ -562,8 +562,9 @@ static bool is_side_effect_free(SirOpcode opcode) {
     }
 }
 
-void ir_optimize_module(IrBuilder* builder) {
+void ir_optimize_module(IrBuilder* builder, int opt_level) {
     if (!builder || !builder->module) return;
+    if (opt_level == 0) return;
 
     for (SirFunction* func = builder->module->first_func; func; func = func->next) {
         bool changed;

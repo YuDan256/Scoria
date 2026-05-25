@@ -67,6 +67,6 @@ SirValue* ir_get_param(IrBuilder* builder, int index, ScoriaType* type);
 // ---------------------------------------------------------
 // IR 优化 API
 // ---------------------------------------------------------
-void ir_optimize_module(IrBuilder* builder);
+void ir_optimize_module(IrBuilder* builder, int opt_level);
 
 #endif // SCORIA_IR_BUILDER_H

@@ -964,7 +964,7 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
     }
 }
 
-void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count) {
+void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count, int opt_level) {
     // 查找或创建全局初始化函数 __scoria_init
     SirFunction* init_func = NULL;
     for (SirFunction* f = builder->module->first_func; f; f = f->next) {
@@ -1122,5 +1122,5 @@ void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count) {
     ir_builder_set_insert_point(builder, prev_block);
 
     // 执行 IR 级优化
-    ir_optimize_module(builder);
+    ir_optimize_module(builder, opt_level);
 }

@@ -5,6 +5,6 @@
 #include "ir_builder.h"
 
 // 将类型检查通过的 AST 转换为 SIR 模块
-void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count);
+void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count, int opt_level);
 
 #endif // SCORIA_IR_GEN_H
