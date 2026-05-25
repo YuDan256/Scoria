@@ -7,150 +7,212 @@ void reg_alloc_init(RegAllocator* allocator, uint32_t max_vreg) {
     allocator->max_vreg = max_vreg;
     allocator->vreg_offsets = (int*)calloc(max_vreg + 1, sizeof(int));
     allocator->vreg_colors = (int*)calloc(max_vreg + 1, sizeof(int));
-    allocator->live_start = (int*)calloc(max_vreg + 1, sizeof(int));
-    allocator->live_end = (int*)calloc(max_vreg + 1, sizeof(int));
     allocator->adj_matrix = (bool*)calloc((max_vreg + 1) * (max_vreg + 1), sizeof(bool));
     allocator->degree = (int*)calloc(max_vreg + 1, sizeof(int));
     allocator->use_count = (int*)calloc(max_vreg + 1, sizeof(int));
 
-    if (!allocator->vreg_offsets || !allocator->vreg_colors || !allocator->live_start ||
-        !allocator->live_end || !allocator->adj_matrix || !allocator->degree || !allocator->use_count) {
+    if (!allocator->vreg_offsets || !allocator->vreg_colors ||
+        !allocator->adj_matrix || !allocator->degree || !allocator->use_count) {
         fprintf(stderr, "Fatal error: Out of memory in reg_alloc_init\n");
         exit(1);
     }
 
     for (uint32_t i = 0; i <= max_vreg; i++) allocator->vreg_colors[i] = -1;
     for (int i = 0; i < NUM_PHYS_REGS; i++) allocator->used_callee_saved[i] = false;
-
-    for (uint32_t i = 0; i <= max_vreg; i++) {
-        allocator->live_start[i] = 999999999;
-        allocator->live_end[i] = -1;
-    }
 }
 
 void reg_alloc_free(RegAllocator* allocator) {
     free(allocator->vreg_offsets);
     free(allocator->vreg_colors);
-    free(allocator->live_start);
-    free(allocator->live_end);
     free(allocator->adj_matrix);
     free(allocator->degree);
     free(allocator->use_count);
 }
 
-static void update_live_interval(RegAllocator* allocator, SirValue* val, int inst_idx, int weight) {
-    if (!val || val->kind != SIR_VAL_VREG) return;
-    uint32_t vreg = val->as.vreg;
-    if (vreg > allocator->max_vreg) return;
-    
-    allocator->use_count[vreg] += weight;
-    
-    if (inst_idx < allocator->live_start[vreg]) allocator->live_start[vreg] = inst_idx;
-    if (inst_idx > allocator->live_end[vreg]) allocator->live_end[vreg] = inst_idx;
-}
+typedef struct {
+    uint32_t* uses;
+    int use_count;
+    uint32_t* defs;
+    int def_count;
+    bool* live_in;
+    bool* live_out;
+} BlockLiveness;
 
 void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func) {
-    // 1. 计算活跃区间 (Live Intervals) - 简化的线性扫描法
     uint32_t max_block_id = 0;
     for (SirBlock* block = func->first_block; block; block = block->next) {
         if (block->id > max_block_id) max_block_id = block->id;
     }
-    int* block_start = (int*)calloc(max_block_id + 1, sizeof(int));
-    int* block_end = (int*)calloc(max_block_id + 1, sizeof(int));
-    int* block_depth = (int*)calloc(max_block_id + 1, sizeof(int));
 
-    // 估算基本块的循环深度 (通过向后跳转边)
-    for (SirBlock* block = func->first_block; block; block = block->next) {
-        SirInst* last = block->last_inst;
-        if (!last) continue;
-        SirBlock* target1 = NULL;
-        SirBlock* target2 = NULL;
-        if (last->opcode == SIR_JMP) {
-            target1 = last->operands[0]->as.block;
-        } else if (last->opcode == SIR_BR) {
-            target1 = last->operands[1]->as.block;
-            target2 = last->operands[2]->as.block;
-        }
-        
-        if (target1 && target1->id <= block->id) {
-            for (uint32_t id = target1->id; id <= block->id; id++) block_depth[id]++;
-        }
-        if (target2 && target2->id <= block->id) {
-            for (uint32_t id = target2->id; id <= block->id; id++) block_depth[id]++;
-        }
+    BlockLiveness* liveness = (BlockLiveness*)calloc(max_block_id + 1, sizeof(BlockLiveness));
+    for (uint32_t i = 0; i <= max_block_id; i++) {
+        liveness[i].live_in = (bool*)calloc(allocator->max_vreg + 1, sizeof(bool));
+        liveness[i].live_out = (bool*)calloc(allocator->max_vreg + 1, sizeof(bool));
+        liveness[i].uses = (uint32_t*)calloc(allocator->max_vreg + 1, sizeof(uint32_t));
+        liveness[i].defs = (uint32_t*)calloc(allocator->max_vreg + 1, sizeof(uint32_t));
     }
 
-    int inst_idx = 0;
+    // 1. 计算每个块的 Use 和 Def
     for (SirBlock* block = func->first_block; block; block = block->next) {
-        block_start[block->id] = inst_idx;
-        
-        int weight = 1;
-        for (int d = 0; d < block_depth[block->id]; d++) weight *= 10; // 循环内指令权重 x10
-        
+        BlockLiveness* bl = &liveness[block->id];
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
             for (int i = 0; i < inst->num_operands; i++) {
-                update_live_interval(allocator, inst->operands[i], inst_idx, weight);
-            }
-            update_live_interval(allocator, inst->dest, inst_idx, weight);
-            inst_idx++;
-        }
-        block_end[block->id] = inst_idx > block_start[block->id] ? inst_idx - 1 : inst_idx;
-    }
-    free(block_depth);
-
-    // 处理循环 (向后跳转)：延长在循环头活跃的变量的生命周期到循环尾
-    for (SirBlock* block = func->first_block; block; block = block->next) {
-        SirInst* last = block->last_inst;
-        if (!last) continue;
-        
-        SirBlock* target1 = NULL;
-        SirBlock* target2 = NULL;
-        if (last->opcode == SIR_JMP) {
-            target1 = last->operands[0]->as.block;
-        } else if (last->opcode == SIR_BR) {
-            target1 = last->operands[1]->as.block;
-            target2 = last->operands[2]->as.block;
-        }
-        
-        if (target1 && block_start[target1->id] <= block_end[block->id]) {
-            int loop_start = block_start[target1->id];
-            int loop_end = block_end[block->id];
-            for (uint32_t i = 1; i <= allocator->max_vreg; i++) {
-                if (allocator->live_start[i] <= loop_start && allocator->live_end[i] >= loop_start) {
-                    if (allocator->live_end[i] < loop_end) allocator->live_end[i] = loop_end;
+                SirValue* val = inst->operands[i];
+                if (val && val->kind == SIR_VAL_VREG) {
+                    uint32_t vreg = val->as.vreg;
+                    if (vreg <= allocator->max_vreg) {
+                        allocator->use_count[vreg]++; // 简单统计使用频率
+                        // 如果在 def 之前被 use，则加入 uses
+                        bool is_defed = false;
+                        for (int d = 0; d < bl->def_count; d++) {
+                            if (bl->defs[d] == vreg) { is_defed = true; break; }
+                        }
+                        if (!is_defed) {
+                            bool already_used = false;
+                            for (int u = 0; u < bl->use_count; u++) {
+                                if (bl->uses[u] == vreg) { already_used = true; break; }
+                            }
+                            if (!already_used) bl->uses[bl->use_count++] = vreg;
+                        }
+                    }
                 }
             }
-        }
-        if (target2 && block_start[target2->id] <= block_end[block->id]) {
-            int loop_start = block_start[target2->id];
-            int loop_end = block_end[block->id];
-            for (uint32_t i = 1; i <= allocator->max_vreg; i++) {
-                if (allocator->live_start[i] <= loop_start && allocator->live_end[i] >= loop_start) {
-                    if (allocator->live_end[i] < loop_end) allocator->live_end[i] = loop_end;
+            if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
+                uint32_t vreg = inst->dest->as.vreg;
+                if (vreg <= allocator->max_vreg) {
+                    allocator->use_count[vreg]++;
+                    bool already_defed = false;
+                    for (int d = 0; d < bl->def_count; d++) {
+                        if (bl->defs[d] == vreg) { already_defed = true; break; }
+                    }
+                    if (!already_defed) bl->defs[bl->def_count++] = vreg;
                 }
             }
         }
     }
 
-    free(block_start);
-    free(block_end);
+    // 2. 迭代计算 LiveIn 和 LiveOut
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        SirBlock** blocks = (SirBlock**)malloc(sizeof(SirBlock*) * (max_block_id + 1));
+        int b_count = 0;
+        for (SirBlock* block = func->first_block; block; block = block->next) {
+            blocks[b_count++] = block;
+        }
 
-    // 2. 构建冲突图 (Interference Graph)
+        for (int i = b_count - 1; i >= 0; i--) {
+            SirBlock* block = blocks[i];
+            BlockLiveness* bl = &liveness[block->id];
+
+            // 计算 LiveOut = union(LiveIn of successors)
+            SirInst* last = block->last_inst;
+            if (last) {
+                if (last->opcode == SIR_JMP) {
+                    SirBlock* succ = last->operands[0]->as.block;
+                    for (uint32_t v = 1; v <= allocator->max_vreg; v++) {
+                        if (liveness[succ->id].live_in[v]) bl->live_out[v] = true;
+                    }
+                } else if (last->opcode == SIR_BR) {
+                    SirBlock* succ1 = last->operands[1]->as.block;
+                    SirBlock* succ2 = last->operands[2]->as.block;
+                    for (uint32_t v = 1; v <= allocator->max_vreg; v++) {
+                        if (liveness[succ1->id].live_in[v] || liveness[succ2->id].live_in[v]) bl->live_out[v] = true;
+                    }
+                } else if (last->opcode == SIR_SWITCH) {
+                    SirBlock* def_succ = last->operands[1]->as.block;
+                    for (uint32_t v = 1; v <= allocator->max_vreg; v++) {
+                        if (liveness[def_succ->id].live_in[v]) bl->live_out[v] = true;
+                    }
+                    int case_count = (last->num_operands - 2) / 2;
+                    for (int c = 0; c < case_count; c++) {
+                        SirBlock* succ = last->operands[2 + c * 2 + 1]->as.block;
+                        for (uint32_t v = 1; v <= allocator->max_vreg; v++) {
+                            if (liveness[succ->id].live_in[v]) bl->live_out[v] = true;
+                        }
+                    }
+                }
+            }
+
+            // 计算 LiveIn = Use U (LiveOut - Def)
+            for (uint32_t v = 1; v <= allocator->max_vreg; v++) {
+                bool new_in = false;
+                for (int u = 0; u < bl->use_count; u++) {
+                    if (bl->uses[u] == v) { new_in = true; break; }
+                }
+                if (!new_in && bl->live_out[v]) {
+                    bool is_def = false;
+                    for (int d = 0; d < bl->def_count; d++) {
+                        if (bl->defs[d] == v) { is_def = true; break; }
+                    }
+                    if (!is_def) new_in = true;
+                }
+
+                if (new_in != bl->live_in[v]) {
+                    bl->live_in[v] = new_in;
+                    changed = true;
+                }
+            }
+        }
+        free(blocks);
+    }
+
+    // 3. 构建冲突图
     uint32_t max_v = allocator->max_vreg;
-    for (uint32_t i = 1; i <= max_v; i++) {
-        if (allocator->live_end[i] == -1) continue; // 未使用的寄存器
-        for (uint32_t j = i + 1; j <= max_v; j++) {
-            if (allocator->live_end[j] == -1) continue;
-            // 检查区间是否重叠
-            if (allocator->live_start[i] <= allocator->live_end[j] && 
-                allocator->live_start[j] <= allocator->live_end[i]) {
-                allocator->adj_matrix[i * (max_v + 1) + j] = true;
-                allocator->adj_matrix[j * (max_v + 1) + i] = true;
-                allocator->degree[i]++;
-                allocator->degree[j]++;
+    for (SirBlock* block = func->first_block; block; block = block->next) {
+        BlockLiveness* bl = &liveness[block->id];
+        bool* current_live = (bool*)malloc(sizeof(bool) * (max_v + 1));
+        for (uint32_t v = 1; v <= max_v; v++) {
+            current_live[v] = bl->live_out[v];
+        }
+
+        SirInst** insts = (SirInst**)malloc(sizeof(SirInst*) * 10000);
+        int i_count = 0;
+        for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+            insts[i_count++] = inst;
+        }
+
+        for (int i = i_count - 1; i >= 0; i--) {
+            SirInst* inst = insts[i];
+            
+            if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
+                uint32_t def_vreg = inst->dest->as.vreg;
+                if (def_vreg <= max_v) {
+                    for (uint32_t v = 1; v <= max_v; v++) {
+                        if (current_live[v] && v != def_vreg) {
+                            if (!allocator->adj_matrix[def_vreg * (max_v + 1) + v]) {
+                                allocator->adj_matrix[def_vreg * (max_v + 1) + v] = true;
+                                allocator->adj_matrix[v * (max_v + 1) + def_vreg] = true;
+                                allocator->degree[def_vreg]++;
+                                allocator->degree[v]++;
+                            }
+                        }
+                    }
+                    current_live[def_vreg] = false;
+                }
+            }
+
+            for (int op_idx = 0; op_idx < inst->num_operands; op_idx++) {
+                SirValue* val = inst->operands[op_idx];
+                if (val && val->kind == SIR_VAL_VREG) {
+                    uint32_t use_vreg = val->as.vreg;
+                    if (use_vreg <= max_v) {
+                        current_live[use_vreg] = true;
+                    }
+                }
             }
         }
+        free(insts);
+        free(current_live);
     }
+
+    for (uint32_t i = 0; i <= max_block_id; i++) {
+        free(liveness[i].live_in);
+        free(liveness[i].live_out);
+        free(liveness[i].uses);
+        free(liveness[i].defs);
+    }
+    free(liveness);
 
     // 3. 简化与着色 (Chaitin's Algorithm)
     int* stack = (int*)malloc(sizeof(int) * (max_v + 1));
@@ -159,7 +221,7 @@ void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func) {
 
     int remaining = 0;
     for (uint32_t i = 1; i <= max_v; i++) {
-        if (allocator->live_end[i] == -1) {
+        if (allocator->use_count[i] == 0) {
             removed[i] = true; // 忽略未使用的
         } else {
             remaining++;

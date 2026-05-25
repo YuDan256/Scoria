@@ -713,6 +713,16 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
         }
         case AST_IF_STMT: {
             SirValue* cond = gen_expression(builder, stmt->as.if_stmt.condition);
+            
+            if (cond && cond->kind == SIR_VAL_CONST_BOOL) {
+                if (cond->as.bool_val) {
+                    gen_statement(builder, stmt->as.if_stmt.then_branch);
+                } else if (stmt->as.if_stmt.else_branch) {
+                    gen_statement(builder, stmt->as.if_stmt.else_branch);
+                }
+                break;
+            }
+
             SirBlock* then_block = ir_builder_create_block(builder, "si.verum");
             SirBlock* else_block = stmt->as.if_stmt.else_branch ? ir_builder_create_block(builder, "si.falsum") : NULL;
             SirBlock* merge_block = ir_builder_create_block(builder, "si.exitus");
@@ -740,7 +750,12 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
             ir_build_jmp(builder, cond_block);
             ir_builder_set_insert_point(builder, cond_block);
             SirValue* cond = gen_expression(builder, stmt->as.while_stmt.condition);
-            ir_build_br(builder, cond, body_block, exit_block);
+            
+            if (cond && cond->kind == SIR_VAL_CONST_BOOL && !cond->as.bool_val) {
+                ir_build_jmp(builder, exit_block);
+            } else {
+                ir_build_br(builder, cond, body_block, exit_block);
+            }
 
             // 保存外层循环上下文
             SirBlock* prev_cond = builder->current_loop_cond;
@@ -774,7 +789,11 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
             
             if (stmt->as.for_stmt.condition) {
                 SirValue* cond = gen_expression(builder, stmt->as.for_stmt.condition);
-                ir_build_br(builder, cond, body_block, exit_block);
+                if (cond && cond->kind == SIR_VAL_CONST_BOOL && !cond->as.bool_val) {
+                    ir_build_jmp(builder, exit_block);
+                } else {
+                    ir_build_br(builder, cond, body_block, exit_block);
+                }
             } else {
                 ir_build_jmp(builder, body_block);
             }

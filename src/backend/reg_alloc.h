@@ -13,10 +13,6 @@ typedef struct {
     int* vreg_colors;  // 物理寄存器 ID (0 到 NUM_PHYS_REGS-1)，-1 表示溢出 (Spilled)
     uint32_t max_vreg;
 
-    // 活跃区间 (Live Intervals)
-    int* live_start;
-    int* live_end;
-
     // 冲突图 (Interference Graph)
     bool* adj_matrix;
     int* degree;
