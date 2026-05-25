@@ -1062,7 +1062,9 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                         if (ret_is_float) {
                             fprintf(out, "    movq %%xmm0, %%rax\n");
                         }
-                        fprintf(out, "    movq %%rax, %s\n", dest);
+                        if (strcmp(dest, "%rax") != 0) {
+                            fprintf(out, "    movq %%rax, %s\n", dest);
+                        }
                     }
                     break;
 

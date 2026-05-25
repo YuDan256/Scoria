@@ -202,6 +202,13 @@ static SirInst* create_inst(IrBuilder* builder, SirOpcode opcode, int num_operan
     
     // 自动插入到当前基本块的尾部
     if (builder->current_block) {
+        if (builder->current_block->last_inst) {
+            SirOpcode last_op = builder->current_block->last_inst->opcode;
+            if (last_op == SIR_RET || last_op == SIR_JMP || last_op == SIR_BR || last_op == SIR_SWITCH) {
+                // 这是一个不可达的死指令，直接丢弃
+                return inst;
+            }
+        }
         if (!builder->current_block->first_inst) {
             builder->current_block->first_inst = inst;
         } else {
