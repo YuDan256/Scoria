@@ -612,12 +612,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                 emit_mov_reg_reg_w(&linker->text_section, func->fp_w, REG_RAX, REG_RCX);
                 // ret
                 emit8(&linker->text_section, 0xC3);
-                    
-                // 优化: 将慢路径 (Prologue) 对齐到 16 字节，提升分支目标获取效率
-                while (linker->text_section.size % 16 != 0) {
-                    emit8(&linker->text_section, 0x90); // nop
-                }
-                    
+                
                 // 回填 short jcc
                 int8_t rel_slow = (int8_t)(linker->text_section.size - (jmp_slow_off + 1));
                 linker->text_section.buffer[jmp_slow_off] = (uint8_t)rel_slow;

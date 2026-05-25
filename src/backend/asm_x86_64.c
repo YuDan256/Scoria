@@ -100,7 +100,6 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
         fprintf(out, "    %s .Lslow_%s\n", func->fp_jcc_asm, func->name);
         fprintf(out, "    %s %s, %s\n", mov_op, cx, ax);
         fprintf(out, "    ret\n");
-        fprintf(out, "    .p2align 4\n");
         fprintf(out, ".Lslow_%s:\n", func->name);
     }
 
