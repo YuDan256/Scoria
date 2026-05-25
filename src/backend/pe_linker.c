@@ -621,6 +621,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             int shadow_space = has_call ? 32 : 0;
             int total_frame_size = allocator.current_offset + shadow_space + call_stack_space; // 预留 Shadow Space 和溢出参数空间
             total_frame_size = (total_frame_size + 15) & ~15; // 保持 16 字节对齐
+            total_frame_size += 8; // 保证 call 前 rsp 16 字节对齐
             ctx.frame_size = total_frame_size;
 
             // 序言 (Prologue)
@@ -863,62 +864,73 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             }
                             
                             int left = load_operand(&linker->text_section, &allocator, inst->operands[0], dest_reg, &ctx);
-                            if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
                             
                             if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                                 int32_t imm = (int32_t)inst->operands[1]->as.int_val;
-                                if (inst->opcode == SIR_MUL) {
-                                    if (imm == 0) {
-                                        if (dest_reg > 7) emit_rex(&linker->text_section, 0, 1, 0, 1);
-                                        emit8(&linker->text_section, 0x31); // xor r32, r32
-                                        emit_modrm(&linker->text_section, 3, dest_reg & 7, dest_reg & 7);
-                                    } else if (imm == 1) {
-                                        // no-op
-                                    } else if (imm == 2) {
-                                        emit_alu_reg_reg(&linker->text_section, w, 0x01, dest_reg, dest_reg); // add dest, dest
-                                    } else if (imm == 3 || imm == 5 || imm == 9) {
-                                        int scale = (imm == 3) ? 1 : (imm == 5) ? 2 : 3; // 1=2, 2=4, 3=8
-                                        emit_rex(&linker->text_section, 1, dest_reg > 7, dest_reg > 7, dest_reg > 7);
+                                if (inst->opcode == SIR_ADD || inst->opcode == SIR_SUB) {
+                                    int32_t lea_imm = (inst->opcode == SIR_SUB) ? -imm : imm;
+                                    if (left != dest_reg) {
+                                        emit_rex(&linker->text_section, w, dest_reg > 7, 0, left > 7);
                                         emit8(&linker->text_section, 0x8D); // lea
-                                        int b = dest_reg & 7;
-                                        if (b == 5) {
-                                            emit_modrm(&linker->text_section, 1, dest_reg & 7, 4);
-                                            emit_sib(&linker->text_section, scale, dest_reg & 7, b);
-                                            emit8(&linker->text_section, 0);
-                                        } else {
-                                            emit_modrm(&linker->text_section, 0, dest_reg & 7, 4);
-                                            emit_sib(&linker->text_section, scale, dest_reg & 7, b);
-                                        }
-                                    } else if (imm > 0 && (imm & (imm - 1)) == 0) {
-                                        int shift = 0;
-                                        while ((imm >> shift) > 1) shift++;
-                                        emit_rex(&linker->text_section, w, 0, 0, dest_reg > 7);
-                                        emit8(&linker->text_section, 0xC1); // shl r64, imm8
-                                        emit_modrm(&linker->text_section, 3, 4, dest_reg & 7);
-                                        emit8(&linker->text_section, (uint8_t)shift);
+                                        emit_mem(&linker->text_section, dest_reg, left, lea_imm);
                                     } else {
-                                        // imul r64, r64, imm32
-                                        emit_rex(&linker->text_section, w, dest_reg > 7, 0, dest_reg > 7);
-                                        if (imm >= -128 && imm <= 127) {
-                                            emit8(&linker->text_section, 0x6B);
-                                            emit_modrm(&linker->text_section, 3, dest_reg & 7, dest_reg & 7);
-                                            emit8(&linker->text_section, (uint8_t)imm);
-                                        } else {
-                                            emit8(&linker->text_section, 0x69);
-                                            emit_modrm(&linker->text_section, 3, dest_reg & 7, dest_reg & 7);
-                                            emit32(&linker->text_section, (uint32_t)imm);
-                                        }
+                                        int opc_ext = (inst->opcode == SIR_ADD) ? 0 : 5;
+                                        emit_alu_reg_imm32(&linker->text_section, w, opc_ext, dest_reg, imm);
                                     }
                                 } else {
-                                    int opc_ext = 0;
-                                    if (inst->opcode == SIR_ADD) opc_ext = 0;
-                                    else if (inst->opcode == SIR_SUB) opc_ext = 5;
-                                    else if (inst->opcode == SIR_AND) opc_ext = 4;
-                                    else if (inst->opcode == SIR_OR) opc_ext = 1;
-                                    else if (inst->opcode == SIR_XOR) opc_ext = 6;
-                                    emit_alu_reg_imm32(&linker->text_section, w, opc_ext, dest_reg, imm);
+                                    if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
+                                    if (inst->opcode == SIR_MUL) {
+                                        if (imm == 0) {
+                                            if (dest_reg > 7) emit_rex(&linker->text_section, 0, 1, 0, 1);
+                                            emit8(&linker->text_section, 0x31); // xor r32, r32
+                                            emit_modrm(&linker->text_section, 3, dest_reg & 7, dest_reg & 7);
+                                        } else if (imm == 1) {
+                                            // no-op
+                                        } else if (imm == 2) {
+                                            emit_alu_reg_reg(&linker->text_section, w, 0x01, dest_reg, dest_reg); // add dest, dest
+                                        } else if (imm == 3 || imm == 5 || imm == 9) {
+                                            int scale = (imm == 3) ? 1 : (imm == 5) ? 2 : 3; // 1=2, 2=4, 3=8
+                                            emit_rex(&linker->text_section, 1, dest_reg > 7, dest_reg > 7, dest_reg > 7);
+                                            emit8(&linker->text_section, 0x8D); // lea
+                                            int b = dest_reg & 7;
+                                            if (b == 5) {
+                                                emit_modrm(&linker->text_section, 1, dest_reg & 7, 4);
+                                                emit_sib(&linker->text_section, scale, dest_reg & 7, b);
+                                                emit8(&linker->text_section, 0);
+                                            } else {
+                                                emit_modrm(&linker->text_section, 0, dest_reg & 7, 4);
+                                                emit_sib(&linker->text_section, scale, dest_reg & 7, b);
+                                            }
+                                        } else if (imm > 0 && (imm & (imm - 1)) == 0) {
+                                            int shift = 0;
+                                            while ((imm >> shift) > 1) shift++;
+                                            emit_rex(&linker->text_section, w, 0, 0, dest_reg > 7);
+                                            emit8(&linker->text_section, 0xC1); // shl r64, imm8
+                                            emit_modrm(&linker->text_section, 3, 4, dest_reg & 7);
+                                            emit8(&linker->text_section, (uint8_t)shift);
+                                        } else {
+                                            // imul r64, r64, imm32
+                                            emit_rex(&linker->text_section, w, dest_reg > 7, 0, dest_reg > 7);
+                                            if (imm >= -128 && imm <= 127) {
+                                                emit8(&linker->text_section, 0x6B);
+                                                emit_modrm(&linker->text_section, 3, dest_reg & 7, dest_reg & 7);
+                                                emit8(&linker->text_section, (uint8_t)imm);
+                                            } else {
+                                                emit8(&linker->text_section, 0x69);
+                                                emit_modrm(&linker->text_section, 3, dest_reg & 7, dest_reg & 7);
+                                                emit32(&linker->text_section, (uint32_t)imm);
+                                            }
+                                        }
+                                    } else {
+                                        int opc_ext = 0;
+                                        if (inst->opcode == SIR_AND) opc_ext = 4;
+                                        else if (inst->opcode == SIR_OR) opc_ext = 1;
+                                        else if (inst->opcode == SIR_XOR) opc_ext = 6;
+                                        emit_alu_reg_imm32(&linker->text_section, w, opc_ext, dest_reg, imm);
+                                    }
                                 }
                             } else {
+                                if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
                                 int right_scratch = (dest_reg == REG_RCX) ? REG_RDX : REG_RCX;
                                 int right = load_operand(&linker->text_section, &allocator, inst->operands[1], right_scratch, &ctx);
                                 if (inst->opcode == SIR_ADD) emit_alu_reg_reg(&linker->text_section, w, 0x01, dest_reg, right);

@@ -136,6 +136,7 @@ static void generate_function(FILE* out, SirFunction* func) {
     int shadow_space = has_call ? 32 : 0;
     int total_frame_size = allocator.current_offset + shadow_space + call_stack_space;
     total_frame_size = (total_frame_size + 15) & ~15;
+    total_frame_size += 8; // 保证 call 前 rsp 16 字节对齐
 
     // 2. 函数序言 (Prologue)
     int num_callee_pushes = 0;
@@ -268,11 +269,16 @@ static void generate_function(FILE* out, SirFunction* func) {
                 case SIR_ADD: {
                     bool dest_is_mem = (dest[0] != '%');
                     const char* acc = dest_is_mem ? "%rax" : dest;
-                    if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
-                    if (strcmp(op1, "$1") == 0) {
-                        fprintf(out, "    incq %s\n", acc);
-                    } else if (strcmp(op1, "$0") != 0) {
-                        fprintf(out, "    addq %s, %s\n", op1, acc);
+                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT && strcmp(op0, acc) != 0) {
+                        int64_t imm = inst->operands[1]->as.int_val;
+                        fprintf(out, "    leaq %lld(%s), %s\n", (long long)imm, op0, acc);
+                    } else {
+                        if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
+                        if (strcmp(op1, "$1") == 0) {
+                            fprintf(out, "    incq %s\n", acc);
+                        } else if (strcmp(op1, "$0") != 0) {
+                            fprintf(out, "    addq %s, %s\n", op1, acc);
+                        }
                     }
                     if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
@@ -281,11 +287,16 @@ static void generate_function(FILE* out, SirFunction* func) {
                 case SIR_SUB: {
                     bool dest_is_mem = (dest[0] != '%');
                     const char* acc = dest_is_mem ? "%rax" : dest;
-                    if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
-                    if (strcmp(op1, "$1") == 0) {
-                        fprintf(out, "    decq %s\n", acc);
-                    } else if (strcmp(op1, "$0") != 0) {
-                        fprintf(out, "    subq %s, %s\n", op1, acc);
+                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT && strcmp(op0, acc) != 0) {
+                        int64_t imm = inst->operands[1]->as.int_val;
+                        fprintf(out, "    leaq %lld(%s), %s\n", (long long)-imm, op0, acc);
+                    } else {
+                        if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
+                        if (strcmp(op1, "$1") == 0) {
+                            fprintf(out, "    decq %s\n", acc);
+                        } else if (strcmp(op1, "$0") != 0) {
+                            fprintf(out, "    subq %s, %s\n", op1, acc);
+                        }
                     }
                     if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
