@@ -738,17 +738,15 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     else if (inst->opcode == SIR_ICMP_GT) cc = is_unsigned ? "a" : "g";
                     else if (inst->opcode == SIR_ICMP_GE) cc = is_unsigned ? "ae" : "ge";
                     
-                    if (strcmp(op1, "%rax") == 0) {
-                        fprintf(out, "    movq %s, %%rcx\n", op1);
+                    const char* left_op = op0;
+                    if (op0[0] != '%') {
                         fprintf(out, "    movq %s, %%rax\n", op0);
-                        fprintf(out, "    cmpq %%rcx, %%rax\n");
+                        left_op = "%rax";
+                    }
+                    if (strcmp(op1, "$0") == 0) {
+                        fprintf(out, "    testq %s, %s\n", left_op, left_op);
                     } else {
-                        fprintf(out, "    movq %s, %%rax\n", op0);
-                        if (strcmp(op1, "$0") == 0) {
-                            fprintf(out, "    testq %%rax, %%rax\n");
-                        } else {
-                            fprintf(out, "    cmpq %s, %%rax\n", op1);
-                        }
+                        fprintf(out, "    cmpq %s, %s\n", op1, left_op);
                     }
                     bool can_fuse = false;
                     SirInst* next_inst = inst->next;
@@ -924,12 +922,18 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     int reg_args = num_args > 4 ? 4 : num_args;
                     const char* arg_regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
                     if (reg_args == 1) {
-                        char arg_str[64];
-                        get_operand_str(arg_str, inst->operands[1], &allocator, 8, total_frame_size);
-                        if (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[1]->type || inst->operands[1]->type->kind == TY_F64)) {
-                            fprintf(out, "    movabsq %s, %%rcx\n", arg_str);
-                        } else {
-                            if (strcmp(arg_str, "%rcx") != 0) fprintf(out, "    movq %s, %%rcx\n", arg_str);
+                        bool already_in_rcx = false;
+                        if (inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[1]) {
+                            already_in_rcx = true;
+                        }
+                        if (!already_in_rcx) {
+                            char arg_str[64];
+                            get_operand_str(arg_str, inst->operands[1], &allocator, 8, total_frame_size);
+                            if (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT && (!inst->operands[1]->type || inst->operands[1]->type->kind == TY_F64)) {
+                                fprintf(out, "    movabsq %s, %%rcx\n", arg_str);
+                            } else {
+                                if (strcmp(arg_str, "%rcx") != 0) fprintf(out, "    movq %s, %%rcx\n", arg_str);
+                            }
                         }
                         bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64));
                         if (is_float) {
@@ -1036,7 +1040,13 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
 
                 case SIR_RET:
                     if (inst->num_operands > 0) {
-                        fprintf(out, "    movq %s, %%rax\n", op0);
+                        bool already_in_rax = false;
+                        if (inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[0]) {
+                            already_in_rax = true;
+                        }
+                        if (!already_in_rax && strcmp(op0, "%rax") != 0) {
+                            fprintf(out, "    movq %s, %%rax\n", op0);
+                        }
                         bool ret_is_float = (inst->operands[0]->type && (inst->operands[0]->type->kind == TY_F32 || inst->operands[0]->type->kind == TY_F64));
                         if (ret_is_float) {
                             fprintf(out, "    movq %%rax, %%xmm0\n");

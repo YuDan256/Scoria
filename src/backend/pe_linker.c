@@ -903,17 +903,31 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 if (c != -1) dest_reg = get_phys_reg(c);
                                 if (inst->dest->type && type_get_size(inst->dest->type) <= 4) w = 0;
                                 
-                                if (inst->next && inst->next->opcode == SIR_RET && inst->next->num_operands > 0 && inst->next->operands[0] == inst->dest) {
-                                    bool used_elsewhere = false;
-                                    for (SirInst* scan = inst->next->next; scan; scan = scan->next) {
-                                        for (int i=0; i<scan->num_operands; i++) {
-                                            if (scan->operands[i] == inst->dest) { used_elsewhere = true; break; }
+                                if (inst->next) {
+                                    if (inst->next->opcode == SIR_RET && inst->next->num_operands > 0 && inst->next->operands[0] == inst->dest) {
+                                        bool used_elsewhere = false;
+                                        for (SirInst* scan = inst->next->next; scan; scan = scan->next) {
+                                            for (int i=0; i<scan->num_operands; i++) {
+                                                if (scan->operands[i] == inst->dest) { used_elsewhere = true; break; }
+                                            }
+                                            if (used_elsewhere) break;
                                         }
-                                        if (used_elsewhere) break;
-                                    }
-                                    if (!used_elsewhere) {
-                                        dest_reg = REG_RAX;
-                                        is_ret_peephole = true;
+                                        if (!used_elsewhere) {
+                                            dest_reg = REG_RAX;
+                                            is_ret_peephole = true;
+                                        }
+                                    } else if (inst->next->opcode == SIR_CALL && inst->next->num_operands == 2 && inst->next->operands[1] == inst->dest) {
+                                        bool used_elsewhere = false;
+                                        for (SirInst* scan = inst->next->next; scan; scan = scan->next) {
+                                            for (int i=0; i<scan->num_operands; i++) {
+                                                if (scan->operands[i] == inst->dest) { used_elsewhere = true; break; }
+                                            }
+                                            if (used_elsewhere) break;
+                                        }
+                                        if (!used_elsewhere) {
+                                            dest_reg = REG_RCX;
+                                            is_ret_peephole = true;
+                                        }
                                     }
                                 }
                             }
@@ -1622,8 +1636,14 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             // 2. 处理寄存器传递的参数 (i < 4)
                             int reg_args = num_args > 4 ? 4 : num_args;
                             if (reg_args == 1) {
-                                int val = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RAX, &ctx);
-                                if (val != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, val);
+                                bool already_in_rcx = false;
+                                if (inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[1]) {
+                                    already_in_rcx = true;
+                                }
+                                if (!already_in_rcx) {
+                                    int val = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RAX, &ctx);
+                                    if (val != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, val);
+                                }
                                 bool is_float = (inst->operands[1]->type && (inst->operands[1]->type->kind == TY_F32 || inst->operands[1]->type->kind == TY_F64));
                                 if (is_float) {
                                     bool is_f32 = (inst->operands[1]->type->kind == TY_F32);
