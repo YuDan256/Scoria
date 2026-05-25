@@ -863,7 +863,11 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 if (inst->dest->type && type_get_size(inst->dest->type) <= 4) w = 0;
                             }
                             
-                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], dest_reg, &ctx);
+                            int right_color = (inst->operands[1] && inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
+                            int right_phys = (right_color != -1) ? get_phys_reg(right_color) : -1;
+                            int left_scratch = (right_phys == dest_reg) ? ((dest_reg == REG_RAX) ? REG_RCX : REG_RAX) : dest_reg;
+                            
+                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], left_scratch, &ctx);
                             
                             if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                                 int32_t imm = (int32_t)inst->operands[1]->as.int_val;
@@ -930,18 +934,39 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                     }
                                 }
                             } else {
-                                if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
                                 int right_scratch = (dest_reg == REG_RCX) ? REG_RDX : REG_RCX;
+                                if (right_scratch == left) right_scratch = (right_scratch == REG_RDX) ? REG_R8 : REG_RDX;
                                 int right = load_operand(&linker->text_section, &allocator, inst->operands[1], right_scratch, &ctx);
-                                if (inst->opcode == SIR_ADD) emit_alu_reg_reg(&linker->text_section, w, 0x01, dest_reg, right);
-                                else if (inst->opcode == SIR_SUB) emit_alu_reg_reg(&linker->text_section, w, 0x29, dest_reg, right);
-                                else if (inst->opcode == SIR_AND) emit_alu_reg_reg(&linker->text_section, w, 0x21, dest_reg, right);
-                                else if (inst->opcode == SIR_OR) emit_alu_reg_reg(&linker->text_section, w, 0x09, dest_reg, right);
-                                else if (inst->opcode == SIR_XOR) emit_alu_reg_reg(&linker->text_section, w, 0x31, dest_reg, right);
-                                else {
-                                    emit_rex(&linker->text_section, w, dest_reg > 7, 0, right > 7);
-                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xAF); // imul dest_reg, right
-                                    emit_modrm(&linker->text_section, 3, dest_reg & 7, right & 7);
+                                
+                                if (right == dest_reg && left != dest_reg) {
+                                    if (inst->opcode == SIR_SUB) {
+                                        emit_rex(&linker->text_section, w, 0, 0, dest_reg > 7);
+                                        emit8(&linker->text_section, 0xF7);
+                                        emit_modrm(&linker->text_section, 3, 3, dest_reg & 7); // neg
+                                        emit_alu_reg_reg(&linker->text_section, w, 0x01, dest_reg, left); // add
+                                    } else {
+                                        if (inst->opcode == SIR_ADD) emit_alu_reg_reg(&linker->text_section, w, 0x01, dest_reg, left);
+                                        else if (inst->opcode == SIR_AND) emit_alu_reg_reg(&linker->text_section, w, 0x21, dest_reg, left);
+                                        else if (inst->opcode == SIR_OR) emit_alu_reg_reg(&linker->text_section, w, 0x09, dest_reg, left);
+                                        else if (inst->opcode == SIR_XOR) emit_alu_reg_reg(&linker->text_section, w, 0x31, dest_reg, left);
+                                        else {
+                                            emit_rex(&linker->text_section, w, dest_reg > 7, 0, left > 7);
+                                            emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xAF); // imul dest_reg, left
+                                            emit_modrm(&linker->text_section, 3, dest_reg & 7, left & 7);
+                                        }
+                                    }
+                                } else {
+                                    if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
+                                    if (inst->opcode == SIR_ADD) emit_alu_reg_reg(&linker->text_section, w, 0x01, dest_reg, right);
+                                    else if (inst->opcode == SIR_SUB) emit_alu_reg_reg(&linker->text_section, w, 0x29, dest_reg, right);
+                                    else if (inst->opcode == SIR_AND) emit_alu_reg_reg(&linker->text_section, w, 0x21, dest_reg, right);
+                                    else if (inst->opcode == SIR_OR) emit_alu_reg_reg(&linker->text_section, w, 0x09, dest_reg, right);
+                                    else if (inst->opcode == SIR_XOR) emit_alu_reg_reg(&linker->text_section, w, 0x31, dest_reg, right);
+                                    else {
+                                        emit_rex(&linker->text_section, w, dest_reg > 7, 0, right > 7);
+                                        emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xAF); // imul dest_reg, right
+                                        emit_modrm(&linker->text_section, 3, dest_reg & 7, right & 7);
+                                    }
                                 }
                             }
                             store_result(&linker->text_section, &allocator, inst->dest, dest_reg);
@@ -958,17 +983,26 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 if (c != -1) dest_reg = get_phys_reg(c);
                             }
                             
-                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], dest_reg, &ctx);
-                            if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
+                            int right_color = (inst->operands[1] && inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
+                            int right_phys = (right_color != -1) ? get_phys_reg(right_color) : -1;
+                            int left_scratch = (right_phys == dest_reg) ? ((dest_reg == REG_RAX) ? REG_RCX : REG_RAX) : dest_reg;
+                            
+                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], left_scratch, &ctx);
                             
                             int right_scratch = (dest_reg == REG_RCX) ? REG_RDX : REG_RCX;
+                            if (right_scratch == left) right_scratch = (right_scratch == REG_RDX) ? REG_R8 : REG_RDX;
                             int right = load_operand(&linker->text_section, &allocator, inst->operands[1], right_scratch, &ctx);
-                            if (right != right_scratch) emit_mov_reg_reg(&linker->text_section, right_scratch, right);
                             
-                            // movd/movq xmm0, dest_reg
-                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, dest_reg > 7); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, dest_reg & 7);
-                            // movd/movq xmm1, right_scratch
-                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, right_scratch > 7); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 1, right_scratch & 7);
+                            if (right == dest_reg && left != dest_reg) {
+                                emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, left > 7); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, left & 7);
+                                emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, right > 7); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 1, right & 7);
+                            } else {
+                                if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
+                                if (right != right_scratch) emit_mov_reg_reg(&linker->text_section, right_scratch, right);
+                                
+                                emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, dest_reg > 7); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, dest_reg & 7);
+                                emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, right_scratch > 7); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 1, right_scratch & 7);
+                            }
                             
                             // op
                             emit8(&linker->text_section, is_f32 ? 0xF3 : 0xF2); emit8(&linker->text_section, 0x0F);
@@ -987,11 +1021,11 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_DIV:
                         case SIR_MOD: {
                             bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
-                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                            if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
                             
                             // 优化：除以 2 的幂转换为移位
                             if (inst->opcode == SIR_DIV && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
+                                int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
+                                if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
                                 int64_t imm = inst->operands[1]->as.int_val;
                                 if (imm > 0 && (imm & (imm - 1)) == 0) {
                                     int shift = 0;
@@ -1020,8 +1054,23 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 }
                             }
                             
+                            int right_color = (inst->operands[1] && inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
+                            int right_phys = (right_color != -1) ? get_phys_reg(right_color) : -1;
+                            int left_scratch = (right_phys == REG_RAX) ? REG_RCX : REG_RAX;
+                            
+                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], left_scratch, &ctx);
                             int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
-                            if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
+                            
+                            if (left == REG_RCX && right == REG_RAX) {
+                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                emit8(&linker->text_section, 0x93); // xchg rax, rcx
+                            } else if (right == REG_RAX) {
+                                emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
+                                emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
+                            } else {
+                                if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
+                                if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
+                            }
                             
                             if (is_unsigned) {
                                 emit_rex(&linker->text_section, 1, 0, 0, 0);
@@ -1049,10 +1098,24 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_SHL:
                         case SIR_SHR: {
                             bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
-                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                            if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
+                            
+                            int right_color = (inst->operands[1] && inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
+                            int right_phys = (right_color != -1) ? get_phys_reg(right_color) : -1;
+                            int left_scratch = (right_phys == REG_RAX) ? REG_RCX : REG_RAX;
+                            
+                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], left_scratch, &ctx);
                             int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
-                            if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
+                            
+                            if (left == REG_RCX && right == REG_RAX) {
+                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                emit8(&linker->text_section, 0x93); // xchg rax, rcx
+                            } else if (right == REG_RAX) {
+                                emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
+                                emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
+                            } else {
+                                if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
+                                if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
+                            }
                             
                             emit_rex(&linker->text_section, 1, 0, 0, 0);
                             emit8(&linker->text_section, 0xD3); // shl/shr/sar rax, cl
