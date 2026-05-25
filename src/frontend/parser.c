@@ -509,18 +509,11 @@ static AstNode* statement(Parser* parser) {
         AstNode* condition = expression(parser);
         consume(parser, TK_RPAREN, "Post condicionem ')' exspectatur.");
         
-        consume(parser, TK_LBRACE, "Ante corpus 'si' '{' exspectatur.");
-        AstNode* then_branch = block_statement(parser);
+        AstNode* then_branch = statement(parser);
         
         AstNode* else_branch = NULL;
         if (match(parser, TK_KW_ALITER)) {
-            if (check(parser, TK_KW_SI)) {
-                // aliter si
-                else_branch = statement(parser);
-            } else {
-                consume(parser, TK_LBRACE, "Ante corpus 'aliter' '{' exspectatur.");
-                else_branch = block_statement(parser);
-            }
+            else_branch = statement(parser);
         }
         
         AstNode* node = ast_create_node(&parser->arena, AST_IF_STMT, keyword);
@@ -620,8 +613,7 @@ static AstNode* statement(Parser* parser) {
         AstNode* condition = expression(parser);
         consume(parser, TK_RPAREN, "Post condicionem ')' exspectatur.");
         
-        consume(parser, TK_LBRACE, "Ante corpus 'dum' '{' exspectatur.");
-        AstNode* body = block_statement(parser);
+        AstNode* body = statement(parser);
         
         AstNode* node = ast_create_node(&parser->arena, AST_WHILE_STMT, keyword);
         node->as.while_stmt.condition = condition;
@@ -653,8 +645,7 @@ static AstNode* statement(Parser* parser) {
         }
         consume(parser, TK_RPAREN, "Post clausulas 'per' ')' exspectatur.");
         
-        consume(parser, TK_LBRACE, "Ante corpus 'per' '{' exspectatur.");
-        AstNode* body = block_statement(parser);
+        AstNode* body = statement(parser);
         
         AstNode* node = ast_create_node(&parser->arena, AST_FOR_STMT, keyword);
         node->as.for_stmt.initializer = initializer;

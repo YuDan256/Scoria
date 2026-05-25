@@ -599,8 +599,12 @@ bool type_checker_run(TypeChecker* checker, AstNode** programs, int count) {
         }
         
         if (mod_name.length == 0) {
-            type_error(checker, prog->token, "Fasciculus sine declaratione 'liber' est.");
-            continue;
+            // 可选的 liber 声明：如果没有，则作为独立匿名模块
+            char* anon_name = (char*)malloc(32);
+            snprintf(anon_name, 32, "@anon_%d", i);
+            mod_name.start = anon_name;
+            mod_name.length = (uint32_t)strlen(anon_name);
+            mod_name.kind = TK_IDENTIFIER;
         }
         
         checker->symtab.current_scope = checker->symtab.universe_scope;

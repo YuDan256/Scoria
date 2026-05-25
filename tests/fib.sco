@@ -1,6 +1,6 @@
 actio fib(n: medius) -> medius {
     si (n <= 1) redde n;
-    redde fib(n - 1) + fib(n - 2);
+    aliter redde fib(n - 1) + fib(n - 2);
 }
 
 actio princeps() -> medius {
