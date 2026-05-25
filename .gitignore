@@ -364,3 +364,5 @@ FodyWeavers.xsd
 .aider*
 
 *.exe
+
+tests/haha.sco

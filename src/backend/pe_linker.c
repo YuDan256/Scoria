@@ -807,8 +807,14 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_AND:
                         case SIR_OR:
                         case SIR_XOR: {
-                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                            if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
+                            int dest_reg = REG_RAX;
+                            if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
+                                int c = reg_alloc_get_color(&allocator, inst->dest->as.vreg);
+                                if (c != -1) dest_reg = get_phys_reg(c);
+                            }
+                            
+                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], dest_reg, &ctx);
+                            if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
                             
                             if (inst->opcode != SIR_MUL && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                                 int32_t imm = (int32_t)inst->operands[1]->as.int_val;
@@ -818,21 +824,22 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 else if (inst->opcode == SIR_AND) opc_ext = 4;
                                 else if (inst->opcode == SIR_OR) opc_ext = 1;
                                 else if (inst->opcode == SIR_XOR) opc_ext = 6;
-                                emit_alu_reg_imm32(&linker->text_section, opc_ext, REG_RAX, imm);
+                                emit_alu_reg_imm32(&linker->text_section, opc_ext, dest_reg, imm);
                             } else {
-                                int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
-                                if (inst->opcode == SIR_ADD) emit_alu_reg_reg(&linker->text_section, 0x01, REG_RAX, right);
-                                else if (inst->opcode == SIR_SUB) emit_alu_reg_reg(&linker->text_section, 0x29, REG_RAX, right);
-                                else if (inst->opcode == SIR_AND) emit_alu_reg_reg(&linker->text_section, 0x21, REG_RAX, right);
-                                else if (inst->opcode == SIR_OR) emit_alu_reg_reg(&linker->text_section, 0x09, REG_RAX, right);
-                                else if (inst->opcode == SIR_XOR) emit_alu_reg_reg(&linker->text_section, 0x31, REG_RAX, right);
+                                int right_scratch = (dest_reg == REG_RCX) ? REG_RDX : REG_RCX;
+                                int right = load_operand(&linker->text_section, &allocator, inst->operands[1], right_scratch, &ctx);
+                                if (inst->opcode == SIR_ADD) emit_alu_reg_reg(&linker->text_section, 0x01, dest_reg, right);
+                                else if (inst->opcode == SIR_SUB) emit_alu_reg_reg(&linker->text_section, 0x29, dest_reg, right);
+                                else if (inst->opcode == SIR_AND) emit_alu_reg_reg(&linker->text_section, 0x21, dest_reg, right);
+                                else if (inst->opcode == SIR_OR) emit_alu_reg_reg(&linker->text_section, 0x09, dest_reg, right);
+                                else if (inst->opcode == SIR_XOR) emit_alu_reg_reg(&linker->text_section, 0x31, dest_reg, right);
                                 else {
-                                    emit_rex(&linker->text_section, 1, 0, 0, right > 7);
-                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xAF); // imul rax, right
-                                    emit_modrm(&linker->text_section, 3, REG_RAX, right & 7);
+                                    emit_rex(&linker->text_section, 1, dest_reg > 7, 0, right > 7);
+                                    emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xAF); // imul dest_reg, right
+                                    emit_modrm(&linker->text_section, 3, dest_reg & 7, right & 7);
                                 }
                             }
-                            store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
+                            store_result(&linker->text_section, &allocator, inst->dest, dest_reg);
                             break;
                         }
                         case SIR_FADD:
@@ -840,15 +847,23 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_FMUL:
                         case SIR_FDIV: {
                             bool is_f32 = (inst->operands[0]->type && inst->operands[0]->type->kind == TY_F32);
-                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                            if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
-                            int right = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
-                            if (right != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, right);
+                            int dest_reg = REG_RAX;
+                            if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
+                                int c = reg_alloc_get_color(&allocator, inst->dest->as.vreg);
+                                if (c != -1) dest_reg = get_phys_reg(c);
+                            }
                             
-                            // movd/movq xmm0, rax
-                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
-                            // movd/movq xmm1, rcx
-                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 1, REG_RCX);
+                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], dest_reg, &ctx);
+                            if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
+                            
+                            int right_scratch = (dest_reg == REG_RCX) ? REG_RDX : REG_RCX;
+                            int right = load_operand(&linker->text_section, &allocator, inst->operands[1], right_scratch, &ctx);
+                            if (right != right_scratch) emit_mov_reg_reg(&linker->text_section, right_scratch, right);
+                            
+                            // movd/movq xmm0, dest_reg
+                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, dest_reg > 7); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, dest_reg & 7);
+                            // movd/movq xmm1, right_scratch
+                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, right_scratch > 7); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 1, right_scratch & 7);
                             
                             // op
                             emit8(&linker->text_section, is_f32 ? 0xF3 : 0xF2); emit8(&linker->text_section, 0x0F);
@@ -858,10 +873,10 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             else if (inst->opcode == SIR_FDIV) emit8(&linker->text_section, 0x5E);
                             emit_modrm(&linker->text_section, 3, 0, 1); // xmm0, xmm1
                             
-                            // movd/movq rax, xmm0
-                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); emit_modrm(&linker->text_section, 3, 0, REG_RAX);
+                            // movd/movq dest_reg, xmm0
+                            emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, is_f32 ? 0 : 1, 0, 0, dest_reg > 7); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); emit_modrm(&linker->text_section, 3, 0, dest_reg & 7);
                             
-                            store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
+                            store_result(&linker->text_section, &allocator, inst->dest, dest_reg);
                             break;
                         }
                         case SIR_DIV:
@@ -917,24 +932,19 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                         case SIR_MEMCPY: {
                             int size = (int)inst->operands[2]->as.int_val;
                             
+                            int dst_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
+                            if (dst_reg != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, dst_reg);
+                            
+                            int src_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RDX, &ctx);
+                            if (src_reg != REG_RDX) emit_mov_reg_reg(&linker->text_section, REG_RDX, src_reg);
+                            
                             // 保护 rep movsb 会破坏的寄存器
                             emit8(&linker->text_section, 0x56); // push rsi
                             emit8(&linker->text_section, 0x57); // push rdi
                             emit8(&linker->text_section, 0x51); // push rcx
                             
-                            int dst_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
-                            int src_scratch = (dst_reg == REG_RDX) ? REG_RCX : REG_RDX;
-                            int src_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], src_scratch, &ctx);
-                            
-                            // 压栈以防止寄存器互相覆盖 (Swap Bug)
-                            emit_rex(&linker->text_section, 0, 0, 0, dst_reg > 7);
-                            emit8(&linker->text_section, 0x50 + (dst_reg & 7)); // push dst_reg
-                            
-                            emit_rex(&linker->text_section, 0, 0, 0, src_reg > 7);
-                            emit8(&linker->text_section, 0x50 + (src_reg & 7)); // push src_reg
-                            
-                            emit8(&linker->text_section, 0x5E); // pop rsi (src)
-                            emit8(&linker->text_section, 0x5F); // pop rdi (dst)
+                            emit_mov_reg_reg(&linker->text_section, REG_RDI, REG_RAX);
+                            emit_mov_reg_reg(&linker->text_section, REG_RSI, REG_RDX);
                             
                             emit_mov_reg_imm32(&linker->text_section, REG_RCX, size);
                             
@@ -1155,16 +1165,17 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             }
                             
                             // 2. 处理寄存器传递的参数 (i < 4)
-                            // 使用 push/pop 机制防止寄存器互相覆盖 (Swap Bug)
                             int reg_args = num_args > 4 ? 4 : num_args;
                             for (int i = 0; i < reg_args; i++) {
                                 int val = load_operand(&linker->text_section, &allocator, inst->operands[i+1], REG_RAX, &ctx);
-                                emit_rex(&linker->text_section, 0, 0, 0, val > 7);
-                                emit8(&linker->text_section, 0x50 + (val & 7)); // push val
+                                emit_rex(&linker->text_section, 1, val > 7, 0, 0);
+                                emit8(&linker->text_section, 0x89); // mov [rsp + i*8], val
+                                emit_mem(&linker->text_section, val, REG_RSP, i * 8);
                             }
-                            for (int i = reg_args - 1; i >= 0; i--) {
-                                emit_rex(&linker->text_section, 0, 0, 0, arg_regs[i] > 7);
-                                emit8(&linker->text_section, 0x58 + (arg_regs[i] & 7)); // pop arg_regs[i]
+                            for (int i = 0; i < reg_args; i++) {
+                                emit_rex(&linker->text_section, 1, arg_regs[i] > 7, 0, 0);
+                                emit8(&linker->text_section, 0x8B); // mov arg_regs[i], [rsp + i*8]
+                                emit_mem(&linker->text_section, arg_regs[i] & 7, REG_RSP, i * 8);
                                 
                                 bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
                                 if (is_float) {

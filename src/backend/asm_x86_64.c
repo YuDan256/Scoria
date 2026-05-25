@@ -289,50 +289,58 @@ static void generate_function(FILE* out, SirFunction* func) {
                     break;
                 }
 
-                case SIR_ADD:
-                    // dest = op0 + op1
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    addq %s, %%rax\n", op1);
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                case SIR_ADD: {
+                    bool dest_is_mem = (dest[0] != '%');
+                    const char* acc = dest_is_mem ? "%rax" : dest;
+                    if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
+                    fprintf(out, "    addq %s, %s\n", op1, acc);
+                    if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
+                }
 
-                case SIR_SUB:
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    subq %s, %%rax\n", op1);
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                case SIR_SUB: {
+                    bool dest_is_mem = (dest[0] != '%');
+                    const char* acc = dest_is_mem ? "%rax" : dest;
+                    if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
+                    fprintf(out, "    subq %s, %s\n", op1, acc);
+                    if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
+                }
 
-                case SIR_MUL:
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    imulq %s, %%rax\n", op1);
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                case SIR_MUL: {
+                    bool dest_is_mem = (dest[0] != '%');
+                    const char* acc = dest_is_mem ? "%rax" : dest;
+                    if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
+                    fprintf(out, "    imulq %s, %s\n", op1, acc);
+                    if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
+                }
 
                 case SIR_FADD:
                 case SIR_FSUB:
                 case SIR_FMUL:
                 case SIR_FDIV: {
                     bool is_f32 = (inst->operands[0]->type && inst->operands[0]->type->kind == TY_F32);
-                    fprintf(out, "    movq %s, %%rax\n", op0);
+                    bool dest_is_mem = (dest[0] != '%');
+                    const char* acc = dest_is_mem ? "%rax" : dest;
+                    if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
                     fprintf(out, "    movq %s, %%rcx\n", op1);
+                    
+                    fprintf(out, "    movq %s, %%xmm0\n", acc);
+                    fprintf(out, "    movq %%rcx, %%xmm1\n");
                     if (is_f32) {
-                        fprintf(out, "    movd %%eax, %%xmm0\n");
-                        fprintf(out, "    movd %%ecx, %%xmm1\n");
                         if (inst->opcode == SIR_FADD) fprintf(out, "    addss %%xmm1, %%xmm0\n");
                         else if (inst->opcode == SIR_FSUB) fprintf(out, "    subss %%xmm1, %%xmm0\n");
                         else if (inst->opcode == SIR_FMUL) fprintf(out, "    mulss %%xmm1, %%xmm0\n");
                         else if (inst->opcode == SIR_FDIV) fprintf(out, "    divss %%xmm1, %%xmm0\n");
-                        fprintf(out, "    movd %%xmm0, %%eax\n");
                     } else {
-                        fprintf(out, "    movq %%rax, %%xmm0\n");
-                        fprintf(out, "    movq %%rcx, %%xmm1\n");
                         if (inst->opcode == SIR_FADD) fprintf(out, "    addsd %%xmm1, %%xmm0\n");
                         else if (inst->opcode == SIR_FSUB) fprintf(out, "    subsd %%xmm1, %%xmm0\n");
                         else if (inst->opcode == SIR_FMUL) fprintf(out, "    mulsd %%xmm1, %%xmm0\n");
                         else if (inst->opcode == SIR_FDIV) fprintf(out, "    divsd %%xmm1, %%xmm0\n");
-                        fprintf(out, "    movq %%xmm0, %%rax\n");
                     }
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                    fprintf(out, "    movq %%xmm0, %s\n", acc);
+                    if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
                 }
 
@@ -433,13 +441,13 @@ static void generate_function(FILE* out, SirFunction* func) {
 
                 case SIR_MEMCPY: {
                     int size = (int)inst->operands[2]->as.int_val;
+                    fprintf(out, "    movq %s, %%rax\n", op0);
+                    fprintf(out, "    movq %s, %%rdx\n", op1);
                     fprintf(out, "    pushq %%rsi\n");
                     fprintf(out, "    pushq %%rdi\n");
                     fprintf(out, "    pushq %%rcx\n");
-                    fprintf(out, "    pushq %s\n", op0);
-                    fprintf(out, "    pushq %s\n", op1);
-                    fprintf(out, "    popq %%rsi\n");
-                    fprintf(out, "    popq %%rdi\n");
+                    fprintf(out, "    movq %%rax, %%rdi\n");
+                    fprintf(out, "    movq %%rdx, %%rsi\n");
                     fprintf(out, "    movq $%d, %%rcx\n", size);
                     fprintf(out, "    cld\n");
                     fprintf(out, "    rep movsb\n");
@@ -471,12 +479,13 @@ static void generate_function(FILE* out, SirFunction* func) {
                 case SIR_MOD: {
                     bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                     fprintf(out, "    movq %s, %%rax\n", op0);
+                    fprintf(out, "    movq %s, %%rcx\n", op1);
                     if (is_unsigned) {
                         fprintf(out, "    xorq %%rdx, %%rdx\n");
-                        fprintf(out, "    divq %s\n", op1);
+                        fprintf(out, "    divq %%rcx\n");
                     } else {
                         fprintf(out, "    cqo\n");
-                        fprintf(out, "    idivq %s\n", op1);
+                        fprintf(out, "    idivq %%rcx\n");
                     }
                     if (inst->opcode == SIR_DIV) {
                         fprintf(out, "    movq %%rax, %s\n", dest);
@@ -486,36 +495,47 @@ static void generate_function(FILE* out, SirFunction* func) {
                     break;
                 }
 
-                case SIR_AND:
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    andq %s, %%rax\n", op1);
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                case SIR_AND: {
+                    bool dest_is_mem = (dest[0] != '%');
+                    const char* acc = dest_is_mem ? "%rax" : dest;
+                    if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
+                    fprintf(out, "    andq %s, %s\n", op1, acc);
+                    if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
+                }
 
-                case SIR_OR:
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    orq %s, %%rax\n", op1);
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                case SIR_OR: {
+                    bool dest_is_mem = (dest[0] != '%');
+                    const char* acc = dest_is_mem ? "%rax" : dest;
+                    if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
+                    fprintf(out, "    orq %s, %s\n", op1, acc);
+                    if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
+                }
 
-                case SIR_XOR:
-                    fprintf(out, "    movq %s, %%rax\n", op0);
-                    fprintf(out, "    xorq %s, %%rax\n", op1);
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                case SIR_XOR: {
+                    bool dest_is_mem = (dest[0] != '%');
+                    const char* acc = dest_is_mem ? "%rax" : dest;
+                    if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
+                    fprintf(out, "    xorq %s, %s\n", op1, acc);
+                    if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
+                }
 
                 case SIR_SHL:
                 case SIR_SHR: {
                     bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
-                    fprintf(out, "    movq %s, %%rax\n", op0);
+                    bool dest_is_mem = (dest[0] != '%');
+                    const char* acc = dest_is_mem ? "%rax" : dest;
+                    if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
                     fprintf(out, "    movq %s, %%rcx\n", op1);
                     if (inst->opcode == SIR_SHL) {
-                        fprintf(out, "    shlq %%cl, %%rax\n");
+                        fprintf(out, "    shlq %%cl, %s\n", acc);
                     } else {
-                        if (is_unsigned) fprintf(out, "    shrq %%cl, %%rax\n");
-                        else fprintf(out, "    sarq %%cl, %%rax\n");
+                        if (is_unsigned) fprintf(out, "    shrq %%cl, %s\n", acc);
+                        else fprintf(out, "    sarq %%cl, %s\n", acc);
                     }
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                    if (dest_is_mem) fprintf(out, "    movq %s, %s\n", acc, dest);
                     break;
                 }
 
@@ -637,12 +657,12 @@ static void generate_function(FILE* out, SirFunction* func) {
                         } else {
                             fprintf(out, "    movq %s, %%rax\n", arg_str);
                         }
-                        fprintf(out, "    pushq %%rax\n");
+                        fprintf(out, "    movq %%rax, %d(%%rsp)\n", i * 8);
                     }
                     
                     const char* arg_regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
-                    for (int i = reg_args - 1; i >= 0; i--) {
-                        fprintf(out, "    popq %s\n", arg_regs[i]);
+                    for (int i = 0; i < reg_args; i++) {
+                        fprintf(out, "    movq %d(%%rsp), %s\n", i * 8, arg_regs[i]);
                         bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
                         if (is_float) {
                             fprintf(out, "    movq %s, %%xmm%d\n", arg_regs[i], i);
