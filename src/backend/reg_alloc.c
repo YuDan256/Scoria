@@ -177,12 +177,6 @@ void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func) {
         for (int i = i_count - 1; i >= 0; i--) {
             SirInst* inst = insts[i];
             
-            if (inst->opcode == SIR_CALL) {
-                for (uint32_t v = 1; v <= max_v; v++) {
-                    if (current_live[v]) allocator->crosses_call[v] = true;
-                }
-            }
-
             if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
                 uint32_t def_vreg = inst->dest->as.vreg;
                 if (def_vreg <= max_v) {
@@ -197,6 +191,12 @@ void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func) {
                         }
                     }
                     current_live[def_vreg] = false;
+                }
+            }
+
+            if (inst->opcode == SIR_CALL) {
+                for (uint32_t v = 1; v <= max_v; v++) {
+                    if (current_live[v]) allocator->crosses_call[v] = true;
                 }
             }
 

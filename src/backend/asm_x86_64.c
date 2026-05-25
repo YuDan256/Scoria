@@ -133,8 +133,27 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
         }
     }
     
+    bool has_extern_call = false;
+    for (SirBlock* block = func->first_block; block; block = block->next) {
+        for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+            if (inst->opcode == SIR_CALL) {
+                if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                    bool is_ext = false;
+                    for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) {
+                        if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
+                            is_ext = true;
+                            break;
+                        }
+                    }
+                    if (is_ext) has_extern_call = true;
+                } else {
+                    has_extern_call = true;
+                }
+            }
+        }
+    }
     int call_stack_space = max_call_args > 4 ? (max_call_args - 4) * 8 : 0;
-    int shadow_space = has_call ? 32 : 0;
+    int shadow_space = (has_extern_call || max_call_args > 4) ? 32 : 0;
     int local_and_args = allocator.current_offset + shadow_space + call_stack_space;
 
     // 2. 函数序言 (Prologue)
@@ -296,20 +315,34 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                 case SIR_ADD: {
                     bool dest_is_mem = (dest[0] != '%');
                     const char* acc = dest_is_mem ? "%rax" : dest;
-                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT && strcmp(op0, acc) != 0) {
+                    
+                    const char* left_op = op0;
+                    if (inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[0]) {
+                        if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
+                            left_op = "%rax";
+                        }
+                    }
+                    const char* right_op = op1;
+                    if (inst->num_operands > 1 && inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[1]) {
+                        if (inst->operands[1]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[1]->as.vreg] == 2) {
+                            right_op = "%rax";
+                        }
+                    }
+                    
+                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT && strcmp(left_op, acc) != 0) {
                         int64_t imm = inst->operands[1]->as.int_val;
                         fprintf(out, "    leaq %lld(%s), %s\n", (long long)imm, op0, acc);
                     } else {
-                        if (strcmp(op1, acc) == 0 && strcmp(op0, acc) != 0) {
-                            fprintf(out, "    addq %s, %s\n", op0, acc);
-                        } else if (strcmp(op0, acc) != 0 && strcmp(op1, acc) != 0 && op0[0] == '%' && op1[0] == '%') {
-                            fprintf(out, "    leaq (%s, %s), %s\n", op0, op1, acc);
+                        if (strcmp(right_op, acc) == 0 && strcmp(left_op, acc) != 0) {
+                            fprintf(out, "    addq %s, %s\n", left_op, acc);
+                        } else if (strcmp(left_op, acc) != 0 && strcmp(right_op, acc) != 0 && left_op[0] == '%' && right_op[0] == '%') {
+                            fprintf(out, "    leaq (%s, %s), %s\n", left_op, right_op, acc);
                         } else {
-                            if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
-                            if (strcmp(op1, "$1") == 0) {
+                            if (strcmp(left_op, acc) != 0) fprintf(out, "    movq %s, %s\n", left_op, acc);
+                            if (strcmp(right_op, "$1") == 0) {
                                 fprintf(out, "    incq %s\n", acc);
-                            } else if (strcmp(op1, "$0") != 0) {
-                                fprintf(out, "    addq %s, %s\n", op1, acc);
+                            } else if (strcmp(right_op, "$0") != 0) {
+                                fprintf(out, "    addq %s, %s\n", right_op, acc);
                             }
                         }
                     }
@@ -320,19 +353,33 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                 case SIR_SUB: {
                     bool dest_is_mem = (dest[0] != '%');
                     const char* acc = dest_is_mem ? "%rax" : dest;
-                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT && strcmp(op0, acc) != 0) {
+                    
+                    const char* left_op = op0;
+                    if (inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[0]) {
+                        if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
+                            left_op = "%rax";
+                        }
+                    }
+                    const char* right_op = op1;
+                    if (inst->num_operands > 1 && inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[1]) {
+                        if (inst->operands[1]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[1]->as.vreg] == 2) {
+                            right_op = "%rax";
+                        }
+                    }
+                    
+                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT && strcmp(left_op, acc) != 0) {
                         int64_t imm = inst->operands[1]->as.int_val;
-                        fprintf(out, "    leaq %lld(%s), %s\n", (long long)-imm, op0, acc);
+                        fprintf(out, "    leaq %lld(%s), %s\n", (long long)-imm, left_op, acc);
                     } else {
-                        if (strcmp(op1, acc) == 0 && strcmp(op0, acc) != 0) {
+                        if (strcmp(right_op, acc) == 0 && strcmp(left_op, acc) != 0) {
                             fprintf(out, "    negq %s\n", acc);
-                            fprintf(out, "    addq %s, %s\n", op0, acc);
+                            fprintf(out, "    addq %s, %s\n", left_op, acc);
                         } else {
-                            if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
-                            if (strcmp(op1, "$1") == 0) {
+                            if (strcmp(left_op, acc) != 0) fprintf(out, "    movq %s, %s\n", left_op, acc);
+                            if (strcmp(right_op, "$1") == 0) {
                                 fprintf(out, "    decq %s\n", acc);
-                            } else if (strcmp(op1, "$0") != 0) {
-                                fprintf(out, "    subq %s, %s\n", op1, acc);
+                            } else if (strcmp(right_op, "$0") != 0) {
+                                fprintf(out, "    subq %s, %s\n", right_op, acc);
                             }
                         }
                     }
@@ -1055,7 +1102,13 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                         if (ret_is_float) {
                             fprintf(out, "    movq %%xmm0, %%rax\n");
                         }
-                        if (strcmp(dest, "%rax") != 0) {
+                        bool skip_store = false;
+                        if (!ret_is_float && inst->next && (inst->next->opcode == SIR_ADD || inst->next->opcode == SIR_SUB || inst->next->opcode == SIR_MUL || inst->next->opcode == SIR_AND || inst->next->opcode == SIR_OR || inst->next->opcode == SIR_XOR)) {
+                            if ((inst->next->operands[0] == inst->dest || inst->next->operands[1] == inst->dest) && allocator.use_count[inst->dest->as.vreg] == 2) {
+                                skip_store = true;
+                            }
+                        }
+                        if (!skip_store && strcmp(dest, "%rax") != 0) {
                             fprintf(out, "    movq %%rax, %s\n", dest);
                         }
                     }

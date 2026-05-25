@@ -629,8 +629,27 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             allocator.current_offset = local_stack_size;
             reg_alloc_build_and_color(&allocator, func);
 
+            bool has_extern_call = false;
+            for (SirBlock* block = func->first_block; block; block = block->next) {
+                for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                    if (inst->opcode == SIR_CALL) {
+                        if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                            bool is_ext = false;
+                            for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) {
+                                if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
+                                    is_ext = true;
+                                    break;
+                                }
+                            }
+                            if (is_ext) has_extern_call = true;
+                        } else {
+                            has_extern_call = true;
+                        }
+                    }
+                }
+            }
             int call_stack_space = max_call_args > 4 ? (max_call_args - 4) * 8 : 0;
-            int shadow_space = has_call ? 32 : 0;
+            int shadow_space = (has_extern_call || max_call_args > 4) ? 32 : 0;
             int local_and_args = allocator.current_offset + shadow_space + call_stack_space;
 
             // 序言 (Prologue)
@@ -932,7 +951,16 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             int right_phys = (right_color != -1) ? get_phys_reg(right_color) : -1;
                             int left_scratch = (right_phys == dest_reg) ? ((dest_reg == REG_RAX) ? REG_RCX : REG_RAX) : dest_reg;
                             
-                            int left = load_operand(&linker->text_section, &allocator, inst->operands[0], left_scratch, &ctx);
+                            int left = REG_RAX;
+                            bool left_already_in_rax = false;
+                            if (inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[0]) {
+                                if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
+                                    left_already_in_rax = true;
+                                }
+                            }
+                            if (!left_already_in_rax) {
+                                left = load_operand(&linker->text_section, &allocator, inst->operands[0], left_scratch, &ctx);
+                            }
                             
                             if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                                 int32_t imm = (int32_t)inst->operands[1]->as.int_val;
@@ -999,9 +1027,18 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                     }
                                 }
                             } else {
-                                int right_scratch = (dest_reg == REG_RCX) ? REG_RDX : REG_RCX;
-                                if (right_scratch == left) right_scratch = (right_scratch == REG_RDX) ? REG_R8 : REG_RDX;
-                                int right = load_operand(&linker->text_section, &allocator, inst->operands[1], right_scratch, &ctx);
+                                int right = REG_RAX;
+                                bool right_already_in_rax = false;
+                                if (inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[1]) {
+                                    if (inst->operands[1]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[1]->as.vreg] == 2) {
+                                        right_already_in_rax = true;
+                                    }
+                                }
+                                if (!right_already_in_rax) {
+                                    int right_scratch = (dest_reg == REG_RCX) ? REG_RDX : REG_RCX;
+                                    if (right_scratch == left) right_scratch = (right_scratch == REG_RDX) ? REG_R8 : REG_RDX;
+                                    right = load_operand(&linker->text_section, &allocator, inst->operands[1], right_scratch, &ctx);
+                                }
                                 
                                 // 交换可交换操作数，使得 left == dest_reg，减少 mov 指令
                                 if (right == dest_reg && left != dest_reg && inst->opcode != SIR_SUB) {
@@ -1799,7 +1836,15 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                     emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x7E); 
                                     emit_modrm(&linker->text_section, 3, 0, REG_RAX);
                                 }
-                                store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
+                                bool skip_store = false;
+                                if (!ret_is_float && inst->next && (inst->next->opcode == SIR_ADD || inst->next->opcode == SIR_SUB || inst->next->opcode == SIR_MUL || inst->next->opcode == SIR_AND || inst->next->opcode == SIR_OR || inst->next->opcode == SIR_XOR)) {
+                                    if ((inst->next->operands[0] == inst->dest || inst->next->operands[1] == inst->dest) && allocator.use_count[inst->dest->as.vreg] == 2) {
+                                        skip_store = true;
+                                    }
+                                }
+                                if (!skip_store) {
+                                    store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
+                                }
                             }
                             break;
                         }
