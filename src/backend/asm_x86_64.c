@@ -372,9 +372,9 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                         }
                     }
                     
-                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT && strcmp(left_op, acc) != 0) {
+                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT && strcmp(left_op, acc) != 0 && left_op[0] == '%') {
                         int64_t imm = inst->operands[1]->as.int_val;
-                        fprintf(out, "    lea%s %lld(%s), %s\n", suf, (long long)imm, op0, acc);
+                        fprintf(out, "    lea%s %lld(%s), %s\n", suf, (long long)imm, left_op, acc);
                     } else {
                         if (strcmp(right_op, acc) == 0 && strcmp(left_op, acc) != 0) {
                             fprintf(out, "    add%s %s, %s\n", suf, left_op, acc);
@@ -413,7 +413,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                         }
                     }
                     
-                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT && strcmp(left_op, acc) != 0) {
+                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT && strcmp(left_op, acc) != 0 && left_op[0] == '%') {
                         int64_t imm = inst->operands[1]->as.int_val;
                         fprintf(out, "    lea%s %lld(%s), %s\n", suf, (long long)-imm, left_op, acc);
                     } else {
