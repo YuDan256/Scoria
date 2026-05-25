@@ -661,6 +661,18 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             }
 
             for (SirBlock* block = func->first_block; block; block = block->next) {
+                // 优化: 如果前一个基本块以无条件跳转或返回结束，当前块不会被 Fall-through 到达，可以安全地进行 16 字节对齐
+                // 这能显著提升分支预测和指令缓存的效率
+                if (block != func->first_block) {
+                    SirBlock* prev = func->first_block;
+                    while (prev->next != block) prev = prev->next;
+                    if (prev->last_inst && (prev->last_inst->opcode == SIR_JMP || prev->last_inst->opcode == SIR_RET)) {
+                        while (linker->text_section.size % 16 != 0) {
+                            emit8(&linker->text_section, 0x90); // nop
+                        }
+                    }
+                }
+                
                 if (block->id < 1024) block_offsets[block->id] = (uint32_t)linker->text_section.size;
 
                 for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
@@ -903,31 +915,13 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 if (c != -1) dest_reg = get_phys_reg(c);
                                 if (inst->dest->type && type_get_size(inst->dest->type) <= 4) w = 0;
                                 
-                                if (inst->next) {
+                                if (inst->next && allocator.use_count[inst->dest->as.vreg] == 2) {
                                     if (inst->next->opcode == SIR_RET && inst->next->num_operands > 0 && inst->next->operands[0] == inst->dest) {
-                                        bool used_elsewhere = false;
-                                        for (SirInst* scan = inst->next->next; scan; scan = scan->next) {
-                                            for (int i=0; i<scan->num_operands; i++) {
-                                                if (scan->operands[i] == inst->dest) { used_elsewhere = true; break; }
-                                            }
-                                            if (used_elsewhere) break;
-                                        }
-                                        if (!used_elsewhere) {
-                                            dest_reg = REG_RAX;
-                                            is_ret_peephole = true;
-                                        }
+                                        dest_reg = REG_RAX;
+                                        is_ret_peephole = true;
                                     } else if (inst->next->opcode == SIR_CALL && inst->next->num_operands == 2 && inst->next->operands[1] == inst->dest) {
-                                        bool used_elsewhere = false;
-                                        for (SirInst* scan = inst->next->next; scan; scan = scan->next) {
-                                            for (int i=0; i<scan->num_operands; i++) {
-                                                if (scan->operands[i] == inst->dest) { used_elsewhere = true; break; }
-                                            }
-                                            if (used_elsewhere) break;
-                                        }
-                                        if (!used_elsewhere) {
-                                            dest_reg = REG_RCX;
-                                            is_ret_peephole = true;
-                                        }
+                                        dest_reg = REG_RCX;
+                                        is_ret_peephole = true;
                                     }
                                 }
                             }

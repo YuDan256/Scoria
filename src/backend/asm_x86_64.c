@@ -158,6 +158,13 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
     char op0[64], op1[64], op2[64], dest[64];
     
     for (SirBlock* block = func->first_block; block; block = block->next) {
+        if (block != func->first_block) {
+            SirBlock* prev = func->first_block;
+            while (prev->next != block) prev = prev->next;
+            if (prev->last_inst && (prev->last_inst->opcode == SIR_JMP || prev->last_inst->opcode == SIR_RET)) {
+                fprintf(out, "    .p2align 4\n");
+            }
+        }
         fprintf(out, ".L%s_%u:\n", block->name, block->id);
         
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
@@ -168,29 +175,11 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
             
             if (inst->dest) {
                 get_operand_str(dest, inst->dest, &allocator, 8, total_frame_size);
-                if (inst->dest->kind == SIR_VAL_VREG && inst->next) {
+                if (inst->dest->kind == SIR_VAL_VREG && inst->next && allocator.use_count[inst->dest->as.vreg] == 2) {
                     if (inst->next->opcode == SIR_RET && inst->next->num_operands > 0 && inst->next->operands[0] == inst->dest) {
-                        bool used_elsewhere = false;
-                        for (SirInst* scan = inst->next->next; scan; scan = scan->next) {
-                            for (int i=0; i<scan->num_operands; i++) {
-                                if (scan->operands[i] == inst->dest) { used_elsewhere = true; break; }
-                            }
-                            if (used_elsewhere) break;
-                        }
-                        if (!used_elsewhere) {
-                            strcpy(dest, "%rax");
-                        }
+                        strcpy(dest, "%rax");
                     } else if (inst->next->opcode == SIR_CALL && inst->next->num_operands == 2 && inst->next->operands[1] == inst->dest) {
-                        bool used_elsewhere = false;
-                        for (SirInst* scan = inst->next->next; scan; scan = scan->next) {
-                            for (int i=0; i<scan->num_operands; i++) {
-                                if (scan->operands[i] == inst->dest) { used_elsewhere = true; break; }
-                            }
-                            if (used_elsewhere) break;
-                        }
-                        if (!used_elsewhere) {
-                            strcpy(dest, "%rcx");
-                        }
+                        strcpy(dest, "%rcx");
                     }
                 }
             }
