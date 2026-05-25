@@ -93,6 +93,11 @@ static void prune_dead_blocks(SirFunction* func, SirBlock* new_entry) {
     
     bool* reachable = (bool*)calloc(max_block_id + 1, sizeof(bool));
     SirBlock** stack = (SirBlock**)malloc(sizeof(SirBlock*) * (max_block_id + 1));
+    if (!reachable || !stack) {
+        if (reachable) free(reachable);
+        if (stack) free(stack);
+        return;
+    }
     int top = 0;
     
     SirBlock* entry = new_entry ? new_entry : func->first_block;
