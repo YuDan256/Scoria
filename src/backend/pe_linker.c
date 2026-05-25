@@ -620,15 +620,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             else if (i2->opcode == SIR_ICMP_LE) fp_infos[f_idx].jcc_slow = cond_is_true ? (is_unsigned ? 0x87 : 0x8F) : (is_unsigned ? 0x86 : 0x8E);
                             else if (i2->opcode == SIR_ICMP_GT) fp_infos[f_idx].jcc_slow = cond_is_true ? (is_unsigned ? 0x86 : 0x8E) : (is_unsigned ? 0x87 : 0x8F);
                             else if (i2->opcode == SIR_ICMP_GE) fp_infos[f_idx].jcc_slow = cond_is_true ? (is_unsigned ? 0x82 : 0x8C) : (is_unsigned ? 0x83 : 0x8D);
-                            
-                            // 切断树根，死块大扫除
-                            i1->next = i3;
-                            i3->prev = i1;
-                            i3->opcode = SIR_JMP;
-                            i3->num_operands = 1;
-                            i3->operands[0] = cond_is_true ? i3->operands[2] : i3->operands[1];
-                            
-                            prune_dead_blocks(func, func->first_block);
                         }
                     }
                 }
@@ -748,6 +739,26 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                 // 回填 jcc_slow
                 int32_t rel_slow = (int32_t)(linker->text_section.size - (jmp_slow_off + 4));
                 memcpy(linker->text_section.buffer + jmp_slow_off, &rel_slow, 4);
+                
+                // 仅在第一遍汇编时切断树根并大扫除
+                if (pass == 0) {
+                    SirInst* i1 = func->first_block->first_inst;
+                    SirInst* i2 = i1->next;
+                    SirInst* i3 = i2->next;
+                    bool cond_is_true = false;
+                    SirBlock* t_block = i3->operands[1]->as.block;
+                    if (t_block->first_inst && t_block->first_inst == t_block->last_inst && t_block->first_inst->opcode == SIR_RET && t_block->first_inst->operands[0] == i1->dest) {
+                        cond_is_true = true;
+                    }
+                    
+                    i1->next = i3;
+                    i3->prev = i1;
+                    i3->opcode = SIR_JMP;
+                    i3->num_operands = 1;
+                    i3->operands[0] = cond_is_true ? i3->operands[2] : i3->operands[1];
+                    
+                    prune_dead_blocks(func, func->first_block);
+                }
             }
 
             uint32_t max_vreg = 0;
