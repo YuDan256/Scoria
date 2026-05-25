@@ -71,7 +71,7 @@ void* arena_realloc(Arena* arena, void* old_ptr, size_t old_size, size_t new_siz
 
     // 否则，开辟新领地并转移辎重
     void* new_ptr = arena_alloc(arena, new_size);
-    memcpy(new_ptr, old_ptr, old_size);
+    memcpy(new_ptr, old_ptr, old_size < new_size ? old_size : new_size);
     return new_ptr;
 }
 

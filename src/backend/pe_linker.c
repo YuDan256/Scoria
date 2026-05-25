@@ -2116,6 +2116,8 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
     free(strings);
     free(string_lens);
     free(string_offsets);
+    free(global_names);
+    free(global_offsets);
 }
 
 bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const char* output_filename, int opt_level) {
