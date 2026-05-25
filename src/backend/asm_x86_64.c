@@ -83,14 +83,14 @@ static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int s
     }
 }
 
-static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
+static void generate_function(FILE* out, SirFunction* func, SirModule* module, int opt_level) {
     fprintf(out, "    .p2align 4\n"); // 优化: 函数入口 16 字节对齐
     fprintf(out, "    .globl %s\n", func->name);
     fprintf(out, "    .type %s, @function\n", func->name);
     fprintf(out, "%s:\n", func->name);
 
     // 优化: 序言前置快路径剥离 (Shrink-Wrapping / Fast Path Peephole)
-    if (func->has_fast_path) {
+    if (func->has_fast_path && opt_level > 0) {
         const char* cx = func->fp_w ? "%rcx" : "%ecx";
         const char* ax = func->fp_w ? "%rax" : "%eax";
         const char* cmp_op = func->fp_w ? "cmpq" : "cmpl";
@@ -138,7 +138,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
     RegAllocator allocator;
     reg_alloc_init(&allocator, max_vreg);
     allocator.current_offset = local_stack_size;
-    reg_alloc_build_and_color(&allocator, func);
+    reg_alloc_build_and_color(&allocator, func, opt_level);
 
     // 预留栈空间：只为被溢出 (Spilled) 的虚拟寄存器分配栈内存
     for (uint32_t i = 1; i <= max_vreg; i++) {
@@ -750,7 +750,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                     
                     // 优化：除以 2 的幂转换为移位
-                    if (inst->opcode == SIR_DIV && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
+                    if (opt_level > 0 && inst->opcode == SIR_DIV && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                         int64_t imm = inst->operands[1]->as.int_val;
                         if (imm > 0 && (imm & (imm - 1)) == 0) {
                             fprintf(out, "    movq %s, %%rax\n", op0);
@@ -891,7 +891,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     }
                     bool can_fuse = false;
                     SirInst* next_inst = inst->next;
-                    if (next_inst && next_inst->opcode == SIR_BR && next_inst->operands[0]->kind == SIR_VAL_VREG && inst->dest->kind == SIR_VAL_VREG && next_inst->operands[0]->as.vreg == inst->dest->as.vreg) {
+                    if (opt_level > 0 && next_inst && next_inst->opcode == SIR_BR && next_inst->operands[0]->kind == SIR_VAL_VREG && inst->dest->kind == SIR_VAL_VREG && next_inst->operands[0]->as.vreg == inst->dest->as.vreg) {
                         bool used_elsewhere = false;
                         for (SirInst* scan = next_inst->next; scan; scan = scan->next) {
                             for (int i=0; i<scan->num_operands; i++) {
@@ -965,7 +965,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     }
                     bool can_fuse = false;
                     SirInst* next_inst = inst->next;
-                    if (next_inst && next_inst->opcode == SIR_BR && next_inst->operands[0]->kind == SIR_VAL_VREG && inst->dest->kind == SIR_VAL_VREG && next_inst->operands[0]->as.vreg == inst->dest->as.vreg) {
+                    if (opt_level > 0 && next_inst && next_inst->opcode == SIR_BR && next_inst->operands[0]->kind == SIR_VAL_VREG && inst->dest->kind == SIR_VAL_VREG && next_inst->operands[0]->as.vreg == inst->dest->as.vreg) {
                         bool used_elsewhere = false;
                         for (SirInst* scan = next_inst->next; scan; scan = scan->next) {
                             for (int i=0; i<scan->num_operands; i++) {
@@ -1044,7 +1044,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     int num_args = inst->num_operands - 1;
                     
                     bool is_tail_call = false;
-                    if (inst->next && inst->next->opcode == SIR_RET && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                    if (opt_level > 0 && inst->next && inst->next->opcode == SIR_RET && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
                         if (inst->next->num_operands == 0 || (inst->dest && inst->next->operands[0]->kind == SIR_VAL_VREG && inst->next->operands[0]->as.vreg == inst->dest->as.vreg)) {
                             if (num_args <= 4) is_tail_call = true;
                         }
@@ -1265,7 +1265,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
     fprintf(out, "\n");
 }
 
-void asm_x86_64_generate(FILE* out, SirModule* module) {
+void asm_x86_64_generate(FILE* out, SirModule* module, int opt_level) {
     if (!module) return;
 
     builtins_analyze_usage(module);
@@ -1287,7 +1287,7 @@ void asm_x86_64_generate(FILE* out, SirModule* module) {
 
     // 遍历生成所有函数
     for (SirFunction* func = module->first_func; func; func = func->next) {
-        generate_function(out, func, module);
+        generate_function(out, func, module, opt_level);
     }
 
     // 追加内置汇编例程

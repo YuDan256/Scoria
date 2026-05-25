@@ -150,14 +150,14 @@ int main(int argc, char** argv) {
     // 4. 后端：生成汇编代码 (Assembly Generation)
     if (emit_asm) {
         LOG_INFO("[V] Generatio codicis machinalis (x86_64):");
-        asm_x86_64_generate(stdout, builder.module);
+        asm_x86_64_generate(stdout, builder.module, opt_level);
         printf("\n");
     }
 
     // 5. 生成 Windows 原生可执行文件 (.exe)
     PeLinker pe_linker;
     pe_linker_init(&pe_linker);
-    if (pe_linker_generate_executable(&pe_linker, builder.module, output_path)) {
+    if (pe_linker_generate_executable(&pe_linker, builder.module, output_path, opt_level)) {
         LOG_INFO("[VI] Opus perfectum est: %s", output_path);
         LOG_INFO("Feliciter. Imperium exspectat: %s", output_path);
     } else {

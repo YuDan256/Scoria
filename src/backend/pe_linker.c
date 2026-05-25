@@ -470,7 +470,7 @@ int g_crea_reloc_count = 0;
 uint32_t g_neca_relocs[1024];
 int g_neca_reloc_count = 0;
 
-static void generate_machine_code(PeLinker* linker, SirModule* module) {
+static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_level) {
     builtins_analyze_usage(module);
     uint32_t* block_offsets = (uint32_t*)calloc(1024, sizeof(uint32_t)); // 记录基本块的机器码偏移量
     
@@ -598,7 +598,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                 g_init_offset = (uint32_t)linker->text_section.size;
             }
 
-            if (func->has_fast_path) {
+            if (func->has_fast_path && opt_level > 0) {
                 // cmp rcx/ecx, imm
                 emit_alu_reg_imm32(&linker->text_section, func->fp_w, 7, REG_RCX, func->fp_imm);
                 
@@ -652,7 +652,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             RegAllocator allocator;
             reg_alloc_init(&allocator, max_vreg);
             allocator.current_offset = local_stack_size;
-            reg_alloc_build_and_color(&allocator, func);
+            reg_alloc_build_and_color(&allocator, func, opt_level);
 
             bool has_extern_call = false;
             for (SirBlock* block = func->first_block; block; block = block->next) {
@@ -1194,7 +1194,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                             
                             // 优化：除以 2 的幂转换为移位
-                            if (inst->opcode == SIR_DIV && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
+                            if (opt_level > 0 && inst->opcode == SIR_DIV && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                                 int left = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                                 if (left != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, left);
                                 int64_t imm = inst->operands[1]->as.int_val;
@@ -1443,7 +1443,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             
                             bool can_fuse = false;
                             SirInst* next_inst = inst->next;
-                            if (next_inst && next_inst->opcode == SIR_BR && next_inst->operands[0]->kind == SIR_VAL_VREG && inst->dest->kind == SIR_VAL_VREG && next_inst->operands[0]->as.vreg == inst->dest->as.vreg) {
+                            if (opt_level > 0 && next_inst && next_inst->opcode == SIR_BR && next_inst->operands[0]->kind == SIR_VAL_VREG && inst->dest->kind == SIR_VAL_VREG && next_inst->operands[0]->as.vreg == inst->dest->as.vreg) {
                                 bool used_elsewhere = false;
                                 for (SirInst* scan = next_inst->next; scan; scan = scan->next) {
                                     for (int i=0; i<scan->num_operands; i++) {
@@ -1539,7 +1539,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             
                             bool can_fuse = false;
                             SirInst* next_inst = inst->next;
-                            if (next_inst && next_inst->opcode == SIR_BR && next_inst->operands[0]->kind == SIR_VAL_VREG && inst->dest->kind == SIR_VAL_VREG && next_inst->operands[0]->as.vreg == inst->dest->as.vreg) {
+                            if (opt_level > 0 && next_inst && next_inst->opcode == SIR_BR && next_inst->operands[0]->kind == SIR_VAL_VREG && inst->dest->kind == SIR_VAL_VREG && next_inst->operands[0]->as.vreg == inst->dest->as.vreg) {
                                 bool used_elsewhere = false;
                                 for (SirInst* scan = next_inst->next; scan; scan = scan->next) {
                                     for (int i=0; i<scan->num_operands; i++) {
@@ -1686,7 +1686,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             int num_args = inst->num_operands - 1;
                             
                             bool is_tail_call = false;
-                            if (inst->next && inst->next->opcode == SIR_RET && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                            if (opt_level > 0 && inst->next && inst->next->opcode == SIR_RET && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
                                 if (inst->next->num_operands == 0 || (inst->dest && inst->next->operands[0]->kind == SIR_VAL_VREG && inst->next->operands[0]->as.vreg == inst->dest->as.vreg)) {
                                     if (num_args <= 4) is_tail_call = true; // 仅对参数<=4的调用进行 TCO，避免覆盖 Caller 栈参数
                                 }
@@ -2086,8 +2086,8 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
     free(string_offsets);
 }
 
-bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const char* output_filename) {
-    generate_machine_code(linker, module);
+bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const char* output_filename, int opt_level) {
+    generate_machine_code(linker, module, opt_level);
 
     FILE* out = fopen(output_filename, "wb");
     if (!out) return false;

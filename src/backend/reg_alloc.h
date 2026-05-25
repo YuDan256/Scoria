@@ -25,7 +25,7 @@ void reg_alloc_init(RegAllocator* allocator, uint32_t max_vreg);
 void reg_alloc_free(RegAllocator* allocator);
 
 // 执行活跃分析、构建冲突图并进行着色
-void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func);
+void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func, int opt_level);
 
 // 获取分配的物理寄存器颜色 (-1 表示溢出到栈)
 int reg_alloc_get_color(RegAllocator* allocator, uint32_t vreg);

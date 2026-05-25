@@ -40,7 +40,9 @@ typedef struct {
     bool* live_out;
 } BlockLiveness;
 
-void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func) {
+void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func, int opt_level) {
+    if (opt_level == 0) return; // -O0: 禁用寄存器分配，全部溢出到栈内存以支持调试
+
     uint32_t max_block_id = 0;
     for (SirBlock* block = func->first_block; block; block = block->next) {
         if (block->id > max_block_id) max_block_id = block->id;
