@@ -622,7 +622,13 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             else if (i2->opcode == SIR_ICMP_GE) fp_infos[f_idx].jcc_slow = cond_is_true ? (is_unsigned ? 0x82 : 0x8C) : (is_unsigned ? 0x83 : 0x8D);
                             
                             // 切断树根，死块大扫除
-                            prune_dead_blocks(func, slow_block);
+                            i1->next = i3;
+                            i3->prev = i1;
+                            i3->opcode = SIR_JMP;
+                            i3->num_operands = 1;
+                            i3->operands[0] = cond_is_true ? i3->operands[2] : i3->operands[1];
+                            
+                            prune_dead_blocks(func, func->first_block);
                         }
                     }
                 }
