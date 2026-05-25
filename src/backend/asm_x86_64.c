@@ -941,7 +941,9 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     if (reg_args == 1) {
                         bool already_in_rcx = false;
                         if (inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[1]) {
-                            already_in_rcx = true;
+                            if (inst->operands[1]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[1]->as.vreg] == 2) {
+                                already_in_rcx = true;
+                            }
                         }
                         if (!already_in_rcx) {
                             char arg_str[64];
@@ -1061,7 +1063,9 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module) {
                     if (inst->num_operands > 0) {
                         bool already_in_rax = false;
                         if (inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[0]) {
-                            already_in_rax = true;
+                            if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
+                                already_in_rax = true;
+                            }
                         }
                         if (!already_in_rax && strcmp(op0, "%rax") != 0) {
                             fprintf(out, "    movq %s, %%rax\n", op0);
