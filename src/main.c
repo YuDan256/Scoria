@@ -89,6 +89,15 @@ int main(int argc, char** argv) {
     char** sources = (char**)malloc(source_count * sizeof(char*));
     Parser* parsers = (Parser*)malloc(source_count * sizeof(Parser));
     AstNode** programs = (AstNode**)malloc(source_count * sizeof(AstNode*));
+    
+    if (!sources || !parsers || !programs) {
+        LOG_ERROR("Memoria non sufficit pro structuris internis.");
+        if (sources) free(sources);
+        if (parsers) free(parsers);
+        if (programs) free(programs);
+        return 1;
+    }
+
     bool has_syntax_error = false;
 
     for (int i = 0; i < source_count; i++) {
