@@ -282,6 +282,8 @@ static void generate_function(FILE* out, SirFunction* func) {
                     } else {
                         if (strcmp(op1, acc) == 0 && strcmp(op0, acc) != 0) {
                             fprintf(out, "    addq %s, %s\n", op0, acc);
+                        } else if (strcmp(op0, acc) != 0 && strcmp(op1, acc) != 0 && op0[0] == '%' && op1[0] == '%') {
+                            fprintf(out, "    leaq (%s, %s), %s\n", op0, op1, acc);
                         } else {
                             if (strcmp(op0, acc) != 0) fprintf(out, "    movq %s, %s\n", op0, acc);
                             if (strcmp(op1, "$1") == 0) {

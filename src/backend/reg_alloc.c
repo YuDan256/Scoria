@@ -285,12 +285,22 @@ void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func) {
         }
         
         int color = -1;
-        for (int c = 0; c < NUM_PHYS_REGS; c++) {
-            if (!used_colors[c]) {
-                // 如果变量跨越了函数调用，则不能分配给 Caller-Saved 寄存器 (颜色 7-10)
-                if (allocator->crosses_call[node] && c >= 7) continue;
-                color = c;
-                break;
+        // 优先尝试 Caller-Saved (7-10) 如果它不跨越调用
+        if (!allocator->crosses_call[node]) {
+            for (int c = 7; c < NUM_PHYS_REGS; c++) {
+                if (!used_colors[c]) {
+                    color = c;
+                    break;
+                }
+            }
+        }
+        // 如果没找到，或者跨越了调用，尝试 Callee-Saved (0-6)
+        if (color == -1) {
+            for (int c = 0; c < 7; c++) {
+                if (!used_colors[c]) {
+                    color = c;
+                    break;
+                }
             }
         }
         allocator->vreg_colors[node] = color; // 如果为 -1，则表示 Spilled

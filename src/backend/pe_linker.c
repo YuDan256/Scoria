@@ -978,16 +978,31 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                         }
                                     }
                                 } else {
-                                    if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
-                                    if (inst->opcode == SIR_ADD) emit_alu_reg_reg(&linker->text_section, w, 0x01, dest_reg, right);
-                                    else if (inst->opcode == SIR_SUB) emit_alu_reg_reg(&linker->text_section, w, 0x29, dest_reg, right);
-                                    else if (inst->opcode == SIR_AND) emit_alu_reg_reg(&linker->text_section, w, 0x21, dest_reg, right);
-                                    else if (inst->opcode == SIR_OR) emit_alu_reg_reg(&linker->text_section, w, 0x09, dest_reg, right);
-                                    else if (inst->opcode == SIR_XOR) emit_alu_reg_reg(&linker->text_section, w, 0x31, dest_reg, right);
-                                    else {
-                                        emit_rex(&linker->text_section, w, dest_reg > 7, 0, right > 7);
-                                        emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xAF); // imul dest_reg, right
-                                        emit_modrm(&linker->text_section, 3, dest_reg & 7, right & 7);
+                                    if (inst->opcode == SIR_ADD && left != dest_reg && right != dest_reg) {
+                                        // 优化: lea dest, [left + right]
+                                        emit_rex(&linker->text_section, w, dest_reg > 7, right > 7, left > 7);
+                                        emit8(&linker->text_section, 0x8D); // lea
+                                        int b = left & 7;
+                                        if (b == 5) {
+                                            emit_modrm(&linker->text_section, 1, dest_reg & 7, 4);
+                                            emit_sib(&linker->text_section, 0, right & 7, b);
+                                            emit8(&linker->text_section, 0);
+                                        } else {
+                                            emit_modrm(&linker->text_section, 0, dest_reg & 7, 4);
+                                            emit_sib(&linker->text_section, 0, right & 7, b);
+                                        }
+                                    } else {
+                                        if (left != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, left);
+                                        if (inst->opcode == SIR_ADD) emit_alu_reg_reg(&linker->text_section, w, 0x01, dest_reg, right);
+                                        else if (inst->opcode == SIR_SUB) emit_alu_reg_reg(&linker->text_section, w, 0x29, dest_reg, right);
+                                        else if (inst->opcode == SIR_AND) emit_alu_reg_reg(&linker->text_section, w, 0x21, dest_reg, right);
+                                        else if (inst->opcode == SIR_OR) emit_alu_reg_reg(&linker->text_section, w, 0x09, dest_reg, right);
+                                        else if (inst->opcode == SIR_XOR) emit_alu_reg_reg(&linker->text_section, w, 0x31, dest_reg, right);
+                                        else {
+                                            emit_rex(&linker->text_section, w, dest_reg > 7, 0, right > 7);
+                                            emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xAF); // imul dest_reg, right
+                                            emit_modrm(&linker->text_section, 3, dest_reg & 7, right & 7);
+                                        }
                                     }
                                 }
                             }
@@ -1609,9 +1624,26 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                     }
                                 }
                             }
-                            emit_rex(&linker->text_section, 1, 0, 0, 0);
-                            emit8(&linker->text_section, 0x31);
-                            emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
+                            
+                            bool is_extern = false;
+                            int target_idx = 0;
+                            if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                                int current_idx = 0;
+                                for (SirExternFunc* ext = ctx.first_extern; ext; ext = ext->next) {
+                                    if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
+                                        is_extern = true;
+                                        target_idx = current_idx;
+                                        break;
+                                    }
+                                    current_idx++;
+                                }
+                            }
+
+                            if (is_extern) {
+                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                emit8(&linker->text_section, 0x31);
+                                emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
+                            }
                             
                             if (is_tail_call) {
                                 // 尾调用优化：提前执行 Epilogue
@@ -1629,18 +1661,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 if (allocator.used_callee_saved[1]) emit8(&linker->text_section, 0x5E);
                                 if (allocator.used_callee_saved[0]) emit8(&linker->text_section, 0x5B);
                                 
-                                bool is_extern = false;
-                                int target_idx = 0;
-                                int current_idx = 0;
-                                for (SirExternFunc* ext = ctx.first_extern; ext; ext = ext->next) {
-                                    if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
-                                        is_extern = true;
-                                        target_idx = current_idx;
-                                        break;
-                                    }
-                                    current_idx++;
-                                }
-
                                 if (is_extern) {
                                     emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x25); // jmp [rip + rel32]
                                     if (ctx.pass == 1) {
@@ -1666,18 +1686,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             }
 
                             if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
-                                bool is_extern = false;
-                                int target_idx = 0;
-                                int current_idx = 0;
-                                for (SirExternFunc* ext = ctx.first_extern; ext; ext = ext->next) {
-                                    if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
-                                        is_extern = true;
-                                        target_idx = current_idx;
-                                        break;
-                                    }
-                                    current_idx++;
-                                }
-
                                 if (is_extern) {
                                     emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x15); // call [rip + rel32]
                                     if (ctx.pass == 1) {
