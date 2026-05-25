@@ -10,7 +10,7 @@
 <br>
 
 **Auctore YV LIANGYANG**
-*Universitas Tsinghua*
+*Universitas Tsinghuaensis*
 
 <br>
 </div>
