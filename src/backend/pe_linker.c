@@ -237,8 +237,8 @@ static void emit_alu_reg_imm32(PeCodeBuffer* cb, int opc_ext, int dst, int32_t i
 }
 
 static int get_phys_reg(int color) {
-    int map[] = {REG_RBX, REG_RSI, REG_RDI, REG_R12, REG_R13, REG_R14, REG_R15, REG_R10, REG_R11};
-    if (color >= 0 && color < 9) return map[color];
+    int map[] = {REG_RBX, REG_RSI, REG_RDI, REG_R12, REG_R13, REG_R14, REG_R15};
+    if (color >= 0 && color < 7) return map[color];
     return REG_RAX;
 }
 
@@ -578,14 +578,16 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             }
 
             uint32_t max_vreg = 0;
-            int local_stack_size = 72; // 56字节给7个callee-saved + 16字节给caller-saved(r10,r11)
+            int local_stack_size = 56; // 56字节给7个callee-saved
             int max_call_args = 0;
+            bool has_call = false;
             int* alloca_offsets = calloc(10000, sizeof(int));
 
             // 预扫描：计算最大寄存器、ALLOCA 空间和最大调用参数数
             for (SirBlock* block = func->first_block; block; block = block->next) {
                 for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
                     if (inst->opcode == SIR_CALL) {
+                        has_call = true;
                         int args = inst->num_operands - 1;
                         if (args > max_call_args) max_call_args = args;
                     }
@@ -612,7 +614,8 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
             reg_alloc_build_and_color(&allocator, func);
 
             int call_stack_space = max_call_args > 4 ? (max_call_args - 4) * 8 : 0;
-            int total_frame_size = allocator.current_offset + 32 + call_stack_space; // 预留 Shadow Space 和溢出参数空间
+            int shadow_space = has_call ? 32 : 0;
+            int total_frame_size = allocator.current_offset + shadow_space + call_stack_space; // 预留 Shadow Space 和溢出参数空间
             total_frame_size = (total_frame_size + 15) & ~15; // 保持 16 字节对齐
 
             // 序言 (Prologue)
@@ -1150,10 +1153,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                             break;
                         }
                         case SIR_CALL: {
-                            // 保护 Caller-Saved 寄存器 (r10, r11)
-                            emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x89); emit_mem(&linker->text_section, 2, REG_RBP, -64); // mov [rbp-64], r10
-                            emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x89); emit_mem(&linker->text_section, 3, REG_RBP, -72); // mov [rbp-72], r11
-
                             if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "scribe") == 0) {
                                 ScoriaType* arg_type = inst->operands[1]->type;
                                 if (arg_type && arg_type->kind == TY_VIA) arg_type = arg_type->as.inner;
@@ -1208,10 +1207,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                     if (pass == 1) g_print_int_relocs[g_print_int_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0); // 占位符
                                 }
-                                
-                                // 恢复 Caller-Saved 寄存器
-                                emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit_mem(&linker->text_section, 2, REG_RBP, -64); // mov r10, [rbp-64]
-                                emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit_mem(&linker->text_section, 3, REG_RBP, -72); // mov r11, [rbp-72]
                                 break;
                             }
                             if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "crea") == 0) {
@@ -1220,10 +1215,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 emit8(&linker->text_section, 0xE8); // call rel32
                                 if (pass == 1) g_crea_relocs[g_crea_reloc_count++] = (uint32_t)linker->text_section.size;
                                 emit32(&linker->text_section, 0);
-                                
-                                // 恢复 Caller-Saved 寄存器
-                                emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit_mem(&linker->text_section, 2, REG_RBP, -64);
-                                emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit_mem(&linker->text_section, 3, REG_RBP, -72);
                                 
                                 if (inst->dest) store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
                                 break;
@@ -1234,10 +1225,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 emit8(&linker->text_section, 0xE8); // call rel32
                                 if (pass == 1) g_neca_relocs[g_neca_reloc_count++] = (uint32_t)linker->text_section.size;
                                 emit32(&linker->text_section, 0);
-                                
-                                // 恢复 Caller-Saved 寄存器
-                                emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit_mem(&linker->text_section, 2, REG_RBP, -64);
-                                emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit_mem(&linker->text_section, 3, REG_RBP, -72);
                                 break;
                             }
 
@@ -1315,10 +1302,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module) {
                                 emit8(&linker->text_section, 0xFF);
                                 emit_modrm(&linker->text_section, 3, 2, callee_reg & 7); // call r/m64
                             }
-                            
-                            // 恢复 Caller-Saved 寄存器
-                            emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit_mem(&linker->text_section, 2, REG_RBP, -64);
-                            emit_rex(&linker->text_section, 1, 1, 0, 0); emit8(&linker->text_section, 0x8B); emit_mem(&linker->text_section, 3, REG_RBP, -72);
                             
                             if (inst->dest) {
                                 bool ret_is_float = (inst->dest->type && (inst->dest->type->kind == TY_F32 || inst->dest->type->kind == TY_F64));

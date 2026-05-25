@@ -5,10 +5,10 @@
 #include <string.h>
 
 // 物理寄存器映射表 (对应 reg_alloc.h 中的 NUM_PHYS_REGS = 9)
-static const char* phys_regs64[] = {"%rbx", "%rsi", "%rdi", "%r12", "%r13", "%r14", "%r15", "%r10", "%r11"};
-static const char* phys_regs32[] = {"%ebx", "%esi", "%edi", "%r12d", "%r13d", "%r14d", "%r15d", "%r10d", "%r11d"};
-static const char* phys_regs16[] = {"%bx", "%si", "%di", "%r12w", "%r13w", "%r14w", "%r15w", "%r10w", "%r11w"};
-static const char* phys_regs8[]  = {"%bl", "%sil", "%dil", "%r12b", "%r13b", "%r14b", "%r15b", "%r10b", "%r11b"};
+static const char* phys_regs64[] = {"%rbx", "%rsi", "%rdi", "%r12", "%r13", "%r14", "%r15"};
+static const char* phys_regs32[] = {"%ebx", "%esi", "%edi", "%r12d", "%r13d", "%r14d", "%r15d"};
+static const char* phys_regs16[] = {"%bx", "%si", "%di", "%r12w", "%r13w", "%r14w", "%r15w"};
+static const char* phys_regs8[]  = {"%bl", "%sil", "%dil", "%r12b", "%r13b", "%r14b", "%r15b"};
 
 typedef struct {
     const char* str;
@@ -90,13 +90,15 @@ static void generate_function(FILE* out, SirFunction* func) {
 
     // 1. 扫描函数，找到最大的虚拟寄存器 ID 和 ALLOCA 空间
     uint32_t max_vreg = 0;
-    int local_stack_size = 72; // 56字节给7个callee-saved + 16字节给caller-saved(r10,r11)
+    int local_stack_size = 56; // 56字节给7个callee-saved
     int max_call_args = 0;
+    bool has_call = false;
     int* alloca_offsets = calloc(10000, sizeof(int));
 
     for (SirBlock* block = func->first_block; block; block = block->next) {
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
             if (inst->opcode == SIR_CALL) {
+                has_call = true;
                 int args = inst->num_operands - 1;
                 if (args > max_call_args) max_call_args = args;
             }
@@ -131,7 +133,8 @@ static void generate_function(FILE* out, SirFunction* func) {
     }
     
     int call_stack_space = max_call_args > 4 ? (max_call_args - 4) * 8 : 0;
-    int total_frame_size = allocator.current_offset + 32 + call_stack_space;
+    int shadow_space = has_call ? 32 : 0;
+    int total_frame_size = allocator.current_offset + shadow_space + call_stack_space;
     total_frame_size = (total_frame_size + 15) & ~15;
 
     // 2. 函数序言 (Prologue)
@@ -636,10 +639,6 @@ static void generate_function(FILE* out, SirFunction* func) {
                 }
 
                 case SIR_CALL:
-                    // 保护 Caller-Saved 寄存器
-                    fprintf(out, "    movq %%r10, -64(%%rbp)\n");
-                    fprintf(out, "    movq %%r11, -72(%%rbp)\n");
-
                     if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "scribe") == 0) {
                         char arg_str[64];
                         get_operand_str(arg_str, inst->operands[1], &allocator, 8);
@@ -671,10 +670,6 @@ static void generate_function(FILE* out, SirFunction* func) {
                         } else {
                             fprintf(out, "    call __print_int\n");
                         }
-                        
-                        // 恢复 Caller-Saved 寄存器
-                        fprintf(out, "    movq -64(%%rbp), %%r10\n");
-                        fprintf(out, "    movq -72(%%rbp), %%r11\n");
                         break;
                     }
                     
@@ -720,10 +715,6 @@ static void generate_function(FILE* out, SirFunction* func) {
                         get_operand_str(callee_str, inst->operands[0], &allocator, 8);
                         fprintf(out, "    call *%s\n", callee_str);
                     }
-                    
-                    // 恢复 Caller-Saved 寄存器
-                    fprintf(out, "    movq -64(%%rbp), %%r10\n");
-                    fprintf(out, "    movq -72(%%rbp), %%r11\n");
                     
                     if (inst->dest) {
                         bool ret_is_float = (inst->dest->type && (inst->dest->type->kind == TY_F32 || inst->dest->type->kind == TY_F64));
