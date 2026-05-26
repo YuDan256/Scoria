@@ -15,10 +15,10 @@ void log_msg(LogLevel level, const char* format, ...) {
     if (level < g_log_level) return;
 
     switch (level) {
-        case LOG_INFO:  printf("[INFO] "); break;
-        case LOG_WARN:  printf("[WARN] "); break;
-        case LOG_ERROR: printf("[ERROR] "); break;
-        case LOG_DEBUG: printf("[DEBUG] "); break;
+        case LOG_INFO:  printf("[NUNTIUS] "); break;
+        case LOG_WARN:  printf("[MONITUM] "); break;
+        case LOG_ERROR: printf("[ERRATUM] "); break;
+        case LOG_DEBUG: printf("[INDAGATIO] "); break;
     }
 
     va_list args;

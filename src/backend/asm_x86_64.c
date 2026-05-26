@@ -1318,7 +1318,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                     break;
 
                 default:
-                    fprintf(out, "    # TODO: unhandled opcode %d\n", inst->opcode);
+                    fprintf(out, "    # TODO: codex operationis ignotus %d\n", inst->opcode);
                     break;
             }
         }

@@ -102,7 +102,7 @@ static void buf_append(PeCodeBuffer* cb, uint8_t byte) {
         cb->capacity *= 2;
         uint8_t* new_buf = (uint8_t*)realloc(cb->buffer, cb->capacity);
         if (!new_buf) {
-            fprintf(stderr, "Fatal error: Out of memory in pe_linker\n");
+            fprintf(stderr, "Clades fatalis: Memoria non sufficit in pe_linker.\n");
             exit(1);
         }
         cb->buffer = new_buf;

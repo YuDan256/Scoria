@@ -116,7 +116,7 @@ static void print_inst(FILE* out, SirInst* inst) {
         case SIR_CAST: fprintf(out, "cast "); break;
         case SIR_GET_PARAM: fprintf(out, "get_param "); break;
         case SIR_SELECT: fprintf(out, "select "); break;
-        default: fprintf(out, "unknown_op "); break;
+        default: fprintf(out, "operatio_ignota "); break;
     }
 
     if (inst->dest && inst->dest->type) {

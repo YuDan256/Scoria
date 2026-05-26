@@ -14,7 +14,7 @@ void reg_alloc_init(RegAllocator* allocator, uint32_t max_vreg) {
 
     if (!allocator->vreg_offsets || !allocator->vreg_colors || !allocator->crosses_call ||
         !allocator->adj_matrix || !allocator->degree || !allocator->use_count) {
-        fprintf(stderr, "Fatal error: Out of memory in reg_alloc_init\n");
+        fprintf(stderr, "Clades fatalis: Memoria non sufficit in reg_alloc_init.\n");
         exit(1);
     }
 

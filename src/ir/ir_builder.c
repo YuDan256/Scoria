@@ -208,14 +208,13 @@ static SirInst* create_inst(IrBuilder* builder, SirOpcode opcode, int num_operan
                 // 这是一个不可达的死指令，直接丢弃
                 return inst;
             }
-        }
-        if (!builder->current_block->first_inst) {
-            builder->current_block->first_inst = inst;
-        } else {
             builder->current_block->last_inst->next = inst;
             inst->prev = builder->current_block->last_inst;
+            builder->current_block->last_inst = inst;
+        } else {
+            builder->current_block->first_inst = inst;
+            builder->current_block->last_inst = inst;
         }
-        builder->current_block->last_inst = inst;
     }
     
     return inst;
@@ -588,11 +587,140 @@ static bool is_side_effect_free(SirOpcode opcode) {
     }
 }
 
+static bool can_inline(SirFunction* func) {
+    if (!func || !func->first_block) return false;
+    int inst_count = 0;
+    int ret_count = 0;
+    for (SirBlock* b = func->first_block; b; b = b->next) {
+        for (SirInst* i = b->first_inst; i; i = i->next) {
+            inst_count++;
+            if (i->opcode == SIR_RET) ret_count++;
+            if (i->opcode == SIR_ALLOCA) return false;
+            if (i->opcode == SIR_CALL) return false;
+        }
+    }
+    return inst_count <= 30 && ret_count == 1;
+}
+
+static SirValue* map_value(IrBuilder* builder, SirValue* val, SirValue** vreg_map, SirBlock** block_map) {
+    if (!val) return NULL;
+    if (val->kind == SIR_VAL_VREG) {
+        return vreg_map[val->as.vreg] ? vreg_map[val->as.vreg] : val;
+    }
+    if (val->kind == SIR_VAL_BLOCK) {
+        SirValue* new_val = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
+        new_val->kind = SIR_VAL_BLOCK;
+        new_val->type = val->type;
+        new_val->as.block = block_map[val->as.block->id];
+        return new_val;
+    }
+    return val;
+}
+
 void ir_optimize_module(IrBuilder* builder, int opt_level) {
     if (!builder || !builder->module) return;
     if (opt_level == 0) return;
 
+    if (opt_level >= 2) {
+        bool inline_changed;
+        do {
+            inline_changed = false;
+            for (SirFunction* func = builder->module->first_func; func; func = func->next) {
+                builder->current_func = func;
+                for (SirBlock* block = func->first_block; block; block = block->next) {
+                    for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                        if (inst->opcode == SIR_CALL && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                            SirFunction* callee = NULL;
+                            for (SirFunction* f = builder->module->first_func; f; f = f->next) {
+                                if (strcmp(f->name, inst->operands[0]->as.global_name) == 0) {
+                                    callee = f;
+                                    break;
+                                }
+                            }
+                            if (callee && callee != func && can_inline(callee)) {
+                                uint32_t callee_max_vreg = 0;
+                                uint32_t callee_max_block = 0;
+                                for (SirBlock* cb = callee->first_block; cb; cb = cb->next) {
+                                    if (cb->id > callee_max_block) callee_max_block = cb->id;
+                                    for (SirInst* ci = cb->first_inst; ci; ci = ci->next) {
+                                        if (ci->dest && ci->dest->kind == SIR_VAL_VREG && ci->dest->as.vreg > callee_max_vreg) {
+                                            callee_max_vreg = ci->dest->as.vreg;
+                                        }
+                                    }
+                                }
+                                
+                                SirValue** vreg_map = (SirValue**)calloc(callee_max_vreg + 1, sizeof(SirValue*));
+                                SirBlock** block_map = (SirBlock**)calloc(callee_max_block + 1, sizeof(SirBlock*));
+                                
+                                for (SirBlock* cb = callee->first_block; cb; cb = cb->next) {
+                                    block_map[cb->id] = ir_builder_create_block(builder, cb->name);
+                                }
+                                
+                                SirBlock* return_block = ir_builder_create_block(builder, "post_inline");
+                                SirInst* curr = inst->next;
+                                while (curr) {
+                                    SirInst* next = curr->next;
+                                    curr->prev = return_block->last_inst;
+                                    if (return_block->last_inst) return_block->last_inst->next = curr;
+                                    else return_block->first_inst = curr;
+                                    return_block->last_inst = curr;
+                                    curr->next = NULL;
+                                    curr = next;
+                                }
+                                block->last_inst = inst->prev;
+                                if (block->last_inst) block->last_inst->next = NULL;
+                                else block->first_inst = NULL;
+                                
+                                ir_builder_set_insert_point(builder, block);
+                                ir_build_jmp(builder, block_map[callee->first_block->id]);
+                                
+                                for (SirBlock* cb = callee->first_block; cb; cb = cb->next) {
+                                    ir_builder_set_insert_point(builder, block_map[cb->id]);
+                                    for (SirInst* ci = cb->first_inst; ci; ci = ci->next) {
+                                        if (ci->opcode == SIR_GET_PARAM) {
+                                            int param_idx = (int)ci->operands[0]->as.int_val;
+                                            vreg_map[ci->dest->as.vreg] = inst->operands[param_idx + 1];
+                                        } else if (ci->opcode == SIR_RET) {
+                                            if (ci->num_operands > 0 && inst->dest) {
+                                                SirValue* mapped_ret = map_value(builder, ci->operands[0], vreg_map, block_map);
+                                                SirInst* copy = create_inst(builder, SIR_CAST, 1);
+                                                copy->operands[0] = mapped_ret;
+                                                copy->dest = inst->dest;
+                                            }
+                                            ir_build_jmp(builder, return_block);
+                                        } else {
+                                            SirInst* clone = create_inst(builder, ci->opcode, ci->num_operands);
+                                            if (ci->dest) {
+                                                clone->dest = create_vreg(builder, ci->dest->type);
+                                                vreg_map[ci->dest->as.vreg] = clone->dest;
+                                            }
+                                            for (int op = 0; op < ci->num_operands; op++) {
+                                                clone->operands[op] = map_value(builder, ci->operands[op], vreg_map, block_map);
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                free(vreg_map);
+                                free(block_map);
+                                
+                                inline_changed = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (inline_changed) break;
+                }
+                if (inline_changed) {
+                    prune_dead_blocks(func, func->first_block);
+                    break;
+                }
+            }
+        } while (inline_changed);
+    }
+
     for (SirFunction* func = builder->module->first_func; func; func = func->next) {
+        builder->current_func = func;
         uint32_t max_vreg = 0;
         for (SirBlock* block = func->first_block; block; block = block->next) {
             for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
@@ -776,7 +904,12 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                                 if (!found_cse) {
                                     if (seen_count >= seen_capacity) {
                                         seen_capacity *= 2;
-                                        seen_insts = (SirInst**)realloc(seen_insts, sizeof(SirInst*) * seen_capacity);
+                                        SirInst** new_seen = (SirInst**)realloc(seen_insts, sizeof(SirInst*) * seen_capacity);
+                                        if (!new_seen) {
+                                            fprintf(stderr, "Clades fatalis: Memoria non sufficit in Local CSE.\n");
+                                            exit(1);
+                                        }
+                                        seen_insts = new_seen;
                                     }
                                     seen_insts[seen_count++] = inst;
                                 }
