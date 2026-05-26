@@ -548,6 +548,32 @@ static void prune_dead_blocks(SirFunction* func, SirBlock* new_entry) {
     free(stack);
 }
 
+static bool values_equal(SirValue* a, SirValue* b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (a->kind != b->kind) return false;
+    if (a->kind == SIR_VAL_VREG) return a->as.vreg == b->as.vreg;
+    if (a->kind == SIR_VAL_CONST_INT) return a->as.int_val == b->as.int_val;
+    if (a->kind == SIR_VAL_CONST_FLOAT) return a->as.float_val == b->as.float_val;
+    if (a->kind == SIR_VAL_CONST_BOOL) return a->as.bool_val == b->as.bool_val;
+    if (a->kind == SIR_VAL_GLOBAL) return strcmp(a->as.global_name, b->as.global_name) == 0;
+    return false;
+}
+
+static bool is_pure_compute(SirOpcode opcode) {
+    switch (opcode) {
+        case SIR_ADD: case SIR_SUB: case SIR_MUL: case SIR_DIV: case SIR_MOD:
+        case SIR_FADD: case SIR_FSUB: case SIR_FMUL: case SIR_FDIV:
+        case SIR_AND: case SIR_OR: case SIR_XOR: case SIR_SHL: case SIR_SHR:
+        case SIR_ICMP_EQ: case SIR_ICMP_NE: case SIR_ICMP_LT: case SIR_ICMP_LE: case SIR_ICMP_GT: case SIR_ICMP_GE:
+        case SIR_FCMP_EQ: case SIR_FCMP_NE: case SIR_FCMP_LT: case SIR_FCMP_LE: case SIR_FCMP_GT: case SIR_FCMP_GE:
+        case SIR_CAST: case SIR_GEP: case SIR_SELECT:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static bool is_side_effect_free(SirOpcode opcode) {
     switch (opcode) {
         case SIR_ADD: case SIR_SUB: case SIR_MUL: case SIR_DIV: case SIR_MOD:
@@ -584,7 +610,7 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
         bool changed;
         
         if (opt_level >= 2) {
-            // 0. 常量传播与复写传播 (Constant & Copy Propagation)
+            // 0. 常量传播、复写传播与局部公共子表达式消除 (Local CSE)
             bool prop_changed;
             bool cfg_changed = false;
             do {
@@ -592,6 +618,10 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                 SirValue** replacements = (SirValue**)calloc(max_vreg + 1, sizeof(SirValue*));
                 
                 for (SirBlock* block = func->first_block; block; block = block->next) {
+                    int seen_capacity = 64;
+                    SirInst** seen_insts = (SirInst**)malloc(sizeof(SirInst*) * seen_capacity);
+                    int seen_count = 0;
+
                     for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
                         // 替换操作数
                         for (int i = 0; i < inst->num_operands; i++) {
@@ -717,9 +747,43 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                             
                             if (rep) {
                                 replacements[inst->dest->as.vreg] = rep;
+                            } else if (is_pure_compute(inst->opcode)) {
+                                // 局部公共子表达式消除 (Local CSE)
+                                bool found_cse = false;
+                                for (int s = 0; s < seen_count; s++) {
+                                    SirInst* seen = seen_insts[s];
+                                    if (seen->opcode == inst->opcode && seen->num_operands == inst->num_operands && type_equals(seen->dest->type, inst->dest->type)) {
+                                        bool ops_match = true;
+                                        for (int o = 0; o < inst->num_operands; o++) {
+                                            if (!values_equal(seen->operands[o], inst->operands[o])) {
+                                                ops_match = false;
+                                                break;
+                                            }
+                                        }
+                                        // 交换律支持 (Commutativity)
+                                        if (!ops_match && inst->num_operands == 2 && (inst->opcode == SIR_ADD || inst->opcode == SIR_MUL || inst->opcode == SIR_FADD || inst->opcode == SIR_FMUL || inst->opcode == SIR_AND || inst->opcode == SIR_OR || inst->opcode == SIR_XOR || inst->opcode == SIR_ICMP_EQ || inst->opcode == SIR_ICMP_NE || inst->opcode == SIR_FCMP_EQ || inst->opcode == SIR_FCMP_NE)) {
+                                            if (values_equal(seen->operands[0], inst->operands[1]) && values_equal(seen->operands[1], inst->operands[0])) {
+                                                ops_match = true;
+                                            }
+                                        }
+                                        if (ops_match) {
+                                            replacements[inst->dest->as.vreg] = seen->dest;
+                                            found_cse = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (!found_cse) {
+                                    if (seen_count >= seen_capacity) {
+                                        seen_capacity *= 2;
+                                        seen_insts = (SirInst**)realloc(seen_insts, sizeof(SirInst*) * seen_capacity);
+                                    }
+                                    seen_insts[seen_count++] = inst;
+                                }
                             }
                         }
                     }
+                    free(seen_insts);
                 }
                 free(replacements);
             } while (prop_changed);
