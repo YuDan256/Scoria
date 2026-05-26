@@ -596,10 +596,10 @@ static bool can_inline(SirFunction* func) {
             inst_count++;
             if (i->opcode == SIR_RET) ret_count++;
             if (i->opcode == SIR_ALLOCA) return false;
-            if (i->opcode == SIR_CALL) return false;
+            // 允许包含 CALL，但限制总指令数以防止过度膨胀
         }
     }
-    return inst_count <= 30 && ret_count == 1;
+    return inst_count <= 60 && ret_count > 0;
 }
 
 static SirValue* map_value(IrBuilder* builder, SirValue* val, SirValue** vreg_map, SirBlock** block_map) {
@@ -637,7 +637,20 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                                     break;
                                 }
                             }
-                            if (callee && callee != func && can_inline(callee)) {
+                            int current_insts = 0;
+                            for (SirBlock* b = func->first_block; b; b = b->next) {
+                                for (SirInst* i = b->first_inst; i; i = i->next) current_insts++;
+                            }
+                            
+                            bool is_recursive = (callee == func);
+                            bool allowed_to_inline = false;
+                            
+                            if (callee && can_inline(callee)) {
+                                if (!is_recursive) allowed_to_inline = true;
+                                else if (current_insts < 200) allowed_to_inline = true; // 允许有限的递归内联展开
+                            }
+                            
+                            if (allowed_to_inline) {
                                 uint32_t callee_max_vreg = 0;
                                 uint32_t callee_max_block = 0;
                                 for (SirBlock* cb = callee->first_block; cb; cb = cb->next) {
@@ -652,8 +665,15 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                                 SirValue** vreg_map = (SirValue**)calloc(callee_max_vreg + 1, sizeof(SirValue*));
                                 SirBlock** block_map = (SirBlock**)calloc(callee_max_block + 1, sizeof(SirBlock*));
                                 
+                                // 预先收集原始基本块，防止递归内联时遍历到新追加的块导致死循环
+                                SirBlock** orig_blocks = (SirBlock**)malloc(sizeof(SirBlock*) * (callee_max_block + 1));
+                                int orig_count = 0;
                                 for (SirBlock* cb = callee->first_block; cb; cb = cb->next) {
-                                    block_map[cb->id] = ir_builder_create_block(builder, cb->name);
+                                    orig_blocks[orig_count++] = cb;
+                                }
+                                
+                                for (int b_idx = 0; b_idx < orig_count; b_idx++) {
+                                    block_map[orig_blocks[b_idx]->id] = ir_builder_create_block(builder, orig_blocks[b_idx]->name);
                                 }
                                 
                                 SirBlock* return_block = ir_builder_create_block(builder, "post_inline");
@@ -672,9 +692,10 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                                 else block->first_inst = NULL;
                                 
                                 ir_builder_set_insert_point(builder, block);
-                                ir_build_jmp(builder, block_map[callee->first_block->id]);
+                                ir_build_jmp(builder, block_map[orig_blocks[0]->id]);
                                 
-                                for (SirBlock* cb = callee->first_block; cb; cb = cb->next) {
+                                for (int b_idx = 0; b_idx < orig_count; b_idx++) {
+                                    SirBlock* cb = orig_blocks[b_idx];
                                     ir_builder_set_insert_point(builder, block_map[cb->id]);
                                     for (SirInst* ci = cb->first_inst; ci; ci = ci->next) {
                                         if (ci->opcode == SIR_GET_PARAM) {
@@ -703,6 +724,7 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                                 
                                 free(vreg_map);
                                 free(block_map);
+                                free(orig_blocks);
                                 
                                 inline_changed = true;
                                 break;
