@@ -502,8 +502,14 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
     for (SirGlobalVar* g = module->first_global; g; g = g->next) {
         if (global_count >= global_capacity) {
             global_capacity *= 2;
-            global_names = (const char**)realloc(global_names, global_capacity * sizeof(const char*));
-            global_offsets = (uint32_t*)realloc(global_offsets, global_capacity * sizeof(uint32_t));
+            const char** new_gn = (const char**)realloc(global_names, global_capacity * sizeof(const char*));
+            uint32_t* new_go = (uint32_t*)realloc(global_offsets, global_capacity * sizeof(uint32_t));
+            if (!new_gn || !new_go) {
+                fprintf(stderr, "Clades fatalis: Memoria non sufficit in pe_linker.\n");
+                exit(1);
+            }
+            global_names = new_gn;
+            global_offsets = new_go;
         }
         while (linker->data_section.size % 8 != 0) buf_append(&linker->data_section, 0);
         global_names[global_count] = g->name;
@@ -516,8 +522,14 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
     for (SirFunction* func = module->first_func; func; func = func->next) {
         if (func_count >= func_capacity) {
             func_capacity *= 2;
-            func_names = (const char**)realloc(func_names, func_capacity * sizeof(const char*));
-            func_offsets = (uint32_t*)realloc(func_offsets, func_capacity * sizeof(uint32_t));
+            const char** new_fn = (const char**)realloc(func_names, func_capacity * sizeof(const char*));
+            uint32_t* new_fo = (uint32_t*)realloc(func_offsets, func_capacity * sizeof(uint32_t));
+            if (!new_fn || !new_fo) {
+                fprintf(stderr, "Clades fatalis: Memoria non sufficit in pe_linker.\n");
+                exit(1);
+            }
+            func_names = new_fn;
+            func_offsets = new_fo;
         }
         func_names[func_count] = func->name;
         func_count++;
@@ -539,9 +551,16 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                         if (!found) {
                             if (string_count >= string_capacity) {
                                 string_capacity *= 2;
-                                strings = (const char**)realloc(strings, string_capacity * sizeof(const char*));
-                                string_lens = (uint32_t*)realloc(string_lens, string_capacity * sizeof(uint32_t));
-                                string_offsets = (uint32_t*)realloc(string_offsets, string_capacity * sizeof(uint32_t));
+                                const char** new_s = (const char**)realloc(strings, string_capacity * sizeof(const char*));
+                                uint32_t* new_sl = (uint32_t*)realloc(string_lens, string_capacity * sizeof(uint32_t));
+                                uint32_t* new_so = (uint32_t*)realloc(string_offsets, string_capacity * sizeof(uint32_t));
+                                if (!new_s || !new_sl || !new_so) {
+                                    fprintf(stderr, "Clades fatalis: Memoria non sufficit in pe_linker.\n");
+                                    exit(1);
+                                }
+                                strings = new_s;
+                                string_lens = new_sl;
+                                string_offsets = new_so;
                             }
                             strings[string_count] = inst->operands[i]->as.string_val.str;
                             string_lens[string_count] = inst->operands[i]->as.string_val.len;
@@ -928,14 +947,14 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 
                                 if (inst->operands[0]->kind == SIR_VAL_CONST_STRING) {
                                     uint32_t rdata_off = 0;
-                                    for (int i = 0; i < ctx->string_count; i++) {
-                                        if (ctx->string_lens[i] == inst->operands[0]->as.string_val.len &&
-                                            memcmp(ctx->strings[i], inst->operands[0]->as.string_val.str, inst->operands[0]->as.string_val.len) == 0) {
-                                            rdata_off = ctx->string_offsets[i];
+                                    for (int i = 0; i < ctx.string_count; i++) {
+                                        if (ctx.string_lens[i] == inst->operands[0]->as.string_val.len &&
+                                            memcmp(ctx.strings[i], inst->operands[0]->as.string_val.str, inst->operands[0]->as.string_val.len) == 0) {
+                                            rdata_off = ctx.string_offsets[i];
                                             break;
                                         }
                                     }
-                                    if (ctx->pass == 1) {
+                                    if (ctx.pass == 1) {
                                         g_str_relocs[g_str_reloc_count] = (uint32_t)linker->text_section.size;
                                         g_str_rdata_offs[g_str_reloc_count] = rdata_off;
                                         g_str_reloc_count++;
@@ -943,10 +962,10 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 } else {
                                     bool is_global = false;
                                     uint32_t target_off = 0;
-                                    for (int i = 0; i < ctx->global_count; i++) {
-                                        if (strcmp(ctx->globals[i], inst->operands[0]->as.global_name) == 0) {
+                                    for (int i = 0; i < ctx.global_count; i++) {
+                                        if (strcmp(ctx.globals[i], inst->operands[0]->as.global_name) == 0) {
                                             is_global = true;
-                                            target_off = ctx->global_offsets[i];
+                                            target_off = ctx.global_offsets[i];
                                             break;
                                         }
                                     }
@@ -957,7 +976,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                             g_data_reloc_count++;
                                         }
                                     } else {
-                                        for (int i = 0; i < ctx->func_count; i++) {
+                                        for (int i = 0; i < ctx.func_count; i++) {
                                             if (strcmp(ctx.funcs[i], inst->operands[0]->as.global_name) == 0) {
                                                 target_off = ctx.func_offsets[i];
                                                 break;

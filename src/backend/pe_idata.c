@@ -52,7 +52,12 @@ void pe_idata_add_import(PeImportTable* it, const char* dll_name, const char* fu
     if (!target_dll) {
         if (it->dll_count >= it->dll_capacity) {
             it->dll_capacity *= 2;
-            it->dlls = (ImportDll*)realloc(it->dlls, it->dll_capacity * sizeof(ImportDll));
+            ImportDll* new_dlls = (ImportDll*)realloc(it->dlls, it->dll_capacity * sizeof(ImportDll));
+            if (!new_dlls) {
+                fprintf(stderr, "Clades fatalis: Memoria non sufficit in pe_idata.\n");
+                exit(1);
+            }
+            it->dlls = new_dlls;
         }
         target_dll = &it->dlls[it->dll_count++];
         target_dll->dll_name = _strdup(dll_name);
@@ -69,7 +74,12 @@ void pe_idata_add_import(PeImportTable* it, const char* dll_name, const char* fu
 
     if (target_dll->func_count >= target_dll->func_capacity) {
         target_dll->func_capacity *= 2;
-        target_dll->funcs = (ImportFunc*)realloc(target_dll->funcs, target_dll->func_capacity * sizeof(ImportFunc));
+        ImportFunc* new_funcs = (ImportFunc*)realloc(target_dll->funcs, target_dll->func_capacity * sizeof(ImportFunc));
+        if (!new_funcs) {
+            fprintf(stderr, "Clades fatalis: Memoria non sufficit in pe_idata.\n");
+            exit(1);
+        }
+        target_dll->funcs = new_funcs;
     }
 
     target_dll->funcs[target_dll->func_count].func_name = _strdup(func_name);
