@@ -704,18 +704,31 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
         case AST_CONST_DECL: {
             Symbol* sym = stmt->resolved_symbol;
             if (sym) {
-                // 1. 在当前函数的栈帧上分配内存 (Alloca)
                 int type_size = type_get_size(sym->type);
-                sym->ir_val = ir_build_alloca(builder, sym->type, type_size);
+                bool is_scalar = (sym->type->kind >= TY_I8 && sym->type->kind <= TY_LOGICA);
                 
-                // 2. 如果有初始值，生成 Store 或 Memcpy 指令写入栈内存
                 AstNode* initializer = stmt->as.var_decl.initializer;
+                SirValue* init_val = NULL;
                 if (initializer) {
-                    SirValue* init_val = gen_expression(builder, initializer);
-                    if (sym->type->kind == TY_FORMA || sym->type->kind == TY_UNIO || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS) {
-                        ir_build_memcpy(builder, sym->ir_val, init_val, type_size);
-                    } else {
-                        ir_build_store(builder, init_val, sym->ir_val);
+                    init_val = gen_expression(builder, initializer);
+                } else if (is_scalar) {
+                    init_val = ir_const_int(builder, sym->type, 0);
+                }
+                
+                // 轻量级 Mem2Reg：如果标量变量从未被修改或取址，直接绑定为虚拟寄存器
+                if (is_scalar && builder->current_func_body && !check_mutated(builder->current_func_body, sym)) {
+                    sym->ir_val = init_val;
+                } else {
+                    // 1. 在当前函数的栈帧上分配内存 (Alloca)
+                    sym->ir_val = ir_build_alloca(builder, sym->type, type_size);
+                    
+                    // 2. 如果有初始值，生成 Store 或 Memcpy 指令写入栈内存
+                    if (init_val) {
+                        if (sym->type->kind == TY_FORMA || sym->type->kind == TY_UNIO || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS) {
+                            ir_build_memcpy(builder, sym->ir_val, init_val, type_size);
+                        } else {
+                            ir_build_store(builder, init_val, sym->ir_val);
+                        }
                     }
                 }
             }
@@ -789,19 +802,11 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
             break;
         }
         case AST_WHILE_STMT: {
-            SirBlock* cond_block = ir_builder_create_block(builder, "dum.cond");
             SirBlock* body_block = ir_builder_create_block(builder, "dum.corpus");
+            SirBlock* cond_block = ir_builder_create_block(builder, "dum.cond");
             SirBlock* exit_block = ir_builder_create_block(builder, "dum.exitus");
 
             ir_build_jmp(builder, cond_block);
-            ir_builder_set_insert_point(builder, cond_block);
-            SirValue* cond = gen_expression(builder, stmt->as.while_stmt.condition);
-            
-            if (cond && cond->kind == SIR_VAL_CONST_BOOL && !cond->as.bool_val) {
-                ir_build_jmp(builder, exit_block);
-            } else {
-                ir_build_br(builder, cond, body_block, exit_block);
-            }
 
             // 保存外层循环上下文
             SirBlock* prev_cond = builder->current_loop_cond;
@@ -812,6 +817,15 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
             ir_builder_set_insert_point(builder, body_block);
             gen_statement(builder, stmt->as.while_stmt.body);
             ir_build_jmp(builder, cond_block);
+
+            ir_builder_set_insert_point(builder, cond_block);
+            SirValue* cond = gen_expression(builder, stmt->as.while_stmt.condition);
+            
+            if (cond && cond->kind == SIR_VAL_CONST_BOOL && !cond->as.bool_val) {
+                ir_build_jmp(builder, exit_block);
+            } else {
+                ir_build_br(builder, cond, body_block, exit_block);
+            }
 
             // 恢复外层循环上下文
             builder->current_loop_cond = prev_cond;
@@ -825,24 +839,12 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
                 gen_statement(builder, stmt->as.for_stmt.initializer);
             }
 
-            SirBlock* cond_block = ir_builder_create_block(builder, "per.cond");
             SirBlock* body_block = ir_builder_create_block(builder, "per.corpus");
             SirBlock* inc_block = ir_builder_create_block(builder, "per.inc");
+            SirBlock* cond_block = ir_builder_create_block(builder, "per.cond");
             SirBlock* exit_block = ir_builder_create_block(builder, "per.exitus");
 
             ir_build_jmp(builder, cond_block);
-            ir_builder_set_insert_point(builder, cond_block);
-            
-            if (stmt->as.for_stmt.condition) {
-                SirValue* cond = gen_expression(builder, stmt->as.for_stmt.condition);
-                if (cond && cond->kind == SIR_VAL_CONST_BOOL && !cond->as.bool_val) {
-                    ir_build_jmp(builder, exit_block);
-                } else {
-                    ir_build_br(builder, cond, body_block, exit_block);
-                }
-            } else {
-                ir_build_jmp(builder, body_block);
-            }
 
             SirBlock* prev_cond = builder->current_loop_cond;
             SirBlock* prev_exit = builder->current_loop_exit;
@@ -858,6 +860,18 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
                 gen_expression(builder, stmt->as.for_stmt.increment);
             }
             ir_build_jmp(builder, cond_block);
+
+            ir_builder_set_insert_point(builder, cond_block);
+            if (stmt->as.for_stmt.condition) {
+                SirValue* cond = gen_expression(builder, stmt->as.for_stmt.condition);
+                if (cond && cond->kind == SIR_VAL_CONST_BOOL && !cond->as.bool_val) {
+                    ir_build_jmp(builder, exit_block);
+                } else {
+                    ir_build_br(builder, cond, body_block, exit_block);
+                }
+            } else {
+                ir_build_jmp(builder, body_block);
+            }
 
             builder->current_loop_cond = prev_cond;
             builder->current_loop_exit = prev_exit;
@@ -1101,7 +1115,9 @@ void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count, int opt_
 
             // 4. 递归生成函数体指令
             if (decl->as.func_decl.body) {
+                builder->current_func_body = decl->as.func_decl.body;
                 gen_statement(builder, decl->as.func_decl.body);
+                builder->current_func_body = NULL;
             }
             
             // 5. 安全兜底：如果基本块最后没有返回指令，自动补全 (针对 nihil 返回类型)

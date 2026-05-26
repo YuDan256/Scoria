@@ -3,6 +3,68 @@
 #include "builtins.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+
+// =========================================================
+// 窥孔优化器 (Peephole Optimizer)
+// =========================================================
+static char peep_window[4][128];
+static int peep_count = 0;
+
+static void flush_peep(FILE* out, int count) {
+    for (int i = 0; i < count && i < peep_count; i++) {
+        fputs(peep_window[i], out);
+    }
+    int remaining = peep_count - count;
+    for (int i = 0; i < remaining; i++) {
+        strcpy(peep_window[i], peep_window[i + count]);
+    }
+    peep_count = remaining;
+}
+
+static int my_fprintf(FILE* out, const char* fmt, ...) {
+    char line[256];
+    va_list args;
+    va_start(args, fmt);
+    int ret = vsnprintf(line, sizeof(line), fmt, args);
+    va_end(args);
+
+    // 如果不是缩进的汇编指令（如标签、伪指令），直接清空窗口并输出
+    if (line[0] != ' ' || line[1] != ' ' || line[2] != ' ' || line[3] != ' ') {
+        flush_peep(out, peep_count);
+        fputs(line, out);
+        return ret;
+    }
+
+    if (peep_count == 4) flush_peep(out, 1);
+    strcpy(peep_window[peep_count++], line);
+
+    // 模式 1: mov $0, reg -> xor reg, reg
+    char reg[32];
+    if (sscanf(peep_window[peep_count-1], "    movq $0, %%%s\n", reg) == 1 ||
+        sscanf(peep_window[peep_count-1], "    movl $0, %%%s\n", reg) == 1) {
+        sprintf(peep_window[peep_count-1], "    xorq %%%s, %%%s\n", reg, reg);
+    }
+
+    if (peep_count >= 2) {
+        char r1[32], r2[32], r3[32], r4[32];
+        if (sscanf(peep_window[peep_count-2], "    movq %%%[^, \n], %%%s\n", r1, r2) == 2 &&
+            sscanf(peep_window[peep_count-1], "    movq %%%[^, \n], %%%s\n", r3, r4) == 2) {
+            
+            // 模式 2: mov r1, r2 ; mov r2, r1 -> mov r1, r2
+            if (strcmp(r1, r4) == 0 && strcmp(r2, r3) == 0) {
+                peep_count--;
+            }
+            // 模式 3: mov r1, r2 ; mov r2, r3 -> mov r1, r2 ; mov r1, r3 (打破依赖链)
+            else if (strcmp(r2, r3) == 0 && strcmp(r1, r4) != 0) {
+                sprintf(peep_window[peep_count-1], "    movq %%%s, %%%s\n", r1, r4);
+            }
+        }
+    }
+
+    return ret;
+}
+#define fprintf my_fprintf
 
 // 物理寄存器映射表 (对应 reg_alloc.h 中的 NUM_PHYS_REGS = 11)
 static const char* phys_regs64[] = {"%rbx", "%rsi", "%rdi", "%r12", "%r13", "%r14", "%r15", "%r8", "%r9", "%r10", "%r11"};
@@ -1310,4 +1372,7 @@ void asm_x86_64_generate(FILE* out, SirModule* module, int opt_level) {
             }
         }
     }
+    
+    flush_peep(out, peep_count);
 }
+#undef fprintf

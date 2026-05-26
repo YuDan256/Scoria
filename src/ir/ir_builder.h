@@ -4,6 +4,8 @@
 #include "sir.h"
 #include "../utils/memory_arena.h"
 
+typedef struct AstNode AstNode;
+
 // =========================================================
 // IR 构建器 (IR Builder)
 // =========================================================
@@ -17,6 +19,7 @@ typedef struct {
     SirBlock* current_loop_exit;  // 当前循环的退出块 (用于 rumpe)
     
     SirValue* current_hidden_ret_ptr; // 隐藏返回指针 (用于返回 >8 字节的结构体/切片)
+    AstNode* current_func_body;   // 当前函数的 AST 节点 (用于 Mem2Reg 逃逸分析)
     
     uint32_t next_vreg;           // 虚拟寄存器分配器计数器
     uint32_t next_block_id;       // 基本块 ID 分配器计数器
