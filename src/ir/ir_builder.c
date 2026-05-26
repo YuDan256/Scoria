@@ -605,7 +605,10 @@ static bool can_inline(SirFunction* func) {
 static SirValue* map_value(IrBuilder* builder, SirValue* val, SirValue** vreg_map, SirBlock** block_map) {
     if (!val) return NULL;
     if (val->kind == SIR_VAL_VREG) {
-        return vreg_map[val->as.vreg] ? vreg_map[val->as.vreg] : val;
+        if (!vreg_map[val->as.vreg]) {
+            vreg_map[val->as.vreg] = create_vreg(builder, val->type);
+        }
+        return vreg_map[val->as.vreg];
     }
     if (val->kind == SIR_VAL_BLOCK) {
         SirValue* new_val = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
@@ -659,6 +662,11 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                                         if (ci->dest && ci->dest->kind == SIR_VAL_VREG && ci->dest->as.vreg > callee_max_vreg) {
                                             callee_max_vreg = ci->dest->as.vreg;
                                         }
+                                        for (int op = 0; op < ci->num_operands; op++) {
+                                            if (ci->operands[op] && ci->operands[op]->kind == SIR_VAL_VREG && ci->operands[op]->as.vreg > callee_max_vreg) {
+                                                callee_max_vreg = ci->operands[op]->as.vreg;
+                                            }
+                                        }
                                     }
                                 }
                                 
@@ -700,7 +708,9 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                                     for (SirInst* ci = cb->first_inst; ci; ci = ci->next) {
                                         if (ci->opcode == SIR_GET_PARAM) {
                                             int param_idx = (int)ci->operands[0]->as.int_val;
-                                            vreg_map[ci->dest->as.vreg] = inst->operands[param_idx + 1];
+                                            if (ci->dest && param_idx + 1 < inst->num_operands) {
+                                                vreg_map[ci->dest->as.vreg] = inst->operands[param_idx + 1];
+                                            }
                                         } else if (ci->opcode == SIR_RET) {
                                             if (ci->num_operands > 0 && inst->dest) {
                                                 SirValue* mapped_ret = map_value(builder, ci->operands[0], vreg_map, block_map);
