@@ -64,7 +64,11 @@ static void print_value(FILE* out, SirValue* val) {
             fprintf(out, "@%s", val->as.global_name); 
             break;
         case SIR_VAL_BLOCK: 
-            fprintf(out, "label %%%s_%u", val->as.block->name, val->as.block->id); 
+            if (val->as.block && val->as.block != (SirBlock*)-1) {
+                fprintf(out, "label %%%s_%u", val->as.block->name, val->as.block->id); 
+            } else {
+                fprintf(out, "label %%<null>");
+            }
             break;
     }
 }

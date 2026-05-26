@@ -498,31 +498,31 @@ static void prune_dead_blocks(SirFunction* func, SirBlock* new_entry) {
         
         if (b->last_inst->opcode == SIR_JMP) {
             SirBlock* target = b->last_inst->operands[0]->as.block;
-            if (!reachable[target->id]) {
+            if (target && target != (SirBlock*)-1 && !reachable[target->id]) {
                 reachable[target->id] = true;
                 stack[top++] = target;
             }
         } else if (b->last_inst->opcode == SIR_BR) {
             SirBlock* t_target = b->last_inst->operands[1]->as.block;
             SirBlock* f_target = b->last_inst->operands[2]->as.block;
-            if (!reachable[t_target->id]) {
+            if (t_target && t_target != (SirBlock*)-1 && !reachable[t_target->id]) {
                 reachable[t_target->id] = true;
                 stack[top++] = t_target;
             }
-            if (!reachable[f_target->id]) {
+            if (f_target && f_target != (SirBlock*)-1 && !reachable[f_target->id]) {
                 reachable[f_target->id] = true;
                 stack[top++] = f_target;
             }
         } else if (b->last_inst->opcode == SIR_SWITCH) {
             SirBlock* def_target = b->last_inst->operands[1]->as.block;
-            if (!reachable[def_target->id]) {
+            if (def_target && def_target != (SirBlock*)-1 && !reachable[def_target->id]) {
                 reachable[def_target->id] = true;
                 stack[top++] = def_target;
             }
             int case_count = (b->last_inst->num_operands - 2) / 2;
             for (int i = 0; i < case_count; i++) {
                 SirBlock* c_target = b->last_inst->operands[2 + i * 2 + 1]->as.block;
-                if (!reachable[c_target->id]) {
+                if (c_target && c_target != (SirBlock*)-1 && !reachable[c_target->id]) {
                     reachable[c_target->id] = true;
                     stack[top++] = c_target;
                 }
@@ -614,7 +614,16 @@ static SirValue* map_value(IrBuilder* builder, SirValue* val, SirValue** vreg_ma
         SirValue* new_val = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
         new_val->kind = SIR_VAL_BLOCK;
         new_val->type = val->type;
-        new_val->as.block = block_map[val->as.block->id];
+        if (val->as.block && val->as.block != (SirBlock*)-1) {
+            if (!block_map[val->as.block->id]) {
+                // 幽灵基本块代偿：填补被优化抹除的不可达区块
+                block_map[val->as.block->id] = ir_builder_create_block(builder, "ghost_block");
+            }
+            new_val->as.block = block_map[val->as.block->id];
+        } else {
+            // 脏数据代偿
+            new_val->as.block = ir_builder_create_block(builder, "ghost_block");
+        }
         return new_val;
     }
     return val;
@@ -654,21 +663,8 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                             }
                             
                             if (allowed_to_inline) {
-                                uint32_t callee_max_vreg = 0;
-                                uint32_t callee_max_block = 0;
-                                for (SirBlock* cb = callee->first_block; cb; cb = cb->next) {
-                                    if (cb->id > callee_max_block) callee_max_block = cb->id;
-                                    for (SirInst* ci = cb->first_inst; ci; ci = ci->next) {
-                                        if (ci->dest && ci->dest->kind == SIR_VAL_VREG && ci->dest->as.vreg > callee_max_vreg) {
-                                            callee_max_vreg = ci->dest->as.vreg;
-                                        }
-                                        for (int op = 0; op < ci->num_operands; op++) {
-                                            if (ci->operands[op] && ci->operands[op]->kind == SIR_VAL_VREG && ci->operands[op]->as.vreg > callee_max_vreg) {
-                                                callee_max_vreg = ci->operands[op]->as.vreg;
-                                            }
-                                        }
-                                    }
-                                }
+                                uint32_t callee_max_vreg = builder->next_vreg;
+                                uint32_t callee_max_block = builder->next_block_id;
                                 
                                 SirValue** vreg_map = (SirValue**)calloc(callee_max_vreg + 1, sizeof(SirValue*));
                                 SirBlock** block_map = (SirBlock**)calloc(callee_max_block + 1, sizeof(SirBlock*));
@@ -1062,31 +1058,31 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                 for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
                     if (inst->opcode == SIR_JMP) {
                         SirBlock* target = inst->operands[0]->as.block;
-                        if (target != block && target->first_inst && target->first_inst == target->last_inst && target->first_inst->opcode == SIR_JMP) {
+                        if (target && target != (SirBlock*)-1 && target != block && target->first_inst && target->first_inst == target->last_inst && target->first_inst->opcode == SIR_JMP) {
                             inst->operands[0]->as.block = target->first_inst->operands[0]->as.block;
                             changed = true;
                         }
                     } else if (inst->opcode == SIR_BR) {
                         SirBlock* t_target = inst->operands[1]->as.block;
-                        if (t_target != block && t_target->first_inst && t_target->first_inst == t_target->last_inst && t_target->first_inst->opcode == SIR_JMP) {
+                        if (t_target && t_target != (SirBlock*)-1 && t_target != block && t_target->first_inst && t_target->first_inst == t_target->last_inst && t_target->first_inst->opcode == SIR_JMP) {
                             inst->operands[1]->as.block = t_target->first_inst->operands[0]->as.block;
                             changed = true;
                         }
                         SirBlock* f_target = inst->operands[2]->as.block;
-                        if (f_target != block && f_target->first_inst && f_target->first_inst == f_target->last_inst && f_target->first_inst->opcode == SIR_JMP) {
+                        if (f_target && f_target != (SirBlock*)-1 && f_target != block && f_target->first_inst && f_target->first_inst == f_target->last_inst && f_target->first_inst->opcode == SIR_JMP) {
                             inst->operands[2]->as.block = f_target->first_inst->operands[0]->as.block;
                             changed = true;
                         }
                     } else if (inst->opcode == SIR_SWITCH) {
                         SirBlock* def_target = inst->operands[1]->as.block;
-                        if (def_target != block && def_target->first_inst && def_target->first_inst == def_target->last_inst && def_target->first_inst->opcode == SIR_JMP) {
+                        if (def_target && def_target != (SirBlock*)-1 && def_target != block && def_target->first_inst && def_target->first_inst == def_target->last_inst && def_target->first_inst->opcode == SIR_JMP) {
                             inst->operands[1]->as.block = def_target->first_inst->operands[0]->as.block;
                             changed = true;
                         }
                         int case_count = (inst->num_operands - 2) / 2;
                         for (int i = 0; i < case_count; i++) {
                             SirBlock* c_target = inst->operands[2 + i * 2 + 1]->as.block;
-                            if (c_target != block && c_target->first_inst && c_target->first_inst == c_target->last_inst && c_target->first_inst->opcode == SIR_JMP) {
+                            if (c_target && c_target != (SirBlock*)-1 && c_target != block && c_target->first_inst && c_target->first_inst == c_target->last_inst && c_target->first_inst->opcode == SIR_JMP) {
                                 inst->operands[2 + i * 2 + 1]->as.block = c_target->first_inst->operands[0]->as.block;
                                 changed = true;
                             }
