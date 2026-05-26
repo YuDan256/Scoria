@@ -373,8 +373,6 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                         if (inst->operands[0]->kind == SIR_VAL_CONST_INT) {
                             int64_t val = inst->operands[0]->as.int_val;
                             if (val >= -2147483648LL && val <= 2147483647LL) is_small_const = true;
-                        } else if (inst->operands[0]->kind == SIR_VAL_CONST_STRING || inst->operands[0]->kind == SIR_VAL_GLOBAL) {
-                            is_small_const = true;
                         }
                         
                         if (is_small_const) {

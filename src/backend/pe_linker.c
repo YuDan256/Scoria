@@ -930,60 +930,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                     }
                                     break;
                                 }
-                            } else if (inst->operands[0]->kind == SIR_VAL_CONST_STRING || inst->operands[0]->kind == SIR_VAL_GLOBAL) {
-                                int ptr_scratch = REG_RCX;
-                                int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], ptr_scratch, &ctx);
-                                
-                                emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
-                                emit8(&linker->text_section, 0xC7); // mov qword ptr, imm32 (sign extended)
-                                emit_mem(&linker->text_section, 0, ptr_reg, 0);
-                                
-                                if (inst->operands[0]->kind == SIR_VAL_CONST_STRING) {
-                                    uint32_t rdata_off = 0;
-                                    for (int i = 0; i < ctx.string_count; i++) {
-                                        if (ctx.string_lens[i] == inst->operands[0]->as.string_val.len &&
-                                            memcmp(ctx.strings[i], inst->operands[0]->as.string_val.str, inst->operands[0]->as.string_val.len) == 0) {
-                                            rdata_off = ctx.string_offsets[i];
-                                            break;
-                                        }
-                                    }
-                                    if (ctx.pass == 1) {
-                                        g_str_relocs[g_str_reloc_count] = (uint32_t)linker->text_section.size;
-                                        g_str_rdata_offs[g_str_reloc_count] = rdata_off;
-                                        g_str_reloc_count++;
-                                    }
-                                } else {
-                                    bool is_global = false;
-                                    uint32_t target_off = 0;
-                                    for (int i = 0; i < ctx.global_count; i++) {
-                                        if (strcmp(ctx.globals[i], inst->operands[0]->as.global_name) == 0) {
-                                            is_global = true;
-                                            target_off = ctx.global_offsets[i];
-                                            break;
-                                        }
-                                    }
-                                    if (is_global) {
-                                        if (ctx.pass == 1) {
-                                            g_data_relocs[g_data_reloc_count] = (uint32_t)linker->text_section.size;
-                                            g_data_offs[g_data_reloc_count] = target_off;
-                                            g_data_reloc_count++;
-                                        }
-                                    } else {
-                                        for (int i = 0; i < ctx.func_count; i++) {
-                                            if (strcmp(ctx.funcs[i], inst->operands[0]->as.global_name) == 0) {
-                                                target_off = ctx.func_offsets[i];
-                                                break;
-                                            }
-                                        }
-                                        if (ctx.pass == 1) {
-                                            g_func_relocs[g_func_reloc_count] = (uint32_t)linker->text_section.size;
-                                            g_func_offs[g_func_reloc_count] = target_off;
-                                            g_func_reloc_count++;
-                                        }
-                                    }
-                                }
-                                emit32(&linker->text_section, 0); // 占位符
-                                break;
                             }
 
                             int ptr_color = (inst->operands[1] && inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
