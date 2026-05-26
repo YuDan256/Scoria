@@ -217,8 +217,6 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
     // 1. 扫描函数，找到最大的虚拟寄存器 ID 和 ALLOCA 空间
     uint32_t max_vreg = 0;
     int local_stack_size = 0;
-    int max_call_args = 0;
-    bool has_call = false;
 
     for (SirBlock* block = func->first_block; block; block = block->next) {
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
@@ -234,13 +232,28 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
     }
 
     int* alloca_offsets = calloc(max_vreg + 1, sizeof(int));
+    int max_call_area = 0;
 
     for (SirBlock* block = func->first_block; block; block = block->next) {
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
             if (inst->opcode == SIR_CALL) {
-                has_call = true;
+                if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                    const char* name = inst->operands[0]->as.global_name;
+                    if (strcmp(name, "scribe") == 0 || strcmp(name, "crea") == 0 || strcmp(name, "neca") == 0) {
+                        continue;
+                    }
+                }
                 int args = inst->num_operands - 1;
-                if (args > max_call_args) max_call_args = args;
+                bool is_ext = false;
+                if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                    for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) {
+                        if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
+                            is_ext = true; break;
+                        }
+                    }
+                }
+                int area = ((is_ext || opt_level < 2) ? 32 : 0) + args * 8;
+                if (area > max_call_area) max_call_area = area;
             }
             if (inst->opcode == SIR_ALLOCA) {
                 int alloc_size = (int)inst->operands[0]->as.int_val;
@@ -264,28 +277,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
         }
     }
     
-    bool has_extern_call = false;
-    for (SirBlock* block = func->first_block; block; block = block->next) {
-        for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
-            if (inst->opcode == SIR_CALL) {
-                if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
-                    bool is_ext = false;
-                    for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) {
-                        if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
-                            is_ext = true;
-                            break;
-                        }
-                    }
-                    if (is_ext) has_extern_call = true;
-                } else {
-                    has_extern_call = true;
-                }
-            }
-        }
-    }
-    int call_stack_space = max_call_args > 4 ? (max_call_args - 4) * 8 : 0;
-    int shadow_space = (has_extern_call || max_call_args > 4) ? 32 : 0;
-    int local_and_args = allocator.current_offset + shadow_space + call_stack_space;
+    int local_and_args = allocator.current_offset + max_call_area;
 
     // 2. 函数序言 (Prologue)
     int num_callee_pushes = 0;
@@ -806,9 +798,10 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
 
                 case SIR_GET_PARAM: {
                     int param_idx = (int)inst->operands[0]->as.int_val;
-                    if (param_idx < 4) {
-                        const char* regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
-                        const char* regs32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
+                    int max_reg_args = (opt_level >= 2) ? 6 : 4;
+                    if (param_idx < max_reg_args) {
+                        const char* regs[] = {"%rcx", "%rdx", "%r8", "%r9", "%r10", "%r11"};
+                        const char* regs32[] = {"%ecx", "%edx", "%r8d", "%r9d", "%r10d", "%r11d"};
                         bool is_float = (inst->dest->type && (inst->dest->type->kind == TY_F32 || inst->dest->type->kind == TY_F64));
                         if (is_float) {
                             bool is_f32 = (inst->dest->type->kind == TY_F32);
@@ -826,7 +819,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                             }
                         }
                     } else {
-                        int offset = 8 + total_frame_size + param_idx * 8;
+                        int offset = 8 + total_frame_size + (param_idx - max_reg_args) * 8;
                         int size = type_get_size(inst->dest->type);
                         bool is_signed = type_is_signed(inst->dest->type);
                         
@@ -1245,23 +1238,41 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                         break;
                     }
                     
-                    // Windows x64 ABI: rcx, rdx, r8, r9, 然后是栈
+                    bool is_extern = false;
+                    if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                        for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) {
+                            if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
+                                is_extern = true; break;
+                            }
+                        }
+                    }
+
                     int num_args = inst->num_operands - 1;
+                    int max_reg_args = (is_extern || opt_level < 2) ? 4 : 6;
+                    int reg_args = num_args > max_reg_args ? max_reg_args : num_args;
+                    const char* arg_regs_ext[] = {"%rcx", "%rdx", "%r8", "%r9"};
+                    const char* arg_regs32_ext[] = {"%ecx", "%edx", "%r8d", "%r9d"};
+                    const char* arg_regs_int[] = {"%rcx", "%rdx", "%r8", "%r9", "%r10", "%r11"};
+                    const char* arg_regs32_int[] = {"%ecx", "%edx", "%r8d", "%r9d", "%r10d", "%r11d"};
+                    const char** arg_regs = is_extern ? arg_regs_ext : arg_regs_int;
+                    const char** arg_regs32 = is_extern ? arg_regs32_ext : arg_regs32_int;
                     
                     bool is_tail_call = false;
                     if (opt_level > 0 && inst->next && inst->next->opcode == SIR_RET && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
                         if (inst->next->num_operands == 0 || (inst->dest && inst->next->operands[0]->kind == SIR_VAL_VREG && inst->next->operands[0]->as.vreg == inst->dest->as.vreg)) {
-                            if (num_args <= 4) is_tail_call = true;
+                            if (num_args <= max_reg_args) is_tail_call = true;
                         }
                     }
-                    for (int i = num_args - 1; i >= 4; i--) {
+
+                    int stack_args = num_args > max_reg_args ? num_args - max_reg_args : 0;
+                    int scratch_base = ((is_extern || opt_level < 2) ? 32 : 0) + stack_args * 8;
+
+                    for (int i = num_args - 1; i >= max_reg_args; i--) {
                         emit_load_operand(out, "%rax", "%eax", inst->operands[i+1], &allocator, total_frame_size);
-                        fprintf(out, "    movq %%rax, %d(%%rsp)\n", 32 + (i - 4) * 8);
+                        int offset = ((is_extern || opt_level < 2) ? 32 : 0) + (i - max_reg_args) * 8;
+                        fprintf(out, "    movq %%rax, %d(%%rsp)\n", offset);
                     }
-                    
-                    int reg_args = num_args > 4 ? 4 : num_args;
-                    const char* arg_regs[] = {"%rcx", "%rdx", "%r8", "%r9"};
-                    const char* arg_regs32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
+                            
                     if (reg_args == 1) {
                         bool already_in_rcx = false;
                         if (opt_level > 0 && inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[1]) {
@@ -1306,10 +1317,10 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                     } else {
                         for (int i = 0; i < reg_args; i++) {
                             emit_load_operand(out, "%rax", "%eax", inst->operands[i+1], &allocator, total_frame_size);
-                            fprintf(out, "    movq %%rax, %d(%%rsp)\n", i * 8);
+                            fprintf(out, "    movq %%rax, %d(%%rsp)\n", scratch_base + i * 8);
                         }
                         for (int i = 0; i < reg_args; i++) {
-                            fprintf(out, "    movq %d(%%rsp), %s\n", i * 8, arg_regs[i]);
+                            fprintf(out, "    movq %d(%%rsp), %s\n", scratch_base + i * 8, arg_regs[i]);
                             bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
                             if (is_float) {
                                 if (inst->operands[i+1]->type->kind == TY_F32) fprintf(out, "    movd %s, %%xmm%d\n", arg_regs32[i], i);
@@ -1317,15 +1328,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                             }
                         }
                     }
-                    bool is_extern = false;
-                    if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
-                        for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) {
-                            if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
-                                is_extern = true;
-                                break;
-                            }
-                        }
-                    }
+                    
                     if (is_extern) {
                         // 针对可变参数函数 (如 printf/scribe)，清空 %al
                         fprintf(out, "    xorq %%rax, %%rax\n");

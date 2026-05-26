@@ -665,8 +665,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
 
             uint32_t max_vreg = 0;
             int local_stack_size = 0;
-            int max_call_args = 0;
-            bool has_call = false;
 
             // 预扫描：计算最大寄存器、ALLOCA 空间和最大调用参数数
             for (SirBlock* block = func->first_block; block; block = block->next) {
@@ -683,13 +681,28 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
             }
 
             int* alloca_offsets = calloc(max_vreg + 1, sizeof(int));
+            int max_call_area = 0;
 
             for (SirBlock* block = func->first_block; block; block = block->next) {
                 for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
                     if (inst->opcode == SIR_CALL) {
-                        has_call = true;
+                        if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                            const char* name = inst->operands[0]->as.global_name;
+                            if (strcmp(name, "scribe") == 0 || strcmp(name, "crea") == 0 || strcmp(name, "neca") == 0) {
+                                continue;
+                            }
+                        }
                         int args = inst->num_operands - 1;
-                        if (args > max_call_args) max_call_args = args;
+                        bool is_ext = false;
+                        if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                            for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) {
+                                if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
+                                    is_ext = true; break;
+                                }
+                            }
+                        }
+                        int area = ((is_ext || opt_level < 2) ? 32 : 0) + args * 8;
+                        if (area > max_call_area) max_call_area = area;
                     }
                     if (inst->opcode == SIR_ALLOCA) {
                         int alloc_size = (int)inst->operands[0]->as.int_val;
@@ -712,28 +725,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                 }
             }
 
-            bool has_extern_call = false;
-            for (SirBlock* block = func->first_block; block; block = block->next) {
-                for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
-                    if (inst->opcode == SIR_CALL) {
-                        if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
-                            bool is_ext = false;
-                            for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) {
-                                if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
-                                    is_ext = true;
-                                    break;
-                                }
-                            }
-                            if (is_ext) has_extern_call = true;
-                        } else {
-                            has_extern_call = true;
-                        }
-                    }
-                }
-            }
-            int call_stack_space = max_call_args > 4 ? (max_call_args - 4) * 8 : 0;
-            int shadow_space = (has_extern_call || max_call_args > 4) ? 32 : 0;
-            int local_and_args = allocator.current_offset + shadow_space + call_stack_space;
+            int local_and_args = allocator.current_offset + max_call_area;
 
             // 序言 (Prologue)
             int num_callee_pushes = 0;
@@ -838,8 +830,9 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                         }
                         case SIR_GET_PARAM: {
                             int param_idx = (int)inst->operands[0]->as.int_val;
-                            if (param_idx < 4) {
-                                int regs[] = {REG_RCX, REG_RDX, 8, 9};
+                            int max_reg_args = (opt_level >= 2) ? 6 : 4;
+                            if (param_idx < max_reg_args) {
+                                int regs[] = {REG_RCX, REG_RDX, REG_R8, REG_R9, REG_R10, REG_R11};
                                 int src_reg = regs[param_idx];
                                 bool is_float = (inst->dest->type && (inst->dest->type->kind == TY_F32 || inst->dest->type->kind == TY_F64));
                                 if (is_float) {
@@ -852,7 +845,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                     store_result(&linker->text_section, &allocator, inst->dest, src_reg);
                                 }
                             } else {
-                                int offset = 8 + total_frame_size + param_idx * 8;
+                                int offset = 8 + total_frame_size + (param_idx - max_reg_args) * 8;
                                 int size = type_get_size(inst->dest->type);
                                 bool is_signed = type_is_signed(inst->dest->type);
                                 
@@ -1848,26 +1841,45 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 break;
                             }
 
-                            int arg_regs[] = {REG_RCX, REG_RDX, 8, 9};
+                            bool is_extern = false;
+                            int target_idx = 0;
+                            if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                                int current_idx = 0;
+                                for (SirExternFunc* ext = ctx.first_extern; ext; ext = ext->next) {
+                                    if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
+                                        is_extern = true;
+                                        target_idx = current_idx;
+                                        break;
+                                    }
+                                    current_idx++;
+                                }
+                            }
+
                             int num_args = inst->num_operands - 1;
+                            int max_reg_args = (is_extern || opt_level < 2) ? 4 : 6;
+                            int reg_args = num_args > max_reg_args ? max_reg_args : num_args;
+                            int arg_regs_ext[] = {REG_RCX, REG_RDX, REG_R8, REG_R9};
+                            int arg_regs_int[] = {REG_RCX, REG_RDX, REG_R8, REG_R9, REG_R10, REG_R11};
+                            int* arg_regs = is_extern ? arg_regs_ext : arg_regs_int;
                             
                             bool is_tail_call = false;
                             if (opt_level > 0 && inst->next && inst->next->opcode == SIR_RET && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
                                 if (inst->next->num_operands == 0 || (inst->dest && inst->next->operands[0]->kind == SIR_VAL_VREG && inst->next->operands[0]->as.vreg == inst->dest->as.vreg)) {
-                                    if (num_args <= 4) is_tail_call = true; // 仅对参数<=4的调用进行 TCO，避免覆盖 Caller 栈参数
+                                    if (num_args <= max_reg_args) is_tail_call = true;
                                 }
                             }
-                            
-                            // 1. 处理栈传递的参数 (i >= 4)
-                            for (int i = num_args - 1; i >= 4; i--) {
+
+                            int stack_args = num_args > max_reg_args ? num_args - max_reg_args : 0;
+                            int scratch_base = ((is_extern || opt_level < 2) ? 32 : 0) + stack_args * 8;
+
+                            for (int i = num_args - 1; i >= max_reg_args; i--) {
                                 int val = load_operand(&linker->text_section, &allocator, inst->operands[i+1], REG_RAX, &ctx);
                                 emit_rex(&linker->text_section, 1, val > 7, 0, 0);
                                 emit8(&linker->text_section, 0x89);
-                                emit_mem(&linker->text_section, val, REG_RSP, 32 + (i - 4) * 8);
+                                int offset = ((is_extern || opt_level < 2) ? 32 : 0) + (i - max_reg_args) * 8;
+                                emit_mem(&linker->text_section, val, REG_RSP, offset);
                             }
                             
-                            // 2. 处理寄存器传递的参数 (i < 4)
-                            int reg_args = num_args > 4 ? 4 : num_args;
                             if (reg_args == 1) {
                                 bool already_in_rcx = false;
                                 if (opt_level > 0 && inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[1]) {
@@ -1917,13 +1929,13 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 for (int i = 0; i < reg_args; i++) {
                                     int val = load_operand(&linker->text_section, &allocator, inst->operands[i+1], REG_RAX, &ctx);
                                     emit_rex(&linker->text_section, 1, val > 7, 0, 0);
-                                    emit8(&linker->text_section, 0x89); // mov [rsp + i*8], val
-                                    emit_mem(&linker->text_section, val, REG_RSP, i * 8);
+                                    emit8(&linker->text_section, 0x89);
+                                    emit_mem(&linker->text_section, val, REG_RSP, scratch_base + i * 8);
                                 }
                                 for (int i = 0; i < reg_args; i++) {
                                     emit_rex(&linker->text_section, 1, arg_regs[i] > 7, 0, 0);
-                                    emit8(&linker->text_section, 0x8B); // mov arg_regs[i], [rsp + i*8]
-                                    emit_mem(&linker->text_section, arg_regs[i] & 7, REG_RSP, i * 8);
+                                    emit8(&linker->text_section, 0x8B);
+                                    emit_mem(&linker->text_section, arg_regs[i] & 7, REG_RSP, scratch_base + i * 8);
                                     
                                     bool is_float = (inst->operands[i+1]->type && (inst->operands[i+1]->type->kind == TY_F32 || inst->operands[i+1]->type->kind == TY_F64));
                                     if (is_float) {
@@ -1932,20 +1944,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                         emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); 
                                         emit_modrm(&linker->text_section, 3, i, arg_regs[i] & 7);
                                     }
-                                }
-                            }
-                            
-                            bool is_extern = false;
-                            int target_idx = 0;
-                            if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
-                                int current_idx = 0;
-                                for (SirExternFunc* ext = ctx.first_extern; ext; ext = ext->next) {
-                                    if (strcmp(ext->name, inst->operands[0]->as.global_name) == 0) {
-                                        is_extern = true;
-                                        target_idx = current_idx;
-                                        break;
-                                    }
-                                    current_idx++;
                                 }
                             }
 
