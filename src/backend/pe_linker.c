@@ -837,45 +837,143 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 int size = type_get_size(inst->dest->type);
                                 bool is_signed = type_is_signed(inst->dest->type);
                                 
+                                int dest_reg = REG_RAX;
+                                if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
+                                    int c = reg_alloc_get_color(&allocator, inst->dest->as.vreg);
+                                    if (c != -1) dest_reg = get_phys_reg(c);
+                                }
+                                
                                 if (size == 1) {
-                                    emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                    emit_rex(&linker->text_section, 1, dest_reg > 7, 0, 0);
                                     emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBE : 0xB6);
                                 } else if (size == 2) {
-                                    emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                    emit_rex(&linker->text_section, 1, dest_reg > 7, 0, 0);
                                     emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBF : 0xB7);
                                 } else if (size == 4) {
                                     if (is_signed) {
-                                        emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                        emit_rex(&linker->text_section, 1, dest_reg > 7, 0, 0);
                                         emit8(&linker->text_section, 0x63);
                                     } else {
-                                        emit_rex(&linker->text_section, 0, 0, 0, 0);
+                                        emit_rex(&linker->text_section, 0, dest_reg > 7, 0, 0);
                                         emit8(&linker->text_section, 0x8B);
                                     }
                                 } else {
-                                    emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                    emit_rex(&linker->text_section, 1, dest_reg > 7, 0, 0);
                                     emit8(&linker->text_section, 0x8B);
                                 }
-                                emit_mem(&linker->text_section, REG_RAX, REG_RSP, offset);
-                                store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
+                                emit_mem(&linker->text_section, dest_reg, REG_RSP, offset);
+                                store_result(&linker->text_section, &allocator, inst->dest, dest_reg);
                             }
                             break;
                         }
                         case SIR_ALLOCA: {
                             int offset = alloca_offsets[inst->dest->as.vreg];
-                            emit_rex(&linker->text_section, 1, 0, 0, 0);
-                            emit8(&linker->text_section, 0x8D); // lea rax, [rsp + offset]
-                            emit_mem(&linker->text_section, REG_RAX, REG_RSP, total_frame_size + offset);
-                            store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
+                            int dest_reg = REG_RAX;
+                            if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
+                                int c = reg_alloc_get_color(&allocator, inst->dest->as.vreg);
+                                if (c != -1) dest_reg = get_phys_reg(c);
+                            }
+                            emit_rex(&linker->text_section, 1, dest_reg > 7, 0, 0);
+                            emit8(&linker->text_section, 0x8D); // lea dest, [rsp + offset]
+                            emit_mem(&linker->text_section, dest_reg, REG_RSP, total_frame_size + offset);
+                            store_result(&linker->text_section, &allocator, inst->dest, dest_reg);
                             break;
                         }
                         case SIR_STORE: {
                             int size = 8;
-                            // 优先使用指针解引用后的目标类型大小，防止右值字面量丢失类型导致越界写入
                             if (inst->operands[1]->type && inst->operands[1]->type->kind == TY_VIA) {
                                 size = type_get_size(inst->operands[1]->type->as.inner);
                             } else if (inst->operands[0]->type) {
                                 size = type_get_size(inst->operands[0]->type);
                             }
+                            
+                            if (inst->operands[0]->kind == SIR_VAL_CONST_INT) {
+                                int64_t val = inst->operands[0]->as.int_val;
+                                if (val >= -2147483648LL && val <= 2147483647LL) {
+                                    int ptr_scratch = REG_RCX;
+                                    int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], ptr_scratch, &ctx);
+                                    
+                                    if (size == 1) {
+                                        emit_rex(&linker->text_section, 0, 0, 0, ptr_reg > 7);
+                                        emit8(&linker->text_section, 0xC6); // mov byte ptr, imm8
+                                        emit_mem(&linker->text_section, 0, ptr_reg, 0);
+                                        emit8(&linker->text_section, (uint8_t)val);
+                                    } else if (size == 2) {
+                                        emit8(&linker->text_section, 0x66);
+                                        emit_rex(&linker->text_section, 0, 0, 0, ptr_reg > 7);
+                                        emit8(&linker->text_section, 0xC7); // mov word ptr, imm16
+                                        emit_mem(&linker->text_section, 0, ptr_reg, 0);
+                                        emit8(&linker->text_section, (uint8_t)(val & 0xFF));
+                                        emit8(&linker->text_section, (uint8_t)((val >> 8) & 0xFF));
+                                    } else if (size == 4) {
+                                        emit_rex(&linker->text_section, 0, 0, 0, ptr_reg > 7);
+                                        emit8(&linker->text_section, 0xC7); // mov dword ptr, imm32
+                                        emit_mem(&linker->text_section, 0, ptr_reg, 0);
+                                        emit32(&linker->text_section, (uint32_t)val);
+                                    } else {
+                                        emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
+                                        emit8(&linker->text_section, 0xC7); // mov qword ptr, imm32 (sign extended)
+                                        emit_mem(&linker->text_section, 0, ptr_reg, 0);
+                                        emit32(&linker->text_section, (uint32_t)val);
+                                    }
+                                    break;
+                                }
+                            } else if (inst->operands[0]->kind == SIR_VAL_CONST_STRING || inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                                int ptr_scratch = REG_RCX;
+                                int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], ptr_scratch, &ctx);
+                                
+                                emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
+                                emit8(&linker->text_section, 0xC7); // mov qword ptr, imm32 (sign extended)
+                                emit_mem(&linker->text_section, 0, ptr_reg, 0);
+                                
+                                if (inst->operands[0]->kind == SIR_VAL_CONST_STRING) {
+                                    uint32_t rdata_off = 0;
+                                    for (int i = 0; i < ctx->string_count; i++) {
+                                        if (ctx->string_lens[i] == inst->operands[0]->as.string_val.len &&
+                                            memcmp(ctx->strings[i], inst->operands[0]->as.string_val.str, inst->operands[0]->as.string_val.len) == 0) {
+                                            rdata_off = ctx->string_offsets[i];
+                                            break;
+                                        }
+                                    }
+                                    if (ctx->pass == 1) {
+                                        g_str_relocs[g_str_reloc_count] = (uint32_t)linker->text_section.size;
+                                        g_str_rdata_offs[g_str_reloc_count] = rdata_off;
+                                        g_str_reloc_count++;
+                                    }
+                                } else {
+                                    bool is_global = false;
+                                    uint32_t target_off = 0;
+                                    for (int i = 0; i < ctx->global_count; i++) {
+                                        if (strcmp(ctx->globals[i], inst->operands[0]->as.global_name) == 0) {
+                                            is_global = true;
+                                            target_off = ctx->global_offsets[i];
+                                            break;
+                                        }
+                                    }
+                                    if (is_global) {
+                                        if (ctx.pass == 1) {
+                                            g_data_relocs[g_data_reloc_count] = (uint32_t)linker->text_section.size;
+                                            g_data_offs[g_data_reloc_count] = target_off;
+                                            g_data_reloc_count++;
+                                        }
+                                    } else {
+                                        for (int i = 0; i < ctx->func_count; i++) {
+                                            if (strcmp(ctx.funcs[i], inst->operands[0]->as.global_name) == 0) {
+                                                target_off = ctx.func_offsets[i];
+                                                break;
+                                            }
+                                        }
+                                        if (ctx.pass == 1) {
+                                            g_func_relocs[g_func_reloc_count] = (uint32_t)linker->text_section.size;
+                                            g_func_offs[g_func_reloc_count] = target_off;
+                                            g_func_reloc_count++;
+                                        }
+                                    }
+                                }
+                                emit32(&linker->text_section, 0); // 占位符
+                                break;
+                            }
+
                             int ptr_color = (inst->operands[1] && inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
                             int ptr_phys = (ptr_color != -1) ? get_phys_reg(ptr_color) : -1;
                             
@@ -908,26 +1006,32 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                             bool is_signed = type_is_signed(inst->dest->type);
                             int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RCX, &ctx);
                             
+                            int dest_reg = REG_RAX;
+                            if (inst->dest && inst->dest->kind == SIR_VAL_VREG) {
+                                int c = reg_alloc_get_color(&allocator, inst->dest->as.vreg);
+                                if (c != -1) dest_reg = get_phys_reg(c);
+                            }
+                            
                             if (size == 1) {
-                                emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
-                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBE : 0xB6); // movsx/movzx rax, byte ptr
+                                emit_rex(&linker->text_section, 1, dest_reg > 7, 0, ptr_reg > 7);
+                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBE : 0xB6); // movsx/movzx dest, byte ptr
                             } else if (size == 2) {
-                                emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
-                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBF : 0xB7); // movsx/movzx rax, word ptr
+                                emit_rex(&linker->text_section, 1, dest_reg > 7, 0, ptr_reg > 7);
+                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, is_signed ? 0xBF : 0xB7); // movsx/movzx dest, word ptr
                             } else if (size == 4) {
                                 if (is_signed) {
-                                    emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
-                                    emit8(&linker->text_section, 0x63); // movsxd rax, dword ptr
+                                    emit_rex(&linker->text_section, 1, dest_reg > 7, 0, ptr_reg > 7);
+                                    emit8(&linker->text_section, 0x63); // movsxd dest, dword ptr
                                 } else {
-                                    emit_rex(&linker->text_section, 0, 0, 0, ptr_reg > 7);
-                                    emit8(&linker->text_section, 0x8B); // mov eax, dword ptr
+                                    emit_rex(&linker->text_section, 0, dest_reg > 7, 0, ptr_reg > 7);
+                                    emit8(&linker->text_section, 0x8B); // mov dest32, dword ptr
                                 }
                             } else {
-                                emit_rex(&linker->text_section, 1, 0, 0, ptr_reg > 7);
-                                emit8(&linker->text_section, 0x8B); // mov rax, qword ptr
+                                emit_rex(&linker->text_section, 1, dest_reg > 7, 0, ptr_reg > 7);
+                                emit8(&linker->text_section, 0x8B); // mov dest, qword ptr
                             }
-                            emit_mem(&linker->text_section, REG_RAX, ptr_reg, 0);
-                            store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
+                            emit_mem(&linker->text_section, dest_reg, ptr_reg, 0);
+                            store_result(&linker->text_section, &allocator, inst->dest, dest_reg);
                             break;
                         }
                         case SIR_CAST: {

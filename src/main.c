@@ -55,9 +55,9 @@ int main(int argc, char** argv) {
             output_path = argv[++i];
         } else if (strncmp(argv[i], "-O", 2) == 0 && strlen(argv[i]) == 3) {
             opt_level = argv[i][2] - '0';
-            if (opt_level < 0 || opt_level > 3) {
+            if (opt_level < 0 || opt_level > 2) {
                 LOG_ERROR("Gradus optimationis ignotus: %s", argv[i]);
-                printf("Usus: scoria <fasciculus.sco>... [-o <opus.exe>] [-O0|-O1|-O2|-O3] [--emitte-ir] [--emitte-asm] [--verbosus]\n");
+                printf("Usus: scoria <fasciculus.sco>... [-o <opus.exe>] [-O0|-O1|-O2] [--emitte-ir] [--emitte-asm] [--verbosus]\n");
                 return 1;
             }
         } else if (strcmp(argv[i], "--emitte-ir") == 0) {
@@ -72,7 +72,7 @@ int main(int argc, char** argv) {
             }
         } else {
             LOG_ERROR("Argumentum ignotum: %s", argv[i]);
-            printf("Usus: scoria <fasciculus.sco>... [-o <opus.exe>] [-O0|-O1|-O2|-O3] [--emitte-ir] [--emitte-asm] [--verbosus]\n");
+            printf("Usus: scoria <fasciculus.sco>... [-o <opus.exe>] [-O0|-O1|-O2] [--emitte-ir] [--emitte-asm] [--verbosus]\n");
             return 1;
         }
     }
@@ -82,7 +82,7 @@ int main(int argc, char** argv) {
 
     if (source_count == 0) {
         LOG_ERROR("Nullus fasciculus datus est.");
-        printf("Usus: scoria <fasciculus.sco>... [-o <opus.exe>] [-O0|-O1|-O2|-O3] [--emitte-ir] [--emitte-asm] [--verbosus]\n");
+        printf("Usus: scoria <fasciculus.sco>... [-o <opus.exe>] [-O0|-O1|-O2] [--emitte-ir] [--emitte-asm] [--verbosus]\n");
         return 1;
     }
 

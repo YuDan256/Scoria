@@ -352,8 +352,12 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
             switch (inst->opcode) {
                 case SIR_ALLOCA: {
                     int offset = alloca_offsets[inst->dest->as.vreg];
-                    fprintf(out, "    leaq %d(%%rsp), %%rax\n", total_frame_size + offset);
-                    fprintf(out, "    movq %%rax, %s\n", dest);
+                    if (dest[0] == '%') {
+                        fprintf(out, "    leaq %d(%%rsp), %s\n", total_frame_size + offset, dest);
+                    } else {
+                        fprintf(out, "    leaq %d(%%rsp), %%rax\n", total_frame_size + offset);
+                        fprintf(out, "    movq %%rax, %s\n", dest);
+                    }
                     break;
                 }
 
@@ -428,23 +432,52 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                 case SIR_LOAD: {
                     int size = type_get_size(inst->dest->type);
                     bool is_signed = type_is_signed(inst->dest->type);
-                    if (strcmp(op0, "%rax") != 0) fprintf(out, "    movq %s, %%rax\n", op0);
-                    if (size == 1) {
-                        if (is_signed) fprintf(out, "    movsbq (%%rax), %%rcx\n");
-                        else fprintf(out, "    movzbq (%%rax), %%rcx\n");
-                    } else if (size == 2) {
-                        if (is_signed) fprintf(out, "    movswq (%%rax), %%rcx\n");
-                        else fprintf(out, "    movzwq (%%rax), %%rcx\n");
-                    } else if (size == 4) {
-                        if (is_signed) fprintf(out, "    movslq (%%rax), %%rcx\n");
-                        else fprintf(out, "    movl (%%rax), %%ecx\n");
-                    } else {
-                        fprintf(out, "    movq (%%rax), %%rcx\n");
+                    
+                    const char* ptr_reg = op0;
+                    if (op0[0] != '%') {
+                        fprintf(out, "    movq %s, %%rcx\n", op0);
+                        ptr_reg = "%rcx";
                     }
-                    const char* cx = (size <= 4) ? "%ecx" : "%rcx";
-                    const char* mov_op = (size <= 4) ? "movl" : "movq";
-                    if (strcmp(cx, dest) != 0 && strcmp("%rcx", dest) != 0) {
-                        fprintf(out, "    %s %s, %s\n", mov_op, cx, dest);
+                    
+                    bool dest_is_mem = (dest[0] != '%');
+                    const char* acc = dest_is_mem ? "%rax" : dest;
+                    const char* acc32 = dest_is_mem ? "%eax" : dest;
+                    
+                    char acc32_buf[16];
+                    if (!dest_is_mem) {
+                        if (strcmp(dest, "%rax") == 0) strcpy(acc32_buf, "%eax");
+                        else if (strcmp(dest, "%rcx") == 0) strcpy(acc32_buf, "%ecx");
+                        else if (strcmp(dest, "%rdx") == 0) strcpy(acc32_buf, "%edx");
+                        else if (strcmp(dest, "%rbx") == 0) strcpy(acc32_buf, "%ebx");
+                        else if (strcmp(dest, "%rsi") == 0) strcpy(acc32_buf, "%esi");
+                        else if (strcmp(dest, "%rdi") == 0) strcpy(acc32_buf, "%edi");
+                        else if (strcmp(dest, "%r8") == 0) strcpy(acc32_buf, "%r8d");
+                        else if (strcmp(dest, "%r9") == 0) strcpy(acc32_buf, "%r9d");
+                        else if (strcmp(dest, "%r10") == 0) strcpy(acc32_buf, "%r10d");
+                        else if (strcmp(dest, "%r11") == 0) strcpy(acc32_buf, "%r11d");
+                        else if (strcmp(dest, "%r12") == 0) strcpy(acc32_buf, "%r12d");
+                        else if (strcmp(dest, "%r13") == 0) strcpy(acc32_buf, "%r13d");
+                        else if (strcmp(dest, "%r14") == 0) strcpy(acc32_buf, "%r14d");
+                        else if (strcmp(dest, "%r15") == 0) strcpy(acc32_buf, "%r15d");
+                        acc32 = acc32_buf;
+                    }
+                    
+                    if (size == 1) {
+                        if (is_signed) fprintf(out, "    movsbq (%s), %s\n", ptr_reg, acc);
+                        else fprintf(out, "    movzbq (%s), %s\n", ptr_reg, acc);
+                    } else if (size == 2) {
+                        if (is_signed) fprintf(out, "    movswq (%s), %s\n", ptr_reg, acc);
+                        else fprintf(out, "    movzwq (%s), %s\n", ptr_reg, acc);
+                    } else if (size == 4) {
+                        if (is_signed) fprintf(out, "    movslq (%s), %s\n", ptr_reg, acc);
+                        else fprintf(out, "    movl (%s), %s\n", ptr_reg, acc32);
+                    } else {
+                        fprintf(out, "    movq (%s), %s\n", ptr_reg, acc);
+                    }
+                    
+                    if (dest_is_mem) {
+                        const char* mov_op = (size <= 4) ? "movl" : "movq";
+                        fprintf(out, "    %s %s, %s\n", mov_op, (size <= 4) ? "%eax" : "%rax", dest);
                     }
                     break;
                 }
