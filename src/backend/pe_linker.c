@@ -643,24 +643,17 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                 g_init_offset = (uint32_t)linker->text_section.size;
             }
 
+            uint32_t fp_jmp_off = 0;
             if (func->has_fast_path && opt_level > 0) {
                 // cmp rcx/ecx, imm
                 emit_alu_reg_imm32(&linker->text_section, func->fp_w, 7, REG_RCX, func->fp_imm);
                 
-                // 优化: 使用 2 字节的短跳转 (Short Jump) 替代 6 字节的近跳转
-                uint8_t short_jcc = func->fp_jcc_pe - 0x10;
-                emit8(&linker->text_section, short_jcc);
-                uint32_t jmp_slow_off = (uint32_t)linker->text_section.size;
-                emit8(&linker->text_section, 0); // 8-bit 占位符
-                
-                // mov rax/eax, rcx/ecx
-                emit_mov_reg_reg_w(&linker->text_section, func->fp_w, REG_RAX, REG_RCX);
-                // ret
-                emit8(&linker->text_section, 0xC3);
-                
-                // 回填 short jcc
-                int8_t rel_slow = (int8_t)(linker->text_section.size - (jmp_slow_off + 1));
-                linker->text_section.buffer[jmp_slow_off] = (uint8_t)rel_slow;
+                // 优化: 分支预测优化 (Out-of-line Fast Path)
+                // 使用 6 字节的近跳转 (Near Jump) 跳到函数末尾的快路径，让慢路径成为默认的 Fall-through
+                emit8(&linker->text_section, 0x0F);
+                emit8(&linker->text_section, func->fp_jcc_pe);
+                fp_jmp_off = (uint32_t)linker->text_section.size;
+                emit32(&linker->text_section, 0); // 32-bit 占位符
             }
 
             uint32_t max_vreg = 0;
@@ -682,6 +675,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
 
             int* alloca_offsets = calloc(max_vreg + 1, sizeof(int));
             int max_call_area = 0;
+            bool requires_align = false;
 
             for (SirBlock* block = func->first_block; block; block = block->next) {
                 for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
@@ -689,6 +683,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                         if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
                             const char* name = inst->operands[0]->as.global_name;
                             if (strcmp(name, "scribe") == 0 || strcmp(name, "crea") == 0 || strcmp(name, "neca") == 0) {
+                                requires_align = true;
                                 continue;
                             }
                         }
@@ -701,6 +696,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 }
                             }
                         }
+                        if (is_ext) requires_align = true;
                         int area = ((is_ext || opt_level < 2) ? 32 : 0) + args * 8;
                         if (area > max_call_area) max_call_area = area;
                     }
@@ -738,8 +734,10 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
             if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x57); num_callee_pushes++; } // push r15
 
             int stack_sub_size = local_and_args;
-            if ((stack_sub_size + num_callee_pushes * 8 + 8) % 16 != 0) {
-                stack_sub_size += 8;
+            if (opt_level < 2 || requires_align || stack_sub_size > 0) {
+                if ((stack_sub_size + num_callee_pushes * 8 + 8) % 16 != 0) {
+                    stack_sub_size += 8;
+                }
             }
             int total_frame_size = stack_sub_size + num_callee_pushes * 8;
             ctx.frame_size = total_frame_size;
@@ -2180,6 +2178,18 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                     }
                 }
             }
+            if (func->has_fast_path && opt_level > 0) {
+                // 回填 jcc
+                int32_t rel_fast = (int32_t)(linker->text_section.size - (fp_jmp_off + 4));
+                memcpy(linker->text_section.buffer + fp_jmp_off, &rel_fast, 4);
+                
+                // Out-of-line Fast Path
+                // mov rax/eax, rcx/ecx
+                emit_mov_reg_reg_w(&linker->text_section, func->fp_w, REG_RAX, REG_RCX);
+                // ret
+                emit8(&linker->text_section, 0xC3);
+            }
+
             free(alloca_offsets);
             reg_alloc_free(&allocator);
         }

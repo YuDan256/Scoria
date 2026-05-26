@@ -203,15 +203,10 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
     // 优化: 序言前置快路径剥离 (Shrink-Wrapping / Fast Path Peephole)
     if (func->has_fast_path && opt_level > 0) {
         const char* cx = func->fp_w ? "%rcx" : "%ecx";
-        const char* ax = func->fp_w ? "%rax" : "%eax";
         const char* cmp_op = func->fp_w ? "cmpq" : "cmpl";
-        const char* mov_op = func->fp_w ? "movq" : "movl";
         
         fprintf(out, "    %s $%d, %s\n", cmp_op, func->fp_imm, cx);
-        fprintf(out, "    %s .Lslow_%s\n", func->fp_jcc_asm, func->name);
-        fprintf(out, "    %s %s, %s\n", mov_op, cx, ax);
-        fprintf(out, "    ret\n");
-        fprintf(out, ".Lslow_%s:\n", func->name);
+        fprintf(out, "    %s .Lfast_%s\n", func->fp_jcc_asm, func->name);
     }
 
     // 1. 扫描函数，找到最大的虚拟寄存器 ID 和 ALLOCA 空间
@@ -233,6 +228,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
 
     int* alloca_offsets = calloc(max_vreg + 1, sizeof(int));
     int max_call_area = 0;
+    bool requires_align = false;
 
     for (SirBlock* block = func->first_block; block; block = block->next) {
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
@@ -240,6 +236,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                 if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
                     const char* name = inst->operands[0]->as.global_name;
                     if (strcmp(name, "scribe") == 0 || strcmp(name, "crea") == 0 || strcmp(name, "neca") == 0) {
+                        requires_align = true;
                         continue;
                     }
                 }
@@ -252,6 +249,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                         }
                     }
                 }
+                if (is_ext) requires_align = true;
                 int area = ((is_ext || opt_level < 2) ? 32 : 0) + args * 8;
                 if (area > max_call_area) max_call_area = area;
             }
@@ -290,8 +288,10 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
     if (allocator.used_callee_saved[6]) { fprintf(out, "    pushq %%r15\n"); num_callee_pushes++; }
 
     int stack_sub_size = local_and_args;
-    if ((stack_sub_size + num_callee_pushes * 8 + 8) % 16 != 0) {
-        stack_sub_size += 8;
+    if (opt_level < 2 || requires_align || stack_sub_size > 0) {
+        if ((stack_sub_size + num_callee_pushes * 8 + 8) % 16 != 0) {
+            stack_sub_size += 8;
+        }
     }
     int total_frame_size = stack_sub_size + num_callee_pushes * 8;
     if (stack_sub_size > 0) {
@@ -1414,6 +1414,15 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                     break;
             }
         }
+    }
+
+    if (func->has_fast_path && opt_level > 0) {
+        const char* cx = func->fp_w ? "%rcx" : "%ecx";
+        const char* ax = func->fp_w ? "%rax" : "%eax";
+        const char* mov_op = func->fp_w ? "movq" : "movl";
+        fprintf(out, ".Lfast_%s:\n", func->name);
+        fprintf(out, "    %s %s, %s\n", mov_op, cx, ax);
+        fprintf(out, "    ret\n");
     }
 
     free(alloca_offsets);

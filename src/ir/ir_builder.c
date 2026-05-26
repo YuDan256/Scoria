@@ -1014,21 +1014,21 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                             
                             bool is_unsigned = type_is_unsigned(i1->dest->type);
                             
-                            // ASM JCC
-                            if (i2->opcode == SIR_ICMP_EQ) func->fp_jcc_asm = cond_is_true ? "jne" : "je";
-                            else if (i2->opcode == SIR_ICMP_NE) func->fp_jcc_asm = cond_is_true ? "je" : "jne";
-                            else if (i2->opcode == SIR_ICMP_LT) func->fp_jcc_asm = cond_is_true ? (is_unsigned ? "jae" : "jge") : (is_unsigned ? "jb" : "jl");
-                            else if (i2->opcode == SIR_ICMP_LE) func->fp_jcc_asm = cond_is_true ? (is_unsigned ? "ja" : "jg") : (is_unsigned ? "jbe" : "jle");
-                            else if (i2->opcode == SIR_ICMP_GT) func->fp_jcc_asm = cond_is_true ? (is_unsigned ? "jbe" : "jle") : (is_unsigned ? "ja" : "jg");
-                            else if (i2->opcode == SIR_ICMP_GE) func->fp_jcc_asm = cond_is_true ? (is_unsigned ? "jb" : "jl") : (is_unsigned ? "jae" : "jge");
+                            // ASM JCC (正向条件：满足快路径时跳转)
+                            if (i2->opcode == SIR_ICMP_EQ) func->fp_jcc_asm = cond_is_true ? "je" : "jne";
+                            else if (i2->opcode == SIR_ICMP_NE) func->fp_jcc_asm = cond_is_true ? "jne" : "je";
+                            else if (i2->opcode == SIR_ICMP_LT) func->fp_jcc_asm = cond_is_true ? (is_unsigned ? "jb" : "jl") : (is_unsigned ? "jae" : "jge");
+                            else if (i2->opcode == SIR_ICMP_LE) func->fp_jcc_asm = cond_is_true ? (is_unsigned ? "jbe" : "jle") : (is_unsigned ? "ja" : "jg");
+                            else if (i2->opcode == SIR_ICMP_GT) func->fp_jcc_asm = cond_is_true ? (is_unsigned ? "ja" : "jg") : (is_unsigned ? "jbe" : "jle");
+                            else if (i2->opcode == SIR_ICMP_GE) func->fp_jcc_asm = cond_is_true ? (is_unsigned ? "jae" : "jge") : (is_unsigned ? "jb" : "jl");
                             
-                            // PE JCC
-                            if (i2->opcode == SIR_ICMP_EQ) func->fp_jcc_pe = cond_is_true ? 0x85 : 0x84;
-                            else if (i2->opcode == SIR_ICMP_NE) func->fp_jcc_pe = cond_is_true ? 0x84 : 0x85;
-                            else if (i2->opcode == SIR_ICMP_LT) func->fp_jcc_pe = cond_is_true ? (is_unsigned ? 0x83 : 0x8D) : (is_unsigned ? 0x82 : 0x8C);
-                            else if (i2->opcode == SIR_ICMP_LE) func->fp_jcc_pe = cond_is_true ? (is_unsigned ? 0x87 : 0x8F) : (is_unsigned ? 0x86 : 0x8E);
-                            else if (i2->opcode == SIR_ICMP_GT) func->fp_jcc_pe = cond_is_true ? (is_unsigned ? 0x86 : 0x8E) : (is_unsigned ? 0x87 : 0x8F);
-                            else if (i2->opcode == SIR_ICMP_GE) func->fp_jcc_pe = cond_is_true ? (is_unsigned ? 0x82 : 0x8C) : (is_unsigned ? 0x83 : 0x8D);
+                            // PE JCC (正向条件：满足快路径时跳转)
+                            if (i2->opcode == SIR_ICMP_EQ) func->fp_jcc_pe = cond_is_true ? 0x84 : 0x85;
+                            else if (i2->opcode == SIR_ICMP_NE) func->fp_jcc_pe = cond_is_true ? 0x85 : 0x84;
+                            else if (i2->opcode == SIR_ICMP_LT) func->fp_jcc_pe = cond_is_true ? (is_unsigned ? 0x82 : 0x8C) : (is_unsigned ? 0x83 : 0x8D);
+                            else if (i2->opcode == SIR_ICMP_LE) func->fp_jcc_pe = cond_is_true ? (is_unsigned ? 0x86 : 0x8E) : (is_unsigned ? 0x87 : 0x8F);
+                            else if (i2->opcode == SIR_ICMP_GT) func->fp_jcc_pe = cond_is_true ? (is_unsigned ? 0x87 : 0x8F) : (is_unsigned ? 0x86 : 0x8E);
+                            else if (i2->opcode == SIR_ICMP_GE) func->fp_jcc_pe = cond_is_true ? (is_unsigned ? 0x83 : 0x8D) : (is_unsigned ? 0x82 : 0x8C);
                             
                             // 切断树根，死块大扫除
                             i1->next = i3;
