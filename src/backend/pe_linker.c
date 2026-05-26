@@ -1388,11 +1388,19 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                             int element_size = (int)inst->operands[2]->as.int_val;
 
                             if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
-                                int ptr = load_operand(&linker->text_section, &allocator, inst->operands[0], dest_reg, &ctx);
-                                if (ptr != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, ptr);
-                                
                                 int32_t offset = (int32_t)(inst->operands[1]->as.int_val * element_size);
-                                if (offset != 0) emit_alu_reg_imm32(&linker->text_section, 1, 0, dest_reg, offset);
+                                int ptr = load_operand(&linker->text_section, &allocator, inst->operands[0], dest_reg, &ctx);
+                                if (offset == 0) {
+                                    if (ptr != dest_reg) emit_mov_reg_reg(&linker->text_section, dest_reg, ptr);
+                                } else {
+                                    if (ptr != dest_reg) {
+                                        emit_rex(&linker->text_section, 1, dest_reg > 7, 0, ptr > 7);
+                                        emit8(&linker->text_section, 0x8D); // lea
+                                        emit_mem(&linker->text_section, dest_reg, ptr, offset);
+                                    } else {
+                                        emit_alu_reg_imm32(&linker->text_section, 1, 0, dest_reg, offset);
+                                    }
+                                }
                             } else {
                                 int idx_color = (inst->operands[1] && inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
                                 int idx_phys = (idx_color != -1) ? get_phys_reg(idx_color) : -1;
@@ -1654,35 +1662,32 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 bool is_ptr = !is_str && (arg_type && (arg_type->kind == TY_VIA || arg_type->kind == TY_COHORS || arg_type->kind == TY_ACIES));
                                 bool is_float = (arg_type && (arg_type->kind == TY_F32 || arg_type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
                                 
-                                int arg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RAX, &ctx);
-                                if (arg != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, arg);
+                                int arg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
+                                if (arg != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, arg);
                                 
                                 if (is_str) {
-                                    // mov rdx, [rax + 8]
+                                    // mov rdx, [rcx + 8]
                                     emit_rex(&linker->text_section, 1, 0, 0, 0);
                                     emit8(&linker->text_section, 0x8B);
-                                    emit_mem(&linker->text_section, REG_RDX, REG_RAX, 8);
+                                    emit_mem(&linker->text_section, REG_RDX, REG_RCX, 8);
                                     
-                                    // mov rcx, [rax]
+                                    // mov rcx, [rcx]
                                     emit_rex(&linker->text_section, 1, 0, 0, 0);
                                     emit8(&linker->text_section, 0x8B);
-                                    emit_mem(&linker->text_section, REG_RCX, REG_RAX, 0);
+                                    emit_mem(&linker->text_section, REG_RCX, REG_RCX, 0);
                                     
                                     emit8(&linker->text_section, 0xE8); // call rel32
                                     if (pass == 1) g_print_str_relocs[g_print_str_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0); // 占位符
                                 } else if (is_bool) {
-                                    emit_mov_reg_reg(&linker->text_section, REG_RCX, REG_RAX);
                                     emit8(&linker->text_section, 0xE8); // call rel32
                                     if (pass == 1) g_print_bool_relocs[g_print_bool_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0);
                                 } else if (is_ptr) {
-                                    emit_mov_reg_reg(&linker->text_section, REG_RCX, REG_RAX);
                                     emit8(&linker->text_section, 0xE8); // call rel32
                                     if (pass == 1) g_print_hex_relocs[g_print_hex_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0);
                                 } else if (is_float) {
-                                    emit_mov_reg_reg(&linker->text_section, REG_RCX, REG_RAX);
                                     if (inst->operands[1]->type && inst->operands[1]->type->kind == TY_F32) {
                                         // movd xmm0, ecx
                                         emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 0, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, REG_RCX);
@@ -1695,7 +1700,6 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                     if (pass == 1) g_print_float_relocs[g_print_float_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0);
                                 } else {
-                                    emit_mov_reg_reg(&linker->text_section, REG_RCX, REG_RAX);
                                     emit8(&linker->text_section, 0xE8); // call rel32
                                     if (pass == 1) g_print_int_relocs[g_print_int_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0); // 占位符

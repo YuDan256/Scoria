@@ -56,8 +56,9 @@ int main(int argc, char** argv) {
         } else if (strncmp(argv[i], "-O", 2) == 0 && strlen(argv[i]) == 3) {
             opt_level = argv[i][2] - '0';
             if (opt_level < 0 || opt_level > 3) {
-                LOG_WARN("Gradus optimationis ignotus: %s. Usus -O0.", argv[i]);
-                opt_level = 0;
+                LOG_ERROR("Gradus optimationis ignotus: %s", argv[i]);
+                printf("Usus: scoria <fasciculus.sco>... [-o <opus.exe>] [-O0|-O1|-O2|-O3] [--emitte-ir] [--emitte-asm] [--verbosus]\n");
+                return 1;
             }
         } else if (strcmp(argv[i], "--emitte-ir") == 0) {
             emit_ir = true;
