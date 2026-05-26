@@ -583,6 +583,152 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
 
         bool changed;
         
+        if (opt_level >= 2) {
+            // 0. 常量传播与复写传播 (Constant & Copy Propagation)
+            bool prop_changed;
+            bool cfg_changed = false;
+            do {
+                prop_changed = false;
+                SirValue** replacements = (SirValue**)calloc(max_vreg + 1, sizeof(SirValue*));
+                
+                for (SirBlock* block = func->first_block; block; block = block->next) {
+                    for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                        // 替换操作数
+                        for (int i = 0; i < inst->num_operands; i++) {
+                            if (inst->operands[i] && inst->operands[i]->kind == SIR_VAL_VREG) {
+                                SirValue* rep = replacements[inst->operands[i]->as.vreg];
+                                if (rep) {
+                                    inst->operands[i] = rep;
+                                    prop_changed = true;
+                                }
+                            }
+                        }
+                        
+                        // 分支折叠 (Branch Folding)
+                        if (inst->opcode == SIR_BR && inst->operands[0]->kind == SIR_VAL_CONST_BOOL) {
+                            inst->opcode = SIR_JMP;
+                            inst->num_operands = 1;
+                            inst->operands[0] = inst->operands[0]->as.bool_val ? inst->operands[1] : inst->operands[2];
+                            prop_changed = true;
+                            cfg_changed = true;
+                        } else if (inst->opcode == SIR_SWITCH && inst->operands[0]->kind == SIR_VAL_CONST_INT) {
+                            int64_t val = inst->operands[0]->as.int_val;
+                            SirValue* target_block = inst->operands[1]; // default block
+                            int case_count = (inst->num_operands - 2) / 2;
+                            for (int i = 0; i < case_count; i++) {
+                                if (inst->operands[2 + i * 2]->as.int_val == val) {
+                                    target_block = inst->operands[2 + i * 2 + 1];
+                                    break;
+                                }
+                            }
+                            inst->opcode = SIR_JMP;
+                            inst->num_operands = 1;
+                            inst->operands[0] = target_block;
+                            prop_changed = true;
+                            cfg_changed = true;
+                        }
+                        
+                        // 发现新的复写/常量
+                        if (inst->dest && inst->dest->kind == SIR_VAL_VREG && !replacements[inst->dest->as.vreg]) {
+                            SirValue* rep = NULL;
+                            if (inst->opcode == SIR_CAST && type_equals(inst->operands[0]->type, inst->dest->type)) {
+                                rep = inst->operands[0];
+                            } else if (inst->opcode == SIR_ADD) {
+                                if (inst->operands[1]->kind == SIR_VAL_CONST_INT && inst->operands[1]->as.int_val == 0) rep = inst->operands[0];
+                                else if (inst->operands[0]->kind == SIR_VAL_CONST_INT && inst->operands[0]->as.int_val == 0) rep = inst->operands[1];
+                            } else if (inst->opcode == SIR_SUB && inst->operands[1]->kind == SIR_VAL_CONST_INT && inst->operands[1]->as.int_val == 0) {
+                                rep = inst->operands[0];
+                            } else if (inst->opcode == SIR_MUL) {
+                                if (inst->operands[1]->kind == SIR_VAL_CONST_INT && inst->operands[1]->as.int_val == 1) rep = inst->operands[0];
+                                else if (inst->operands[0]->kind == SIR_VAL_CONST_INT && inst->operands[0]->as.int_val == 1) rep = inst->operands[1];
+                            } else if (inst->opcode == SIR_DIV && inst->operands[1]->kind == SIR_VAL_CONST_INT && inst->operands[1]->as.int_val == 1) {
+                                rep = inst->operands[0];
+                            } else if (inst->opcode == SIR_SELECT && inst->operands[0]->kind == SIR_VAL_CONST_BOOL) {
+                                rep = inst->operands[0]->as.bool_val ? inst->operands[1] : inst->operands[2];
+                            } else if (inst->opcode >= SIR_ADD && inst->opcode <= SIR_SHR) {
+                                if (inst->operands[0]->kind == SIR_VAL_CONST_INT && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
+                                    int64_t l = inst->operands[0]->as.int_val;
+                                    int64_t r = inst->operands[1]->as.int_val;
+                                    int64_t res = 0;
+                                    bool can_fold = true;
+                                    switch (inst->opcode) {
+                                        case SIR_ADD: res = l + r; break;
+                                        case SIR_SUB: res = l - r; break;
+                                        case SIR_MUL: res = l * r; break;
+                                        case SIR_DIV: if (r != 0) res = l / r; else can_fold = false; break;
+                                        case SIR_MOD: if (r != 0) res = l % r; else can_fold = false; break;
+                                        case SIR_AND: res = l & r; break;
+                                        case SIR_OR:  res = l | r; break;
+                                        case SIR_XOR: res = l ^ r; break;
+                                        case SIR_SHL: res = l << r; break;
+                                        case SIR_SHR: res = l >> r; break;
+                                        default: can_fold = false; break;
+                                    }
+                                    if (can_fold) rep = ir_const_int(builder, inst->dest->type, res);
+                                }
+                            } else if (inst->opcode >= SIR_ICMP_EQ && inst->opcode <= SIR_ICMP_GE) {
+                                if (inst->operands[0]->kind == SIR_VAL_CONST_INT && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
+                                    int64_t l = inst->operands[0]->as.int_val;
+                                    int64_t r = inst->operands[1]->as.int_val;
+                                    bool res = false;
+                                    switch (inst->opcode) {
+                                        case SIR_ICMP_EQ: res = (l == r); break;
+                                        case SIR_ICMP_NE: res = (l != r); break;
+                                        case SIR_ICMP_LT: res = (l < r); break;
+                                        case SIR_ICMP_LE: res = (l <= r); break;
+                                        case SIR_ICMP_GT: res = (l > r); break;
+                                        case SIR_ICMP_GE: res = (l >= r); break;
+                                        default: break;
+                                    }
+                                    rep = ir_const_bool(builder, res);
+                                }
+                            } else if (inst->opcode >= SIR_FADD && inst->opcode <= SIR_FDIV) {
+                                if (inst->operands[0]->kind == SIR_VAL_CONST_FLOAT && inst->operands[1]->kind == SIR_VAL_CONST_FLOAT) {
+                                    double l = inst->operands[0]->as.float_val;
+                                    double r = inst->operands[1]->as.float_val;
+                                    double res = 0.0;
+                                    bool can_fold = true;
+                                    switch (inst->opcode) {
+                                        case SIR_FADD: res = l + r; break;
+                                        case SIR_FSUB: res = l - r; break;
+                                        case SIR_FMUL: res = l * r; break;
+                                        case SIR_FDIV: if (r != 0.0) res = l / r; else can_fold = false; break;
+                                        default: can_fold = false; break;
+                                    }
+                                    if (can_fold) rep = ir_const_float(builder, inst->dest->type, res);
+                                }
+                            } else if (inst->opcode >= SIR_FCMP_EQ && inst->opcode <= SIR_FCMP_GE) {
+                                if (inst->operands[0]->kind == SIR_VAL_CONST_FLOAT && inst->operands[1]->kind == SIR_VAL_CONST_FLOAT) {
+                                    double l = inst->operands[0]->as.float_val;
+                                    double r = inst->operands[1]->as.float_val;
+                                    bool res = false;
+                                    switch (inst->opcode) {
+                                        case SIR_FCMP_EQ: res = (l == r); break;
+                                        case SIR_FCMP_NE: res = (l != r); break;
+                                        case SIR_FCMP_LT: res = (l < r); break;
+                                        case SIR_FCMP_LE: res = (l <= r); break;
+                                        case SIR_FCMP_GT: res = (l > r); break;
+                                        case SIR_FCMP_GE: res = (l >= r); break;
+                                        default: break;
+                                    }
+                                    rep = ir_const_bool(builder, res);
+                                }
+                            }
+                            
+                            if (rep) {
+                                replacements[inst->dest->as.vreg] = rep;
+                            }
+                        }
+                    }
+                }
+                free(replacements);
+            } while (prop_changed);
+            
+            if (cfg_changed) {
+                prune_dead_blocks(func, func->first_block);
+            }
+        }
+        
         // 1. 死代码消除 (Dead Code Elimination)
         do {
             changed = false;
