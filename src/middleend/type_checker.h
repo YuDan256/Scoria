@@ -10,6 +10,7 @@ typedef struct {
     bool had_error;
     ScoriaType* current_function_return_type; // 用于校验 redde 语句
     int loop_depth;                           // 用于校验 rumpe/perge 语句
+    bool is_negative_context;                 // 用于精确校验负数边界
 } TypeChecker;
 
 void type_checker_init(TypeChecker* checker);

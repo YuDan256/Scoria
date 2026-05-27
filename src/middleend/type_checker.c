@@ -133,7 +133,7 @@ static uint64_t parse_roman_numeral(const char* str) {
     return total;
 }
 
-static void parse_and_check_literal(TypeChecker* checker, AstNode* expr, ScoriaType* expected_type) {
+static void parse_and_check_literal(TypeChecker* checker, AstNode* expr, ScoriaType* expected_type, bool is_negative) {
     Token token = expr->token;
     char buf[128];
     int len = token.length < 127 ? token.length : 127;
@@ -157,13 +157,11 @@ static void parse_and_check_literal(TypeChecker* checker, AstNode* expr, ScoriaT
 
         bool overflow = (errno == ERANGE);
         if (!overflow && expected_type) {
-            // 注意：对于有符号整数，字面量本身总是正数，负号由外层的 AST_UNARY_EXPR 提供。
-            // 因此 i8 的字面量最大允许值为 128 (即 |-128|)。
             switch (expected_type->kind) {
-                case TY_I8:  if (val > 128ULL) overflow = true; break;
-                case TY_I16: if (val > 32768ULL) overflow = true; break;
-                case TY_I32: if (val > 2147483648ULL) overflow = true; break;
-                case TY_I64: if (val > 9223372036854775808ULL) overflow = true; break;
+                case TY_I8:  if (val > (is_negative ? 128ULL : 127ULL)) overflow = true; break;
+                case TY_I16: if (val > (is_negative ? 32768ULL : 32767ULL)) overflow = true; break;
+                case TY_I32: if (val > (is_negative ? 2147483648ULL : 2147483647ULL)) overflow = true; break;
+                case TY_I64: if (val > (is_negative ? 9223372036854775808ULL : 9223372036854775807ULL)) overflow = true; break;
                 case TY_P8:  if (val > 255ULL) overflow = true; break;
                 case TY_P16: if (val > 65535ULL) overflow = true; break;
                 case TY_P32: if (val > 4294967295ULL) overflow = true; break;
@@ -194,6 +192,9 @@ static void parse_and_check_literal(TypeChecker* checker, AstNode* expr, ScoriaT
 static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaType* expected_type) {
     if (!expr) return type_get_basic(TY_UNKNOWN);
 
+    bool is_negative = checker->is_negative_context;
+    checker->is_negative_context = false; // 立即消耗掉该上下文，防止污染子表达式
+
     ScoriaType* type = type_get_basic(TY_UNKNOWN);
 
     switch (expr->kind) {
@@ -201,7 +202,7 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
             switch (expr->token.kind) {
                 case TK_INT_CONST:
                 case TK_FLOAT_CONST: {
-                    parse_and_check_literal(checker, expr, expected_type);
+                    parse_and_check_literal(checker, expr, expected_type, is_negative);
                     if (expected_type && expected_type->kind >= TY_I8 && expected_type->kind <= TY_F64) {
                         type = expected_type;
                     } else {
@@ -250,7 +251,7 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
             if (expr->as.struct_literal.type_expr) {
                 struct_type = check_expression(checker, expr->as.struct_literal.type_expr, NULL);
             } else {
-                if (expected_type && (expected_type->kind == TY_FORMA || expected_type->kind == TY_UNIO)) {
+                if (expected_type && (expected_type->kind == TY_FORMA || expected_type->kind == TY_UNIO || expected_type->kind == TY_COHORS)) {
                     struct_type = expected_type;
                 } else {
                     type_error(checker, expr->token, "Typus formae ex contextu inferri non potest.");
@@ -258,11 +259,11 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
                 }
             }
             
-            if (struct_type->kind != TY_FORMA && struct_type->kind != TY_UNIO) {
+            if (struct_type->kind != TY_FORMA && struct_type->kind != TY_UNIO && struct_type->kind != TY_COHORS) {
                 if (expr->as.struct_literal.type_expr) {
-                    type_error(checker, expr->as.struct_literal.type_expr->token, "Symbolum non est forma vel unio.");
+                    type_error(checker, expr->as.struct_literal.type_expr->token, "Symbolum non est forma, unio vel cohors.");
                 } else {
-                    type_error(checker, expr->token, "Typus exspectatus non est forma vel unio.");
+                    type_error(checker, expr->token, "Typus exspectatus non est forma, unio vel cohors.");
                 }
             } else {
                 if (struct_type->kind == TY_UNIO && expr->as.struct_literal.field_count > 1) {
@@ -273,21 +274,31 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
                 for (int i = 0; i < expr->as.struct_literal.field_count; i++) {
                     Token field_name = expr->as.struct_literal.field_names[i];
                     ScoriaType* expected_field_type = NULL;
-                    
                     bool found = false;
-                    for (int j = 0; j < struct_type->as.struct_type.field_count; j++) {
-                        StructField f = struct_type->as.struct_type.fields[j];
-                        if (f.name.length == field_name.length && memcmp(f.name.start, field_name.start, f.name.length) == 0) {
+                    
+                    if (struct_type->kind == TY_COHORS) {
+                        if (field_name.length == 5 && strncmp(field_name.start, "locus", 5) == 0) {
                             found = true;
-                            expected_field_type = f.type;
-                            break;
+                            expected_field_type = type_get_via(struct_type->as.inner);
+                        } else if (field_name.length == 9 && strncmp(field_name.start, "longitudo", 9) == 0) {
+                            found = true;
+                            expected_field_type = type_get_basic(TY_I64);
+                        }
+                    } else {
+                        for (int j = 0; j < struct_type->as.struct_type.field_count; j++) {
+                            StructField f = struct_type->as.struct_type.fields[j];
+                            if (f.name.length == field_name.length && memcmp(f.name.start, field_name.start, f.name.length) == 0) {
+                                found = true;
+                                expected_field_type = f.type;
+                                break;
+                            }
                         }
                     }
                     
                     ScoriaType* val_type = check_expression(checker, expr->as.struct_literal.field_values[i], expected_field_type);
                     
                     if (!found) {
-                        type_error(checker, field_name, "Campus in forma vel unione non inventus est.");
+                        type_error(checker, field_name, "Campus in forma, unione vel cohorte non inventus est.");
                     } else if (!type_equals(expected_field_type, val_type)) {
                         type_error(checker, field_name, "Typus valoris cum typo campi non congruit.");
                     }
@@ -353,6 +364,11 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
             } else {
                 operand_expected = expected_type;
             }
+            
+            if (expr->as.unary.op.kind == TK_MINUS) {
+                checker->is_negative_context = true;
+            }
+            
             ScoriaType* operand_type = check_expression(checker, expr->as.unary.operand, operand_expected);
             
             if (expr->as.unary.op.kind == TK_KW_LOCUS) {
@@ -768,6 +784,7 @@ void type_checker_init(TypeChecker* checker) {
     checker->had_error = false;
     checker->current_function_return_type = NULL;
     checker->loop_depth = 0;
+    checker->is_negative_context = false;
 }
 
 void type_checker_free(TypeChecker* checker) {
