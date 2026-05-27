@@ -138,19 +138,6 @@ static bool check_mutated(AstNode* node, Symbol* sym) {
     return false;
 }
 
-static int roman_char_value(char c) {
-    switch (c) {
-        case 'I': case 'i': return 1;
-        case 'V': case 'v': return 5;
-        case 'X': case 'x': return 10;
-        case 'L': case 'l': return 50;
-        case 'C': case 'c': return 100;
-        case 'D': case 'd': return 500;
-        case 'M': case 'm': return 1000;
-        default: return 0;
-    }
-}
-
 static SirValue* gen_string_slice(IrBuilder* builder, const char* str, int len) {
     char* str_copy = (char*)arena_alloc(&builder->arena, len + 1);
     memcpy(str_copy, str, len);
@@ -454,26 +441,9 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
     switch (expr->kind) {
         case AST_LITERAL_EXPR: {
             if (expr->token.kind == TK_INT_CONST) {
-                int64_t val = 0;
-                if (expr->token.length > 2 && expr->token.start[0] == '0' && (expr->token.start[1] == 'b' || expr->token.start[1] == 'B')) {
-                    val = strtoll(expr->token.start + 2, NULL, 2); // 二进制
-                } else if (expr->token.length > 2 && expr->token.start[0] == '0' && (expr->token.start[1] == 'r' || expr->token.start[1] == 'R')) {
-                    for (uint32_t i = 2; i < expr->token.length; i++) {
-                        int current = roman_char_value(expr->token.start[i]);
-                        int next = (i + 1 < expr->token.length) ? roman_char_value(expr->token.start[i + 1]) : 0;
-                        if (current < next) {
-                            val -= current;
-                        } else {
-                            val += current;
-                        }
-                    }
-                } else {
-                    val = strtoll(expr->token.start, NULL, 0); // 自动识别 10进制、16进制(0x)和8进制(0)
-                }
-                return ir_const_int(builder, expr->expr_type, val);
+                return ir_const_int(builder, expr->expr_type, expr->as.literal_expr.int_val);
             } else if (expr->token.kind == TK_FLOAT_CONST) {
-                double val = strtod(expr->token.start, NULL);
-                return ir_const_float(builder, expr->expr_type, val);
+                return ir_const_float(builder, expr->expr_type, expr->as.literal_expr.float_val);
             } else if (expr->token.kind == TK_BOOL_CONST) {
                 bool val = (expr->token.length == 5 && strncmp(expr->token.start, "verum", 5) == 0);
                 return ir_const_bool(builder, val);
@@ -483,13 +453,53 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 int j = 0;
                 for (uint32_t i = 1; i < expr->token.length - 1; i++) {
                     if (expr->token.start[i] == '\\' && i + 1 < expr->token.length - 1) {
-                        if (expr->token.start[i+1] == 'n') { str[j++] = '\n'; i++; continue; }
-                        if (expr->token.start[i+1] == 't') { str[j++] = '\t'; i++; continue; }
-                        if (expr->token.start[i+1] == 'r') { str[j++] = '\r'; i++; continue; }
-                        if (expr->token.start[i+1] == '0') { str[j++] = '\0'; i++; continue; }
-                        if (expr->token.start[i+1] == '"') { str[j++] = '\"'; i++; continue; }
-                        if (expr->token.start[i+1] == '\'') { str[j++] = '\''; i++; continue; }
-                        if (expr->token.start[i+1] == '\\') { str[j++] = '\\'; i++; continue; }
+                        char next_c = expr->token.start[i+1];
+                        if (next_c == 'n') { str[j++] = '\n'; i++; continue; }
+                        if (next_c == 't') { str[j++] = '\t'; i++; continue; }
+                        if (next_c == 'r') { str[j++] = '\r'; i++; continue; }
+                        if (next_c == 'a') { str[j++] = '\a'; i++; continue; }
+                        if (next_c == 'b') { str[j++] = '\b'; i++; continue; }
+                        if (next_c == 'f') { str[j++] = '\f'; i++; continue; }
+                        if (next_c == 'v') { str[j++] = '\v'; i++; continue; }
+                        if (next_c == '"') { str[j++] = '\"'; i++; continue; }
+                        if (next_c == '\'') { str[j++] = '\''; i++; continue; }
+                        if (next_c == '\\') { str[j++] = '\\'; i++; continue; }
+                        if (next_c == '?') { str[j++] = '\?'; i++; continue; }
+                        if (next_c == 'x') {
+                            i += 2;
+                            int hex_val = 0;
+                            int hex_len = 0;
+                            while (i < expr->token.length - 1 && hex_len < 2) {
+                                char hc = expr->token.start[i];
+                                if (hc >= '0' && hc <= '9') hex_val = hex_val * 16 + (hc - '0');
+                                else if (hc >= 'a' && hc <= 'f') hex_val = hex_val * 16 + (hc - 'a' + 10);
+                                else if (hc >= 'A' && hc <= 'F') hex_val = hex_val * 16 + (hc - 'A' + 10);
+                                else break;
+                                i++;
+                                hex_len++;
+                            }
+                            str[j++] = (char)hex_val;
+                            i--; // 抵消 for 循环的 i++
+                            continue;
+                        }
+                        if (next_c >= '0' && next_c <= '7') {
+                            i++;
+                            int oct_val = 0;
+                            int oct_len = 0;
+                            while (i < expr->token.length - 1 && oct_len < 3) {
+                                char oc = expr->token.start[i];
+                                if (oc >= '0' && oc <= '7') {
+                                    oct_val = oct_val * 8 + (oc - '0');
+                                    i++;
+                                    oct_len++;
+                                } else {
+                                    break;
+                                }
+                            }
+                            str[j++] = (char)oct_val;
+                            i--; // 抵消 for 循环的 i++
+                            continue;
+                        }
                     }
                     str[j++] = expr->token.start[i];
                 }
@@ -512,15 +522,44 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 char c = 0;
                 if (expr->token.length >= 3) {
                     if (expr->token.start[1] == '\\') {
-                        switch (expr->token.start[2]) {
+                        char next_c = expr->token.start[2];
+                        switch (next_c) {
                             case 'n': c = '\n'; break;
                             case 't': c = '\t'; break;
                             case 'r': c = '\r'; break;
-                            case '0': c = '\0'; break;
+                            case 'a': c = '\a'; break;
+                            case 'b': c = '\b'; break;
+                            case 'f': c = '\f'; break;
+                            case 'v': c = '\v'; break;
                             case '\\': c = '\\'; break;
                             case '\'': c = '\''; break;
                             case '\"': c = '\"'; break;
-                            default: c = expr->token.start[2]; break;
+                            case '?': c = '\?'; break;
+                            case 'x': {
+                                int hex_val = 0;
+                                for (uint32_t k = 3; k < expr->token.length - 1 && k < 5; k++) {
+                                    char hc = expr->token.start[k];
+                                    if (hc >= '0' && hc <= '9') hex_val = hex_val * 16 + (hc - '0');
+                                    else if (hc >= 'a' && hc <= 'f') hex_val = hex_val * 16 + (hc - 'a' + 10);
+                                    else if (hc >= 'A' && hc <= 'F') hex_val = hex_val * 16 + (hc - 'A' + 10);
+                                    else break;
+                                }
+                                c = (char)hex_val;
+                                break;
+                            }
+                            default:
+                                if (next_c >= '0' && next_c <= '7') {
+                                    int oct_val = 0;
+                                    for (uint32_t k = 2; k < expr->token.length - 1 && k < 5; k++) {
+                                        char oc = expr->token.start[k];
+                                        if (oc >= '0' && oc <= '7') oct_val = oct_val * 8 + (oc - '0');
+                                        else break;
+                                    }
+                                    c = (char)oct_val;
+                                } else {
+                                    c = next_c;
+                                }
+                                break;
                         }
                     } else {
                         c = expr->token.start[1];

@@ -136,6 +136,11 @@ struct AstNode {
         } expr_stmt;
 
         struct {
+            int64_t int_val;
+            double float_val;
+        } literal_expr;
+
+        struct {
             AstNode** elements;
             int element_count;
         } array_literal;
