@@ -277,15 +277,10 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
     
     int local_and_args = allocator.current_offset + max_call_area;
 
-    // 2. 函数序言 (Prologue)
     int num_callee_pushes = 0;
-    if (allocator.used_callee_saved[0]) { fprintf(out, "    pushq %%rbx\n"); num_callee_pushes++; }
-    if (allocator.used_callee_saved[1]) { fprintf(out, "    pushq %%rsi\n"); num_callee_pushes++; }
-    if (allocator.used_callee_saved[2]) { fprintf(out, "    pushq %%rdi\n"); num_callee_pushes++; }
-    if (allocator.used_callee_saved[3]) { fprintf(out, "    pushq %%r12\n"); num_callee_pushes++; }
-    if (allocator.used_callee_saved[4]) { fprintf(out, "    pushq %%r13\n"); num_callee_pushes++; }
-    if (allocator.used_callee_saved[5]) { fprintf(out, "    pushq %%r14\n"); num_callee_pushes++; }
-    if (allocator.used_callee_saved[6]) { fprintf(out, "    pushq %%r15\n"); num_callee_pushes++; }
+    for (int i = 0; i < 7; i++) {
+        if (allocator.used_callee_saved[i]) num_callee_pushes++;
+    }
 
     int stack_sub_size = local_and_args;
     if (opt_level < 2 || requires_align || stack_sub_size > 0) {
@@ -294,12 +289,10 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
         }
     }
     int total_frame_size = stack_sub_size + num_callee_pushes * 8;
-    if (stack_sub_size > 0) {
-        fprintf(out, "    subq $%d, %%rsp\n", stack_sub_size);
-    }
 
     // 4. 遍历基本块和指令 (指令选择 Instruction Selection)
     char op0[64], op1[64], op2[64], dest[64];
+    bool prologue_emitted = false;
     
     for (SirBlock* block = func->first_block; block; block = block->next) {
         if (block != func->first_block) {
@@ -317,6 +310,20 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
         }
         fprintf(out, ".L%s_%u:\n", block->name, block->id);
         
+        if (!block->is_frameless && !prologue_emitted) {
+            if (allocator.used_callee_saved[0]) fprintf(out, "    pushq %%rbx\n");
+            if (allocator.used_callee_saved[1]) fprintf(out, "    pushq %%rsi\n");
+            if (allocator.used_callee_saved[2]) fprintf(out, "    pushq %%rdi\n");
+            if (allocator.used_callee_saved[3]) fprintf(out, "    pushq %%r12\n");
+            if (allocator.used_callee_saved[4]) fprintf(out, "    pushq %%r13\n");
+            if (allocator.used_callee_saved[5]) fprintf(out, "    pushq %%r14\n");
+            if (allocator.used_callee_saved[6]) fprintf(out, "    pushq %%r15\n");
+            if (stack_sub_size > 0) {
+                fprintf(out, "    subq $%d, %%rsp\n", stack_sub_size);
+            }
+            prologue_emitted = true;
+        }
+
         for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
             // 解析操作数
             int s0 = (inst->num_operands > 0 && inst->operands[0]->type) ? type_get_size(inst->operands[0]->type) : 8;
@@ -1334,14 +1341,16 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                     
                     if (is_tail_call) {
                         fprintf(out, "    # Tail Call Optimization\n");
-                        if (stack_sub_size > 0) fprintf(out, "    addq $%d, %%rsp\n", stack_sub_size);
-                        if (allocator.used_callee_saved[6]) fprintf(out, "    popq %%r15\n");
-                        if (allocator.used_callee_saved[5]) fprintf(out, "    popq %%r14\n");
-                        if (allocator.used_callee_saved[4]) fprintf(out, "    popq %%r13\n");
-                        if (allocator.used_callee_saved[3]) fprintf(out, "    popq %%r12\n");
-                        if (allocator.used_callee_saved[2]) fprintf(out, "    popq %%rdi\n");
-                        if (allocator.used_callee_saved[1]) fprintf(out, "    popq %%rsi\n");
-                        if (allocator.used_callee_saved[0]) fprintf(out, "    popq %%rbx\n");
+                        if (!block->is_frameless) {
+                            if (stack_sub_size > 0) fprintf(out, "    addq $%d, %%rsp\n", stack_sub_size);
+                            if (allocator.used_callee_saved[6]) fprintf(out, "    popq %%r15\n");
+                            if (allocator.used_callee_saved[5]) fprintf(out, "    popq %%r14\n");
+                            if (allocator.used_callee_saved[4]) fprintf(out, "    popq %%r13\n");
+                            if (allocator.used_callee_saved[3]) fprintf(out, "    popq %%r12\n");
+                            if (allocator.used_callee_saved[2]) fprintf(out, "    popq %%rdi\n");
+                            if (allocator.used_callee_saved[1]) fprintf(out, "    popq %%rsi\n");
+                            if (allocator.used_callee_saved[0]) fprintf(out, "    popq %%rbx\n");
+                        }
                         
                         fprintf(out, "    jmp %s\n", inst->operands[0]->as.global_name);
                         inst = inst->next; // 跳过 RET
@@ -1394,17 +1403,19 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                         }
                     }
                     // 5. 函数跋 (Epilogue)
-                    if (stack_sub_size > 0) {
-                        fprintf(out, "    addq $%d, %%rsp\n", stack_sub_size);
+                    if (!block->is_frameless) {
+                        if (stack_sub_size > 0) {
+                            fprintf(out, "    addq $%d, %%rsp\n", stack_sub_size);
+                        }
+                        
+                        if (allocator.used_callee_saved[6]) fprintf(out, "    popq %%r15\n");
+                        if (allocator.used_callee_saved[5]) fprintf(out, "    popq %%r14\n");
+                        if (allocator.used_callee_saved[4]) fprintf(out, "    popq %%r13\n");
+                        if (allocator.used_callee_saved[3]) fprintf(out, "    popq %%r12\n");
+                        if (allocator.used_callee_saved[2]) fprintf(out, "    popq %%rdi\n");
+                        if (allocator.used_callee_saved[1]) fprintf(out, "    popq %%rsi\n");
+                        if (allocator.used_callee_saved[0]) fprintf(out, "    popq %%rbx\n");
                     }
-                    
-                    if (allocator.used_callee_saved[6]) fprintf(out, "    popq %%r15\n");
-                    if (allocator.used_callee_saved[5]) fprintf(out, "    popq %%r14\n");
-                    if (allocator.used_callee_saved[4]) fprintf(out, "    popq %%r13\n");
-                    if (allocator.used_callee_saved[3]) fprintf(out, "    popq %%r12\n");
-                    if (allocator.used_callee_saved[2]) fprintf(out, "    popq %%rdi\n");
-                    if (allocator.used_callee_saved[1]) fprintf(out, "    popq %%rsi\n");
-                    if (allocator.used_callee_saved[0]) fprintf(out, "    popq %%rbx\n");
                     
                     fprintf(out, "    ret\n");
                     break;

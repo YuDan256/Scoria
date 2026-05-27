@@ -94,6 +94,7 @@ struct SirBlock {
     SirInst* last_inst;   // 指令链表尾
     
     struct SirBlock* next; // 函数内的下一个基本块
+    bool is_frameless;    // 是否为无栈帧块 (用于 Prologue Shrink-wrapping)
 };
 
 // =========================================================
@@ -105,6 +106,9 @@ typedef struct SirFunction {
     
     SirBlock* first_block;
     SirBlock* last_block;
+    
+    // O3 Const-Eval 纯函数标记
+    bool is_pure;
     
     // 序言前置快路径 (Fast Path) 信息
     bool has_fast_path;

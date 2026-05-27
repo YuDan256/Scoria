@@ -89,6 +89,8 @@ SirFunction* ir_builder_create_function(IrBuilder* builder, const char* name, Sc
     func->first_block = NULL;
     func->last_block = NULL;
     func->next = NULL;
+    func->is_pure = false;
+    func->has_fast_path = false;
     
     if (!builder->module->first_func) {
         builder->module->first_func = func;
@@ -126,6 +128,7 @@ SirBlock* ir_builder_create_block(IrBuilder* builder, const char* name) {
     block->first_inst = NULL;
     block->last_inst = NULL;
     block->next = NULL;
+    block->is_frameless = false;
     
     if (builder->current_func) {
         if (!builder->current_func->first_block) {
@@ -631,6 +634,388 @@ static SirValue* map_value(IrBuilder* builder, SirValue* val, SirValue** vreg_ma
         return new_val;
     }
     return val;
+}
+
+static bool try_evaluate_pure_func(SirFunction* func, int64_t arg_val, int64_t* out_res, int depth) {
+    if (depth > 15) return false;
+    if (!func || !func->first_block) return false;
+
+    if (func->has_fast_path) {
+        bool fp_taken = false;
+        int64_t imm = func->fp_imm;
+        switch (func->fp_jcc_pe) {
+            case 0x84: fp_taken = (arg_val == imm); break;
+            case 0x85: fp_taken = (arg_val != imm); break;
+            case 0x8C: fp_taken = (arg_val < imm); break;
+            case 0x82: fp_taken = ((uint64_t)arg_val < (uint64_t)imm); break;
+            case 0x8E: fp_taken = (arg_val <= imm); break;
+            case 0x86: fp_taken = ((uint64_t)arg_val <= (uint64_t)imm); break;
+            case 0x8F: fp_taken = (arg_val > imm); break;
+            case 0x87: fp_taken = ((uint64_t)arg_val > (uint64_t)imm); break;
+            case 0x8D: fp_taken = (arg_val >= imm); break;
+            case 0x83: fp_taken = ((uint64_t)arg_val >= (uint64_t)imm); break;
+        }
+        if (fp_taken) {
+            *out_res = arg_val;
+            return true;
+        }
+    }
+
+    uint32_t max_vreg = 0;
+    for (SirBlock* b = func->first_block; b; b = b->next) {
+        for (SirInst* i = b->first_inst; i; i = i->next) {
+            if (i->dest && i->dest->kind == SIR_VAL_VREG) {
+                if (i->dest->as.vreg > max_vreg) max_vreg = i->dest->as.vreg;
+            }
+        }
+    }
+
+    bool* vreg_valid = (bool*)calloc(max_vreg + 1, sizeof(bool));
+    int64_t* vreg_vals = (int64_t*)calloc(max_vreg + 1, sizeof(int64_t));
+    if (!vreg_valid || !vreg_vals) {
+        if (vreg_valid) free(vreg_valid);
+        if (vreg_vals) free(vreg_vals);
+        return false;
+    }
+
+    SirBlock* curr_block = func->first_block;
+    bool success = false;
+
+    while (curr_block) {
+        SirBlock* next_block = NULL;
+        for (SirInst* inst = curr_block->first_inst; inst; inst = inst->next) {
+            switch (inst->opcode) {
+                case SIR_GET_PARAM: {
+                    if (inst->operands[0]->as.int_val == 0) {
+                        if (!inst->dest) goto fail;
+                        vreg_valid[inst->dest->as.vreg] = true;
+                        vreg_vals[inst->dest->as.vreg] = arg_val;
+                    } else {
+                        goto fail;
+                    }
+                    break;
+                }
+                case SIR_ADD: case SIR_SUB: case SIR_MUL: case SIR_DIV: case SIR_MOD:
+                case SIR_AND: case SIR_OR: case SIR_XOR: case SIR_SHL: case SIR_SHR:
+                case SIR_ICMP_EQ: case SIR_ICMP_NE: case SIR_ICMP_LT: case SIR_ICMP_LE: case SIR_ICMP_GT: case SIR_ICMP_GE: {
+                    int64_t l, r;
+                    if (inst->operands[0]->kind == SIR_VAL_CONST_INT) l = inst->operands[0]->as.int_val;
+                    else if (inst->operands[0]->kind == SIR_VAL_CONST_BOOL) l = inst->operands[0]->as.bool_val;
+                    else if (inst->operands[0]->kind == SIR_VAL_VREG && vreg_valid[inst->operands[0]->as.vreg]) l = vreg_vals[inst->operands[0]->as.vreg];
+                    else goto fail;
+
+                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT) r = inst->operands[1]->as.int_val;
+                    else if (inst->operands[1]->kind == SIR_VAL_CONST_BOOL) r = inst->operands[1]->as.bool_val;
+                    else if (inst->operands[1]->kind == SIR_VAL_VREG && vreg_valid[inst->operands[1]->as.vreg]) r = vreg_vals[inst->operands[1]->as.vreg];
+                    else goto fail;
+
+                    int64_t res = 0;
+                    switch (inst->opcode) {
+                        case SIR_ADD: res = l + r; break;
+                        case SIR_SUB: res = l - r; break;
+                        case SIR_MUL: res = l * r; break;
+                        case SIR_DIV: if (r == 0) goto fail; res = l / r; break;
+                        case SIR_MOD: if (r == 0) goto fail; res = l % r; break;
+                        case SIR_AND: res = l & r; break;
+                        case SIR_OR:  res = l | r; break;
+                        case SIR_XOR: res = l ^ r; break;
+                        case SIR_SHL: res = l << r; break;
+                        case SIR_SHR: res = l >> r; break;
+                        case SIR_ICMP_EQ: res = (l == r); break;
+                        case SIR_ICMP_NE: res = (l != r); break;
+                        case SIR_ICMP_LT: res = (l < r); break;
+                        case SIR_ICMP_LE: res = (l <= r); break;
+                        case SIR_ICMP_GT: res = (l > r); break;
+                        case SIR_ICMP_GE: res = (l >= r); break;
+                        default: goto fail;
+                    }
+                    if (!inst->dest) goto fail;
+                    vreg_valid[inst->dest->as.vreg] = true;
+                    vreg_vals[inst->dest->as.vreg] = res;
+                    break;
+                }
+                case SIR_CAST: {
+                    int64_t val;
+                    if (inst->operands[0]->kind == SIR_VAL_CONST_INT) val = inst->operands[0]->as.int_val;
+                    else if (inst->operands[0]->kind == SIR_VAL_CONST_BOOL) val = inst->operands[0]->as.bool_val;
+                    else if (inst->operands[0]->kind == SIR_VAL_VREG && vreg_valid[inst->operands[0]->as.vreg]) val = vreg_vals[inst->operands[0]->as.vreg];
+                    else goto fail;
+                    if (!inst->dest) goto fail;
+                    vreg_valid[inst->dest->as.vreg] = true;
+                    vreg_vals[inst->dest->as.vreg] = val;
+                    break;
+                }
+                case SIR_SELECT: {
+                    int64_t cond, t_val, f_val;
+                    if (inst->operands[0]->kind == SIR_VAL_CONST_BOOL) cond = inst->operands[0]->as.bool_val;
+                    else if (inst->operands[0]->kind == SIR_VAL_VREG && vreg_valid[inst->operands[0]->as.vreg]) cond = vreg_vals[inst->operands[0]->as.vreg];
+                    else goto fail;
+
+                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT) t_val = inst->operands[1]->as.int_val;
+                    else if (inst->operands[1]->kind == SIR_VAL_VREG && vreg_valid[inst->operands[1]->as.vreg]) t_val = vreg_vals[inst->operands[1]->as.vreg];
+                    else goto fail;
+
+                    if (inst->operands[2]->kind == SIR_VAL_CONST_INT) f_val = inst->operands[2]->as.int_val;
+                    else if (inst->operands[2]->kind == SIR_VAL_VREG && vreg_valid[inst->operands[2]->as.vreg]) f_val = vreg_vals[inst->operands[2]->as.vreg];
+                    else goto fail;
+
+                    if (!inst->dest) goto fail;
+                    vreg_valid[inst->dest->as.vreg] = true;
+                    vreg_vals[inst->dest->as.vreg] = cond ? t_val : f_val;
+                    break;
+                }
+                case SIR_CALL: {
+                    if (inst->operands[0]->kind != SIR_VAL_GLOBAL) goto fail;
+                    if (strcmp(inst->operands[0]->as.global_name, func->name) != 0) goto fail;
+                    if (inst->num_operands != 2) goto fail;
+
+                    int64_t arg;
+                    if (inst->operands[1]->kind == SIR_VAL_CONST_INT) arg = inst->operands[1]->as.int_val;
+                    else if (inst->operands[1]->kind == SIR_VAL_VREG && vreg_valid[inst->operands[1]->as.vreg]) arg = vreg_vals[inst->operands[1]->as.vreg];
+                    else goto fail;
+
+                    int64_t ret_val;
+                    if (!try_evaluate_pure_func(func, arg, &ret_val, depth + 1)) goto fail;
+
+                    if (inst->dest) {
+                        vreg_valid[inst->dest->as.vreg] = true;
+                        vreg_vals[inst->dest->as.vreg] = ret_val;
+                    }
+                    break;
+                }
+                case SIR_JMP: {
+                    next_block = inst->operands[0]->as.block;
+                    break;
+                }
+                case SIR_BR: {
+                    int64_t cond;
+                    if (inst->operands[0]->kind == SIR_VAL_CONST_BOOL) cond = inst->operands[0]->as.bool_val;
+                    else if (inst->operands[0]->kind == SIR_VAL_VREG && vreg_valid[inst->operands[0]->as.vreg]) cond = vreg_vals[inst->operands[0]->as.vreg];
+                    else goto fail;
+
+                    next_block = cond ? inst->operands[1]->as.block : inst->operands[2]->as.block;
+                    break;
+                }
+                case SIR_SWITCH: {
+                    int64_t cond;
+                    if (inst->operands[0]->kind == SIR_VAL_CONST_INT) cond = inst->operands[0]->as.int_val;
+                    else if (inst->operands[0]->kind == SIR_VAL_VREG && vreg_valid[inst->operands[0]->as.vreg]) cond = vreg_vals[inst->operands[0]->as.vreg];
+                    else goto fail;
+
+                    next_block = inst->operands[1]->as.block;
+                    int case_count = (inst->num_operands - 2) / 2;
+                    for (int i = 0; i < case_count; i++) {
+                        if (inst->operands[2 + i * 2]->as.int_val == cond) {
+                            next_block = inst->operands[2 + i * 2 + 1]->as.block;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                case SIR_RET: {
+                    if (inst->num_operands > 0) {
+                        if (inst->operands[0]->kind == SIR_VAL_CONST_INT) *out_res = inst->operands[0]->as.int_val;
+                        else if (inst->operands[0]->kind == SIR_VAL_VREG && vreg_valid[inst->operands[0]->as.vreg]) *out_res = vreg_vals[inst->operands[0]->as.vreg];
+                        else goto fail;
+                    } else {
+                        *out_res = 0;
+                    }
+                    success = true;
+                    goto end;
+                }
+                default:
+                    goto fail;
+            }
+        }
+        curr_block = next_block;
+    }
+
+fail:
+    success = false;
+end:
+    free(vreg_valid);
+    free(vreg_vals);
+    return success;
+}
+
+static bool vm_execute(SirModule* module, SirFunction* func, int64_t* args, int64_t* out_res, int depth, uint64_t* global_steps) {
+    if (depth > 20000) return false; // 防止爆栈
+    if (*global_steps > 10000000000ULL) return false; // 100亿步超时保护
+
+    if (func->has_fast_path) {
+        bool fp_taken = false;
+        int64_t arg_val = args[0];
+        int64_t imm = func->fp_imm;
+        switch (func->fp_jcc_pe) {
+            case 0x84: fp_taken = (arg_val == imm); break;
+            case 0x85: fp_taken = (arg_val != imm); break;
+            case 0x8C: fp_taken = (arg_val < imm); break;
+            case 0x82: fp_taken = ((uint64_t)arg_val < (uint64_t)imm); break;
+            case 0x8E: fp_taken = (arg_val <= imm); break;
+            case 0x86: fp_taken = ((uint64_t)arg_val <= (uint64_t)imm); break;
+            case 0x8F: fp_taken = (arg_val > imm); break;
+            case 0x87: fp_taken = ((uint64_t)arg_val > (uint64_t)imm); break;
+            case 0x8D: fp_taken = (arg_val >= imm); break;
+            case 0x83: fp_taken = ((uint64_t)arg_val >= (uint64_t)imm); break;
+        }
+        if (fp_taken) {
+            *out_res = arg_val;
+            return true;
+        }
+    }
+
+    // 极速优化：在 C 栈上分配虚拟寄存器堆，彻底消除 calloc/free 的系统调用开销
+    // 256 个寄存器足以覆盖 99.9% 的纯函数
+    int64_t vregs[256] = {0};
+    bool vreg_valid[256] = {0};
+
+    SirBlock* pc = func->first_block;
+    bool success = false;
+
+    #define VM_GET_VAL(op) \
+        ((op)->kind == SIR_VAL_CONST_INT ? (op)->as.int_val : \
+         ((op)->kind == SIR_VAL_CONST_BOOL ? (op)->as.bool_val : \
+          ((op)->kind == SIR_VAL_VREG && vreg_valid[(op)->as.vreg] ? vregs[(op)->as.vreg] : 0)))
+
+    #define VM_CHECK_VAL(op) \
+        ((op)->kind == SIR_VAL_CONST_INT || (op)->kind == SIR_VAL_CONST_BOOL || \
+         ((op)->kind == SIR_VAL_VREG && vreg_valid[(op)->as.vreg]))
+
+    // 解释器主循环 (Interpreter Loop)
+    while (pc) {
+        SirBlock* next_pc = NULL;
+        for (SirInst* inst = pc->first_inst; inst; inst = inst->next) {
+            (*global_steps)++;
+            if (*global_steps > 10000000000ULL) goto fail;
+
+            switch (inst->opcode) {
+                case SIR_GET_PARAM: {
+                    if (!inst->dest || inst->dest->as.vreg >= 256) goto fail;
+                    int idx = (int)inst->operands[0]->as.int_val;
+                    vregs[inst->dest->as.vreg] = args[idx];
+                    vreg_valid[inst->dest->as.vreg] = true;
+                    break;
+                }
+                case SIR_ADD: case SIR_SUB: case SIR_MUL: case SIR_DIV: case SIR_MOD:
+                case SIR_AND: case SIR_OR: case SIR_XOR: case SIR_SHL: case SIR_SHR:
+                case SIR_ICMP_EQ: case SIR_ICMP_NE: case SIR_ICMP_LT: case SIR_ICMP_LE: case SIR_ICMP_GT: case SIR_ICMP_GE: {
+                    if (!VM_CHECK_VAL(inst->operands[0]) || !VM_CHECK_VAL(inst->operands[1])) goto fail;
+                    int64_t l = VM_GET_VAL(inst->operands[0]);
+                    int64_t r = VM_GET_VAL(inst->operands[1]);
+                    int64_t res = 0;
+                    switch (inst->opcode) {
+                        case SIR_ADD: res = l + r; break;
+                        case SIR_SUB: res = l - r; break;
+                        case SIR_MUL: res = l * r; break;
+                        case SIR_DIV: if (r == 0) goto fail; res = l / r; break;
+                        case SIR_MOD: if (r == 0) goto fail; res = l % r; break;
+                        case SIR_AND: res = l & r; break;
+                        case SIR_OR:  res = l | r; break;
+                        case SIR_XOR: res = l ^ r; break;
+                        case SIR_SHL: res = l << r; break;
+                        case SIR_SHR: res = l >> r; break;
+                        case SIR_ICMP_EQ: res = (l == r); break;
+                        case SIR_ICMP_NE: res = (l != r); break;
+                        case SIR_ICMP_LT: res = (l < r); break;
+                        case SIR_ICMP_LE: res = (l <= r); break;
+                        case SIR_ICMP_GT: res = (l > r); break;
+                        case SIR_ICMP_GE: res = (l >= r); break;
+                        default: goto fail;
+                    }
+                    if (!inst->dest || inst->dest->as.vreg >= 256) goto fail;
+                    vregs[inst->dest->as.vreg] = res;
+                    vreg_valid[inst->dest->as.vreg] = true;
+                    break;
+                }
+                case SIR_CAST: {
+                    if (!VM_CHECK_VAL(inst->operands[0])) goto fail;
+                    if (!inst->dest || inst->dest->as.vreg >= 256) goto fail;
+                    vregs[inst->dest->as.vreg] = VM_GET_VAL(inst->operands[0]);
+                    vreg_valid[inst->dest->as.vreg] = true;
+                    break;
+                }
+                case SIR_SELECT: {
+                    if (!VM_CHECK_VAL(inst->operands[0]) || !VM_CHECK_VAL(inst->operands[1]) || !VM_CHECK_VAL(inst->operands[2])) goto fail;
+                    int64_t cond = VM_GET_VAL(inst->operands[0]);
+                    int64_t t_val = VM_GET_VAL(inst->operands[1]);
+                    int64_t f_val = VM_GET_VAL(inst->operands[2]);
+                    if (!inst->dest || inst->dest->as.vreg >= 256) goto fail;
+                    vregs[inst->dest->as.vreg] = cond ? t_val : f_val;
+                    vreg_valid[inst->dest->as.vreg] = true;
+                    break;
+                }
+                case SIR_CALL: {
+                    if (inst->operands[0]->kind != SIR_VAL_GLOBAL) goto fail;
+                    SirFunction* callee = NULL;
+                    for (SirFunction* f = module->first_func; f; f = f->next) {
+                        if (strcmp(f->name, inst->operands[0]->as.global_name) == 0) { callee = f; break; }
+                    }
+                    if (!callee || !callee->is_pure) goto fail;
+
+                    int c_arg_count = inst->num_operands - 1;
+                    int64_t c_args[16];
+                    if (c_arg_count > 16) goto fail;
+                    for (int i = 0; i < c_arg_count; i++) {
+                        if (!VM_CHECK_VAL(inst->operands[i+1])) goto fail;
+                        c_args[i] = VM_GET_VAL(inst->operands[i+1]);
+                    }
+
+                    int64_t ret_val;
+                    if (!vm_execute(module, callee, c_args, &ret_val, depth + 1, global_steps)) goto fail;
+
+                    if (inst->dest) {
+                        if (inst->dest->as.vreg >= 256) goto fail;
+                        vregs[inst->dest->as.vreg] = ret_val;
+                        vreg_valid[inst->dest->as.vreg] = true;
+                    }
+                    break;
+                }
+                case SIR_JMP: {
+                    next_pc = inst->operands[0]->as.block;
+                    break;
+                }
+                case SIR_BR: {
+                    if (!VM_CHECK_VAL(inst->operands[0])) goto fail;
+                    int64_t cond = VM_GET_VAL(inst->operands[0]);
+                    next_pc = cond ? inst->operands[1]->as.block : inst->operands[2]->as.block;
+                    break;
+                }
+                case SIR_SWITCH: {
+                    if (!VM_CHECK_VAL(inst->operands[0])) goto fail;
+                    int64_t cond = VM_GET_VAL(inst->operands[0]);
+                    next_pc = inst->operands[1]->as.block;
+                    int case_count = (inst->num_operands - 2) / 2;
+                    for (int i = 0; i < case_count; i++) {
+                        if (inst->operands[2 + i * 2]->as.int_val == cond) {
+                            next_pc = inst->operands[2 + i * 2 + 1]->as.block;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                case SIR_RET: {
+                    if (inst->num_operands > 0) {
+                        if (!VM_CHECK_VAL(inst->operands[0])) goto fail;
+                        *out_res = VM_GET_VAL(inst->operands[0]);
+                    } else {
+                        *out_res = 0;
+                    }
+                    success = true;
+                    goto end;
+                }
+                default:
+                    goto fail;
+            }
+        }
+        pc = next_pc;
+    }
+
+fail:
+    success = false;
+end:
+    return success;
+    #undef VM_GET_VAL
+    #undef VM_CHECK_VAL
 }
 
 void ir_optimize_module(IrBuilder* builder, int opt_level) {
@@ -1148,5 +1533,304 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                 }
             }
         } while (changed);
+    }
+
+    // 4. 基础边界延展 (Base Case Expansion)
+    if (opt_level >= 2) {
+        bool bce_changed = false;
+        for (SirFunction* func = builder->module->first_func; func; func = func->next) {
+            if (!func->first_block || !func->first_block->first_inst) continue;
+            
+            // 检查是否是单参数整型函数
+            SirInst* first_inst = func->first_block->first_inst;
+            if (first_inst->opcode != SIR_GET_PARAM || first_inst->operands[0]->as.int_val != 0) continue;
+            
+            SirValue* param_val = first_inst->dest;
+            if (!param_val || !param_val->type) continue;
+            
+            // 检查函数是否包含自递归调用
+            bool has_recursion = false;
+            for (SirBlock* b = func->first_block; b; b = b->next) {
+                for (SirInst* i = b->first_inst; i; i = i->next) {
+                    if (i->opcode == SIR_CALL && i->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(i->operands[0]->as.global_name, func->name) == 0) {
+                        has_recursion = true;
+                        break;
+                    }
+                }
+                if (has_recursion) break;
+            }
+            if (!has_recursion) continue;
+
+            // 尝试计算 n=2, 3, 4 的结果
+            for (int test_val = 2; test_val <= 4; test_val++) {
+                int64_t res;
+                if (try_evaluate_pure_func(func, test_val, &res, 0)) {
+                    builder->current_func = func;
+                    
+                    SirBlock* old_entry = func->first_block;
+                    SirBlock* new_entry = ir_builder_create_block(builder, "bce_entry");
+                    SirBlock* ret_block = ir_builder_create_block(builder, "bce_ret");
+                    new_entry->is_frameless = true;
+                    ret_block->is_frameless = true;
+                    
+                    // 从链表中摘除 new_entry 和 ret_block
+                    SirBlock* curr = func->first_block;
+                    while (curr && curr->next) {
+                        if (curr->next == new_entry) {
+                            curr->next = new_entry->next;
+                            if (func->last_block == new_entry) func->last_block = curr;
+                        } else if (curr->next == ret_block) {
+                            curr->next = ret_block->next;
+                            if (func->last_block == ret_block) func->last_block = curr;
+                        } else {
+                            curr = curr->next;
+                        }
+                    }
+                    
+                    // 插入到头部
+                    ret_block->next = old_entry;
+                    new_entry->next = ret_block;
+                    func->first_block = new_entry;
+                    
+                    // 在 new_entry 中构建：
+                    // %param = get_param 0
+                    // %cmp = icmp_eq %param, test_val
+                    // br %cmp, ret_block, old_entry
+                    ir_builder_set_insert_point(builder, new_entry);
+                    SirValue* p = ir_get_param(builder, 0, param_val->type);
+                    SirValue* cmp = ir_build_binary(builder, SIR_ICMP_EQ, p, ir_const_int(builder, param_val->type, test_val));
+                    ir_build_br(builder, cmp, ret_block, old_entry);
+                    
+                    // 在 ret_block 中构建：
+                    // ret res
+                    ir_builder_set_insert_point(builder, ret_block);
+                    ir_build_ret(builder, ir_const_int(builder, param_val->type, res));
+                    
+                    bce_changed = true;
+                }
+            }
+        }
+        if (bce_changed) {
+            for (SirFunction* func = builder->module->first_func; func; func = func->next) {
+                prune_dead_blocks(func, func->first_block);
+            }
+        }
+    }
+
+    // 5. O3: Const-Eval VM (Compile-Time Function Execution)
+    if (opt_level >= 3) {
+        // 第一阶段：绝对纯度鉴定器 (Strict Purity Analysis)
+        for (SirFunction* f = builder->module->first_func; f; f = f->next) {
+            f->is_pure = (f->first_block != NULL);
+        }
+        bool purity_changed;
+        do {
+            purity_changed = false;
+            for (SirFunction* f = builder->module->first_func; f; f = f->next) {
+                if (!f->is_pure) continue;
+                bool pure = true;
+                for (SirBlock* b = f->first_block; b && pure; b = b->next) {
+                    for (SirInst* i = b->first_inst; i && pure; i = i->next) {
+                        if (i->opcode == SIR_CALL) {
+                            if (i->operands[0]->kind != SIR_VAL_GLOBAL) { pure = false; break; }
+                            SirFunction* callee = NULL;
+                            for (SirFunction* cf = builder->module->first_func; cf; cf = cf->next) {
+                                if (strcmp(cf->name, i->operands[0]->as.global_name) == 0) { callee = cf; break; }
+                            }
+                            if (!callee || !callee->is_pure) { pure = false; break; }
+                        } else if (i->opcode == SIR_ALLOCA || i->opcode == SIR_LOAD || i->opcode == SIR_STORE || i->opcode == SIR_GEP || i->opcode == SIR_MEMCPY) {
+                            pure = false; // 严格模式：禁止任何内存操作
+                        } else if ((i->opcode >= SIR_FADD && i->opcode <= SIR_FDIV) || (i->opcode >= SIR_FCMP_EQ && i->opcode <= SIR_FCMP_GE)) {
+                            pure = false; // 严格模式：禁止浮点数以避免跨平台精度不一致
+                        }
+                    }
+                }
+                if (!pure) {
+                    f->is_pure = false;
+                    purity_changed = true;
+                }
+            }
+        } while (purity_changed);
+
+        bool vm_changed = false;
+        // 第二阶段 & 第三阶段：探针拦截与虚拟机执行
+        for (SirFunction* func = builder->module->first_func; func; func = func->next) {
+            for (SirBlock* block = func->first_block; block; block = block->next) {
+                for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                    if (inst->opcode == SIR_CALL && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                        SirFunction* callee = NULL;
+                        for (SirFunction* cf = builder->module->first_func; cf; cf = cf->next) {
+                            if (strcmp(cf->name, inst->operands[0]->as.global_name) == 0) { callee = cf; break; }
+                        }
+                        if (callee && callee->is_pure) {
+                            bool all_const = true;
+                            int c_arg_count = inst->num_operands - 1;
+                            int64_t c_args[16];
+                            if (c_arg_count > 16) all_const = false;
+                            for (int i = 0; i < c_arg_count && all_const; i++) {
+                                if (inst->operands[i+1]->kind == SIR_VAL_CONST_INT) {
+                                    c_args[i] = inst->operands[i+1]->as.int_val;
+                                } else if (inst->operands[i+1]->kind == SIR_VAL_CONST_BOOL) {
+                                    c_args[i] = inst->operands[i+1]->as.bool_val;
+                                } else {
+                                    all_const = false;
+                                }
+                            }
+
+                            if (all_const) {
+                                int64_t ret_val;
+                                uint64_t global_steps = 0;
+                                if (vm_execute(builder->module, callee, c_args, &ret_val, 0, &global_steps)) {
+                                    // 第四阶段：物理抹杀 (IR Replacement)
+                                    if (inst->dest) {
+                                        inst->opcode = SIR_CAST;
+                                        inst->num_operands = 1;
+                                        inst->operands[0] = ir_const_int(builder, inst->dest->type, ret_val);
+                                    } else {
+                                        // 无返回值的调用，直接替换为空操作
+                                        inst->opcode = SIR_ADD;
+                                        inst->num_operands = 2;
+                                        inst->operands[0] = ir_const_int(builder, type_get_basic(TY_I32), 0);
+                                        inst->operands[1] = ir_const_int(builder, type_get_basic(TY_I32), 0);
+                                    }
+                                    vm_changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 第五阶段：清理战场 (Local CSE & DCE for newly generated constants)
+        if (vm_changed) {
+            for (SirFunction* func = builder->module->first_func; func; func = func->next) {
+                uint32_t max_vreg = 0;
+                for (SirBlock* block = func->first_block; block; block = block->next) {
+                    for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                        if (inst->dest && inst->dest->kind == SIR_VAL_VREG && inst->dest->as.vreg > max_vreg) max_vreg = inst->dest->as.vreg;
+                    }
+                }
+                
+                bool prop_changed;
+                do {
+                    prop_changed = false;
+                    SirValue** replacements = (SirValue**)calloc(max_vreg + 1, sizeof(SirValue*));
+                    for (SirBlock* block = func->first_block; block; block = block->next) {
+                        for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                            for (int i = 0; i < inst->num_operands; i++) {
+                                if (inst->operands[i] && inst->operands[i]->kind == SIR_VAL_VREG && replacements[inst->operands[i]->as.vreg]) {
+                                    inst->operands[i] = replacements[inst->operands[i]->as.vreg];
+                                    prop_changed = true;
+                                }
+                            }
+                            if (inst->dest && inst->dest->kind == SIR_VAL_VREG && !replacements[inst->dest->as.vreg]) {
+                                SirValue* rep = NULL;
+                                if (inst->opcode == SIR_CAST && inst->operands[0]->kind == SIR_VAL_CONST_INT && type_equals(inst->operands[0]->type, inst->dest->type)) {
+                                    rep = inst->operands[0];
+                                } else if (inst->opcode == SIR_ADD && inst->operands[1]->kind == SIR_VAL_CONST_INT && inst->operands[1]->as.int_val == 0) {
+                                    rep = inst->operands[0];
+                                }
+                                if (rep) replacements[inst->dest->as.vreg] = rep;
+                            }
+                        }
+                    }
+                    free(replacements);
+                } while (prop_changed);
+                
+                bool dead_changed;
+                do {
+                    dead_changed = false;
+                    uint32_t* use_counts = (uint32_t*)calloc(max_vreg + 1, sizeof(uint32_t));
+                    for (SirBlock* block = func->first_block; block; block = block->next) {
+                        for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                            for (int i = 0; i < inst->num_operands; i++) {
+                                if (inst->operands[i] && inst->operands[i]->kind == SIR_VAL_VREG) use_counts[inst->operands[i]->as.vreg]++;
+                            }
+                        }
+                    }
+                    for (SirBlock* block = func->first_block; block; block = block->next) {
+                        SirInst* inst = block->first_inst;
+                        while (inst) {
+                            SirInst* next_inst = inst->next;
+                            if (inst->dest && inst->dest->kind == SIR_VAL_VREG && is_side_effect_free(inst->opcode)) {
+                                if (use_counts[inst->dest->as.vreg] == 0) {
+                                    if (inst->prev) inst->prev->next = inst->next; else block->first_inst = inst->next;
+                                    if (inst->next) inst->next->prev = inst->prev; else block->last_inst = inst->prev;
+                                    dead_changed = true;
+                                }
+                            }
+                            inst = next_inst;
+                        }
+                    }
+                    free(use_counts);
+                } while (dead_changed);
+            }
+        }
+    }
+
+    // 6. 全局死代码消除 (Global Dead Code Elimination)
+    if (opt_level >= 2) {
+        int func_count = 0;
+        for (SirFunction* f = builder->module->first_func; f; f = f->next) func_count++;
+        
+        if (func_count > 0) {
+            SirFunction** func_array = (SirFunction**)malloc(sizeof(SirFunction*) * func_count);
+            bool* reachable = (bool*)calloc(func_count, sizeof(bool));
+            
+            int idx = 0;
+            for (SirFunction* f = builder->module->first_func; f; f = f->next) {
+                func_array[idx++] = f;
+            }
+            
+            for (int i = 0; i < func_count; i++) {
+                if (strcmp(func_array[i]->name, "princeps") == 0 || strcmp(func_array[i]->name, "__scoria_init") == 0) {
+                    reachable[i] = true;
+                }
+            }
+            
+            bool changed;
+            do {
+                changed = false;
+                for (int i = 0; i < func_count; i++) {
+                    if (!reachable[i]) continue;
+                    
+                    SirFunction* f = func_array[i];
+                    for (SirBlock* b = f->first_block; b; b = b->next) {
+                        for (SirInst* inst = b->first_inst; inst; inst = inst->next) {
+                            for (int op = 0; op < inst->num_operands; op++) {
+                                if (inst->operands[op] && inst->operands[op]->kind == SIR_VAL_GLOBAL) {
+                                    for (int j = 0; j < func_count; j++) {
+                                        if (!reachable[j] && strcmp(func_array[j]->name, inst->operands[op]->as.global_name) == 0) {
+                                            reachable[j] = true;
+                                            changed = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } while (changed);
+            
+            SirFunction* prev = NULL;
+            SirFunction* curr = builder->module->first_func;
+            idx = 0;
+            while (curr) {
+                if (!reachable[idx]) {
+                    if (prev) prev->next = curr->next;
+                    else builder->module->first_func = curr->next;
+                    if (curr == builder->module->last_func) builder->module->last_func = prev;
+                    curr = curr->next;
+                } else {
+                    prev = curr;
+                    curr = curr->next;
+                }
+                idx++;
+            }
+            
+            free(func_array);
+            free(reachable);
+        }
     }
 }

@@ -723,15 +723,10 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
 
             int local_and_args = allocator.current_offset + max_call_area;
 
-            // 序言 (Prologue)
             int num_callee_pushes = 0;
-            if (allocator.used_callee_saved[0]) { emit8(&linker->text_section, 0x53); num_callee_pushes++; } // push rbx
-            if (allocator.used_callee_saved[1]) { emit8(&linker->text_section, 0x56); num_callee_pushes++; } // push rsi
-            if (allocator.used_callee_saved[2]) { emit8(&linker->text_section, 0x57); num_callee_pushes++; } // push rdi
-            if (allocator.used_callee_saved[3]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x54); num_callee_pushes++; } // push r12
-            if (allocator.used_callee_saved[4]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x55); num_callee_pushes++; } // push r13
-            if (allocator.used_callee_saved[5]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x56); num_callee_pushes++; } // push r14
-            if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x57); num_callee_pushes++; } // push r15
+            for (int i = 0; i < 7; i++) {
+                if (allocator.used_callee_saved[i]) num_callee_pushes++;
+            }
 
             int stack_sub_size = local_and_args;
             if (opt_level < 2 || requires_align || stack_sub_size > 0) {
@@ -741,18 +736,8 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
             }
             int total_frame_size = stack_sub_size + num_callee_pushes * 8;
             ctx.frame_size = total_frame_size;
-            if (stack_sub_size > 0) {
-                emit_rex(&linker->text_section, 1, 0, 0, 0);
-                if (stack_sub_size <= 127) {
-                    emit8(&linker->text_section, 0x83); // 优化: sub rsp, imm8
-                    emit_modrm(&linker->text_section, 3, 5, REG_RSP);
-                    emit8(&linker->text_section, (uint8_t)stack_sub_size);
-                } else {
-                    emit8(&linker->text_section, 0x81); // sub rsp, imm32
-                    emit_modrm(&linker->text_section, 3, 5, REG_RSP);
-                    emit32(&linker->text_section, (uint32_t)stack_sub_size);
-                }
-            }
+
+            bool prologue_emitted = false;
 
             for (SirBlock* block = func->first_block; block; block = block->next) {
                 // 优化: 如果前一个基本块以无条件跳转或返回结束，当前块不会被 Fall-through 到达，可以安全地进行 16 字节对齐
@@ -777,6 +762,30 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                 }
                 
                 if (block->id <= max_block_id) block_offsets[block->id] = (uint32_t)linker->text_section.size;
+
+                if (!block->is_frameless && !prologue_emitted) {
+                    if (allocator.used_callee_saved[0]) { emit8(&linker->text_section, 0x53); } // push rbx
+                    if (allocator.used_callee_saved[1]) { emit8(&linker->text_section, 0x56); } // push rsi
+                    if (allocator.used_callee_saved[2]) { emit8(&linker->text_section, 0x57); } // push rdi
+                    if (allocator.used_callee_saved[3]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x54); } // push r12
+                    if (allocator.used_callee_saved[4]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x55); } // push r13
+                    if (allocator.used_callee_saved[5]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x56); } // push r14
+                    if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x57); } // push r15
+
+                    if (stack_sub_size > 0) {
+                        emit_rex(&linker->text_section, 1, 0, 0, 0);
+                        if (stack_sub_size <= 127) {
+                            emit8(&linker->text_section, 0x83); // 优化: sub rsp, imm8
+                            emit_modrm(&linker->text_section, 3, 5, REG_RSP);
+                            emit8(&linker->text_section, (uint8_t)stack_sub_size);
+                        } else {
+                            emit8(&linker->text_section, 0x81); // sub rsp, imm32
+                            emit_modrm(&linker->text_section, 3, 5, REG_RSP);
+                            emit32(&linker->text_section, (uint32_t)stack_sub_size);
+                        }
+                    }
+                    prologue_emitted = true;
+                }
 
                 for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
                     switch (inst->opcode) {
@@ -1899,25 +1908,27 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                             
                             if (is_tail_call) {
                                 // 尾调用优化：提前执行 Epilogue
-                                if (stack_sub_size > 0) {
-                                    emit_rex(&linker->text_section, 1, 0, 0, 0);
-                                    if (stack_sub_size <= 127) {
-                                        emit8(&linker->text_section, 0x83);
-                                        emit_modrm(&linker->text_section, 3, 0, REG_RSP);
-                                        emit8(&linker->text_section, (uint8_t)stack_sub_size);
-                                    } else {
-                                        emit8(&linker->text_section, 0x81);
-                                        emit_modrm(&linker->text_section, 3, 0, REG_RSP);
-                                        emit32(&linker->text_section, (uint32_t)stack_sub_size);
+                                if (!block->is_frameless) {
+                                    if (stack_sub_size > 0) {
+                                        emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                        if (stack_sub_size <= 127) {
+                                            emit8(&linker->text_section, 0x83);
+                                            emit_modrm(&linker->text_section, 3, 0, REG_RSP);
+                                            emit8(&linker->text_section, (uint8_t)stack_sub_size);
+                                        } else {
+                                            emit8(&linker->text_section, 0x81);
+                                            emit_modrm(&linker->text_section, 3, 0, REG_RSP);
+                                            emit32(&linker->text_section, (uint32_t)stack_sub_size);
+                                        }
                                     }
+                                    if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5F); }
+                                    if (allocator.used_callee_saved[5]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5E); }
+                                    if (allocator.used_callee_saved[4]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5D); }
+                                    if (allocator.used_callee_saved[3]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5C); }
+                                    if (allocator.used_callee_saved[2]) emit8(&linker->text_section, 0x5F);
+                                    if (allocator.used_callee_saved[1]) emit8(&linker->text_section, 0x5E);
+                                    if (allocator.used_callee_saved[0]) emit8(&linker->text_section, 0x5B);
                                 }
-                                if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5F); }
-                                if (allocator.used_callee_saved[5]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5E); }
-                                if (allocator.used_callee_saved[4]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5D); }
-                                if (allocator.used_callee_saved[3]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5C); }
-                                if (allocator.used_callee_saved[2]) emit8(&linker->text_section, 0x5F);
-                                if (allocator.used_callee_saved[1]) emit8(&linker->text_section, 0x5E);
-                                if (allocator.used_callee_saved[0]) emit8(&linker->text_section, 0x5B);
                                 
                                 if (is_extern) {
                                     emit8(&linker->text_section, 0xFF); emit8(&linker->text_section, 0x25); // jmp [rip + rel32]
@@ -2150,26 +2161,28 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 }
                             }
                             // 跋 (Epilogue)
-                            if (stack_sub_size > 0) {
-                                emit_rex(&linker->text_section, 1, 0, 0, 0);
-                                if (stack_sub_size <= 127) {
-                                    emit8(&linker->text_section, 0x83); // 优化: add rsp, imm8
-                                    emit_modrm(&linker->text_section, 3, 0, REG_RSP);
-                                    emit8(&linker->text_section, (uint8_t)stack_sub_size);
-                                } else {
-                                    emit8(&linker->text_section, 0x81); // add rsp, imm32
-                                    emit_modrm(&linker->text_section, 3, 0, REG_RSP);
-                                    emit32(&linker->text_section, (uint32_t)stack_sub_size);
+                            if (!block->is_frameless) {
+                                if (stack_sub_size > 0) {
+                                    emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                    if (stack_sub_size <= 127) {
+                                        emit8(&linker->text_section, 0x83); // 优化: add rsp, imm8
+                                        emit_modrm(&linker->text_section, 3, 0, REG_RSP);
+                                        emit8(&linker->text_section, (uint8_t)stack_sub_size);
+                                    } else {
+                                        emit8(&linker->text_section, 0x81); // add rsp, imm32
+                                        emit_modrm(&linker->text_section, 3, 0, REG_RSP);
+                                        emit32(&linker->text_section, (uint32_t)stack_sub_size);
+                                    }
                                 }
+                                
+                                if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5F); } // pop r15
+                                if (allocator.used_callee_saved[5]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5E); } // pop r14
+                                if (allocator.used_callee_saved[4]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5D); } // pop r13
+                                if (allocator.used_callee_saved[3]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5C); } // pop r12
+                                if (allocator.used_callee_saved[2]) emit8(&linker->text_section, 0x5F); // pop rdi
+                                if (allocator.used_callee_saved[1]) emit8(&linker->text_section, 0x5E); // pop rsi
+                                if (allocator.used_callee_saved[0]) emit8(&linker->text_section, 0x5B); // pop rbx
                             }
-                            
-                            if (allocator.used_callee_saved[6]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5F); } // pop r15
-                            if (allocator.used_callee_saved[5]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5E); } // pop r14
-                            if (allocator.used_callee_saved[4]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5D); } // pop r13
-                            if (allocator.used_callee_saved[3]) { emit_rex(&linker->text_section, 0, 0, 0, 1); emit8(&linker->text_section, 0x5C); } // pop r12
-                            if (allocator.used_callee_saved[2]) emit8(&linker->text_section, 0x5F); // pop rdi
-                            if (allocator.used_callee_saved[1]) emit8(&linker->text_section, 0x5E); // pop rsi
-                            if (allocator.used_callee_saved[0]) emit8(&linker->text_section, 0x5B); // pop rbx
                             
                             emit8(&linker->text_section, 0xC3); // ret
                             break;
