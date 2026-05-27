@@ -1120,10 +1120,14 @@ void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count, int opt_
                 builder->current_func_body = NULL;
             }
             
-            // 5. 安全兜底：如果基本块最后没有返回指令，自动补全 (针对 nihil 返回类型)
+            // 5. 安全兜底：如果基本块最后没有返回指令，自动补全
             if (builder->current_block && (!builder->current_block->last_inst || builder->current_block->last_inst->opcode != SIR_RET)) {
                 if (sym->type->as.func_type.return_type->kind == TY_NIHIL) {
                     ir_build_ret(builder, NULL);
+                } else {
+                    // 对于非 nihil 返回类型，补全默认的 0 返回值以防止控制流崩溃
+                    SirValue* zero_val = ir_const_int(builder, sym->type->as.func_type.return_type, 0);
+                    ir_build_ret(builder, zero_val);
                 }
             }
         }

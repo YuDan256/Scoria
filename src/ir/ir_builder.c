@@ -596,7 +596,11 @@ static bool can_inline(SirFunction* func) {
             inst_count++;
             if (i->opcode == SIR_RET) ret_count++;
             if (i->opcode == SIR_ALLOCA) return false;
-            // 允许包含 CALL，但限制总指令数以防止过度膨胀
+            if (i->opcode == SIR_CALL && i->operands[0]->kind == SIR_VAL_GLOBAL) {
+                if (strcmp(i->operands[0]->as.global_name, func->name) == 0) {
+                    return false;
+                }
+            }
         }
     }
     return inst_count <= 60 && ret_count > 0;
@@ -658,8 +662,7 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                             bool allowed_to_inline = false;
                             
                             if (callee && can_inline(callee)) {
-                                if (!is_recursive) allowed_to_inline = true;
-                                else if (current_insts < 200) allowed_to_inline = true; // 允许有限的递归内联展开
+                                if (!is_recursive && current_insts < 200) allowed_to_inline = true;
                             }
                             
                             if (allowed_to_inline) {
@@ -672,8 +675,28 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                                 // 预先收集原始基本块，防止递归内联时遍历到新追加的块导致死循环
                                 SirBlock** orig_blocks = (SirBlock**)malloc(sizeof(SirBlock*) * (callee_max_block + 1));
                                 int orig_count = 0;
+                                int ret_count = 0;
                                 for (SirBlock* cb = callee->first_block; cb; cb = cb->next) {
                                     orig_blocks[orig_count++] = cb;
+                                    for (SirInst* ci = cb->first_inst; ci; ci = ci->next) {
+                                        if (ci->opcode == SIR_RET) ret_count++;
+                                    }
+                                }
+                                
+                                SirValue* ret_alloca = NULL;
+                                if (inst->dest && ret_count > 1) {
+                                    SirInst* alloc_inst = (SirInst*)arena_alloc(&builder->arena, sizeof(SirInst));
+                                    alloc_inst->opcode = SIR_ALLOCA;
+                                    alloc_inst->num_operands = 1;
+                                    alloc_inst->operands = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*));
+                                    alloc_inst->operands[0] = ir_const_int(builder, type_get_basic(TY_I32), type_get_size(inst->dest->type));
+                                    alloc_inst->dest = create_vreg(builder, type_get_via(inst->dest->type));
+                                    alloc_inst->prev = NULL;
+                                    alloc_inst->next = func->first_block->first_inst;
+                                    if (func->first_block->first_inst) func->first_block->first_inst->prev = alloc_inst;
+                                    else func->first_block->last_inst = alloc_inst;
+                                    func->first_block->first_inst = alloc_inst;
+                                    ret_alloca = alloc_inst->dest;
                                 }
                                 
                                 for (int b_idx = 0; b_idx < orig_count; b_idx++) {
@@ -710,9 +733,13 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                                         } else if (ci->opcode == SIR_RET) {
                                             if (ci->num_operands > 0 && inst->dest) {
                                                 SirValue* mapped_ret = map_value(builder, ci->operands[0], vreg_map, block_map);
-                                                SirInst* copy = create_inst(builder, SIR_CAST, 1);
-                                                copy->operands[0] = mapped_ret;
-                                                copy->dest = inst->dest;
+                                                if (ret_count > 1) {
+                                                    ir_build_store(builder, mapped_ret, ret_alloca);
+                                                } else {
+                                                    SirInst* copy = create_inst(builder, SIR_CAST, 1);
+                                                    copy->operands[0] = mapped_ret;
+                                                    copy->dest = inst->dest;
+                                                }
                                             }
                                             ir_build_jmp(builder, return_block);
                                         } else {
@@ -726,6 +753,21 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                                             }
                                         }
                                     }
+                                }
+                                
+                                if (inst->dest && ret_count > 1) {
+                                    SirInst* load_inst = (SirInst*)arena_alloc(&builder->arena, sizeof(SirInst));
+                                    load_inst->opcode = SIR_LOAD;
+                                    load_inst->num_operands = 1;
+                                    load_inst->operands = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*));
+                                    load_inst->operands[0] = ret_alloca;
+                                    load_inst->dest = inst->dest;
+                                    
+                                    load_inst->prev = NULL;
+                                    load_inst->next = return_block->first_inst;
+                                    if (return_block->first_inst) return_block->first_inst->prev = load_inst;
+                                    else return_block->last_inst = load_inst;
+                                    return_block->first_inst = load_inst;
                                 }
                                 
                                 free(vreg_map);
@@ -1059,32 +1101,47 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                     if (inst->opcode == SIR_JMP) {
                         SirBlock* target = inst->operands[0]->as.block;
                         if (target && target != (SirBlock*)-1 && target != block && target->first_inst && target->first_inst == target->last_inst && target->first_inst->opcode == SIR_JMP) {
-                            inst->operands[0]->as.block = target->first_inst->operands[0]->as.block;
-                            changed = true;
+                            SirBlock* new_target = target->first_inst->operands[0]->as.block;
+                            if (inst->operands[0]->as.block != new_target) {
+                                inst->operands[0]->as.block = new_target;
+                                changed = true;
+                            }
                         }
                     } else if (inst->opcode == SIR_BR) {
                         SirBlock* t_target = inst->operands[1]->as.block;
                         if (t_target && t_target != (SirBlock*)-1 && t_target != block && t_target->first_inst && t_target->first_inst == t_target->last_inst && t_target->first_inst->opcode == SIR_JMP) {
-                            inst->operands[1]->as.block = t_target->first_inst->operands[0]->as.block;
-                            changed = true;
+                            SirBlock* new_target = t_target->first_inst->operands[0]->as.block;
+                            if (inst->operands[1]->as.block != new_target) {
+                                inst->operands[1]->as.block = new_target;
+                                changed = true;
+                            }
                         }
                         SirBlock* f_target = inst->operands[2]->as.block;
                         if (f_target && f_target != (SirBlock*)-1 && f_target != block && f_target->first_inst && f_target->first_inst == f_target->last_inst && f_target->first_inst->opcode == SIR_JMP) {
-                            inst->operands[2]->as.block = f_target->first_inst->operands[0]->as.block;
-                            changed = true;
+                            SirBlock* new_target = f_target->first_inst->operands[0]->as.block;
+                            if (inst->operands[2]->as.block != new_target) {
+                                inst->operands[2]->as.block = new_target;
+                                changed = true;
+                            }
                         }
                     } else if (inst->opcode == SIR_SWITCH) {
                         SirBlock* def_target = inst->operands[1]->as.block;
                         if (def_target && def_target != (SirBlock*)-1 && def_target != block && def_target->first_inst && def_target->first_inst == def_target->last_inst && def_target->first_inst->opcode == SIR_JMP) {
-                            inst->operands[1]->as.block = def_target->first_inst->operands[0]->as.block;
-                            changed = true;
+                            SirBlock* new_target = def_target->first_inst->operands[0]->as.block;
+                            if (inst->operands[1]->as.block != new_target) {
+                                inst->operands[1]->as.block = new_target;
+                                changed = true;
+                            }
                         }
                         int case_count = (inst->num_operands - 2) / 2;
                         for (int i = 0; i < case_count; i++) {
                             SirBlock* c_target = inst->operands[2 + i * 2 + 1]->as.block;
                             if (c_target && c_target != (SirBlock*)-1 && c_target != block && c_target->first_inst && c_target->first_inst == c_target->last_inst && c_target->first_inst->opcode == SIR_JMP) {
-                                inst->operands[2 + i * 2 + 1]->as.block = c_target->first_inst->operands[0]->as.block;
-                                changed = true;
+                                SirBlock* new_target = c_target->first_inst->operands[0]->as.block;
+                                if (inst->operands[2 + i * 2 + 1]->as.block != new_target) {
+                                    inst->operands[2 + i * 2 + 1]->as.block = new_target;
+                                    changed = true;
+                                }
                             }
                         }
                     }
