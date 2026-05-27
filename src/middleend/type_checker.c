@@ -37,8 +37,12 @@ static ScoriaType* resolve_type_node(TypeChecker* checker, AstNode* type_node) {
         uint32_t length = 0;
         // 简化处理：假设数组大小在语法解析阶段已经是一个常量整数节点
         if (type_node->as.type_node.array_size && type_node->as.type_node.array_size->kind == AST_LITERAL_EXPR) {
-            // TODO: 完善常量表达式求值，目前暂存为 0
-            length = 0; 
+            Token tok = type_node->as.type_node.array_size->token;
+            char buf[32];
+            uint32_t len = tok.length < 31 ? tok.length : 31;
+            memcpy(buf, tok.start, len);
+            buf[len] = '\0';
+            length = (uint32_t)strtoul(buf, NULL, 10);
         } else {
             type_error(checker, type_node->token, "Magnitudo aciei constans esse debet.");
         }
@@ -117,6 +121,58 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr) {
                 default: break;
             }
             break;
+
+        case AST_ARRAY_LITERAL: {
+            if (expr->as.array_literal.element_count == 0) {
+                type_error(checker, expr->token, "Acies vacua typum inferre non potest.");
+                type = type_get_acies(type_get_basic(TY_UNKNOWN), 0);
+            } else {
+                ScoriaType* elem_type = check_expression(checker, expr->as.array_literal.elements[0]);
+                for (int i = 1; i < expr->as.array_literal.element_count; i++) {
+                    ScoriaType* t = check_expression(checker, expr->as.array_literal.elements[i]);
+                    if (!type_equals(elem_type, t)) {
+                        type_error(checker, expr->as.array_literal.elements[i]->token, "Typi elementorum in acie non congruunt.");
+                    }
+                }
+                type = type_get_acies(elem_type, expr->as.array_literal.element_count);
+            }
+            break;
+        }
+
+        case AST_STRUCT_LITERAL: {
+            ScoriaType* struct_type = check_expression(checker, expr->as.struct_literal.type_expr);
+            
+            if (struct_type->kind != TY_FORMA && struct_type->kind != TY_UNIO) {
+                type_error(checker, expr->as.struct_literal.type_expr->token, "Symbolum non est forma vel unio.");
+            } else {
+                if (struct_type->kind == TY_UNIO && expr->as.struct_literal.field_count > 1) {
+                    type_error(checker, expr->token, "Unio unum tantum campum initializare potest.");
+                }
+
+                // 检查字段
+                for (int i = 0; i < expr->as.struct_literal.field_count; i++) {
+                    Token field_name = expr->as.struct_literal.field_names[i];
+                    ScoriaType* val_type = check_expression(checker, expr->as.struct_literal.field_values[i]);
+                    
+                    bool found = false;
+                    for (int j = 0; j < struct_type->as.struct_type.field_count; j++) {
+                        StructField f = struct_type->as.struct_type.fields[j];
+                        if (f.name.length == field_name.length && memcmp(f.name.start, field_name.start, f.name.length) == 0) {
+                            found = true;
+                            if (!type_equals(f.type, val_type)) {
+                                type_error(checker, field_name, "Typus valoris cum typo campi non congruit.");
+                            }
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        type_error(checker, field_name, "Campus in forma vel unione non inventus est.");
+                    }
+                }
+            }
+            type = struct_type;
+            break;
+        }
 
         case AST_IDENT_EXPR: {
             Symbol* sym = symtab_lookup(&checker->symtab, expr->token);

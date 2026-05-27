@@ -372,7 +372,19 @@ SirValue* ir_build_cast(IrBuilder* builder, SirValue* val, ScoriaType* target_ty
         if (target_type->kind == TY_F32 || target_type->kind == TY_F64) {
             return ir_const_float(builder, target_type, (double)val->as.int_val);
         }
-        return ir_const_int(builder, target_type, val->as.int_val);
+        int64_t v = val->as.int_val;
+        int size = type_get_size(target_type);
+        if (size == 1) {
+            if (type_is_signed(target_type)) v = (int8_t)v;
+            else v = (uint8_t)v;
+        } else if (size == 2) {
+            if (type_is_signed(target_type)) v = (int16_t)v;
+            else v = (uint16_t)v;
+        } else if (size == 4) {
+            if (type_is_signed(target_type)) v = (int32_t)v;
+            else v = (uint32_t)v;
+        }
+        return ir_const_int(builder, target_type, v);
     } else if (val->kind == SIR_VAL_CONST_FLOAT) {
         if (target_type->kind != TY_F32 && target_type->kind != TY_F64) {
             return ir_const_int(builder, target_type, (int64_t)val->as.float_val);

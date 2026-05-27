@@ -3,15 +3,40 @@
 
 bool g_use_print_str = false;
 bool g_use_print_int = false;
+bool g_use_print_uint = false;
+bool g_use_print_char = false;
 bool g_use_print_float = false;
 bool g_use_print_bool = false;
 bool g_use_print_hex = false;
 bool g_use_crea = false;
 bool g_use_neca = false;
 
+PrintType builtins_get_print_type(SirValue* arg) {
+    ScoriaType* arg_type = arg->type;
+    bool is_via = (arg_type && arg_type->kind == TY_VIA);
+    ScoriaType* inner_type = is_via ? arg_type->as.inner : arg_type;
+    
+    bool is_str = (inner_type && inner_type->kind == TY_COHORS && inner_type->as.inner->kind == TY_LITTERA);
+    bool is_bool = (inner_type && inner_type->kind == TY_LOGICA) || (arg->kind == SIR_VAL_CONST_BOOL);
+    bool is_char = (inner_type && inner_type->kind == TY_LITTERA);
+    bool is_float = (inner_type && (inner_type->kind == TY_F32 || inner_type->kind == TY_F64)) || (arg->kind == SIR_VAL_CONST_FLOAT);
+    bool is_uint = (inner_type && (inner_type->kind == TY_P8 || inner_type->kind == TY_P16 || inner_type->kind == TY_P32 || inner_type->kind == TY_P64));
+    bool is_ptr = is_via && !is_str;
+
+    if (is_str) return PRINT_STR;
+    if (is_bool) return PRINT_BOOL;
+    if (is_char) return PRINT_CHAR;
+    if (is_ptr) return PRINT_HEX;
+    if (is_float) return PRINT_FLOAT;
+    if (is_uint) return PRINT_UINT;
+    return PRINT_INT;
+}
+
 void builtins_analyze_usage(SirModule* module) {
     g_use_print_str = false;
     g_use_print_int = false;
+    g_use_print_uint = false;
+    g_use_print_char = false;
     g_use_print_float = false;
     g_use_print_bool = false;
     g_use_print_hex = false;
@@ -24,17 +49,13 @@ void builtins_analyze_usage(SirModule* module) {
                 if (inst->opcode == SIR_CALL && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
                     const char* callee = inst->operands[0]->as.global_name;
                     if (strcmp(callee, "scribe") == 0) {
-                        ScoriaType* arg_type = inst->operands[1]->type;
-                        if (arg_type && arg_type->kind == TY_VIA) arg_type = arg_type->as.inner;
-                        bool is_str = (arg_type && arg_type->kind == TY_COHORS && arg_type->as.inner->kind == TY_LITTERA);
-                        bool is_bool = (arg_type && arg_type->kind == TY_LOGICA) || (inst->operands[1]->kind == SIR_VAL_CONST_BOOL);
-                        bool is_ptr = !is_str && (arg_type && (arg_type->kind == TY_VIA || arg_type->kind == TY_COHORS || arg_type->kind == TY_ACIES));
-                        bool is_float = (arg_type && (arg_type->kind == TY_F32 || arg_type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
-
-                        if (is_str) g_use_print_str = true;
-                        else if (is_bool) g_use_print_bool = true;
-                        else if (is_ptr) g_use_print_hex = true;
-                        else if (is_float) g_use_print_float = true;
+                        PrintType pt = builtins_get_print_type(inst->operands[1]);
+                        if (pt == PRINT_STR) g_use_print_str = true;
+                        else if (pt == PRINT_BOOL) g_use_print_bool = true;
+                        else if (pt == PRINT_CHAR) g_use_print_char = true;
+                        else if (pt == PRINT_HEX) g_use_print_hex = true;
+                        else if (pt == PRINT_FLOAT) g_use_print_float = true;
+                        else if (pt == PRINT_UINT) g_use_print_uint = true;
                         else g_use_print_int = true;
                     } else if (strcmp(callee, "crea") == 0) {
                         g_use_crea = true;
@@ -50,10 +71,12 @@ void builtins_analyze_usage(SirModule* module) {
     if (g_use_print_float) { g_use_print_int = true; g_use_print_str = true; }
     if (g_use_print_bool) { g_use_print_str = true; }
     if (g_use_print_hex) { g_use_print_str = true; }
+    if (g_use_print_char) { g_use_print_str = true; }
 }
 
 uint32_t g_print_str_offset = 0;
 uint32_t g_print_int_offset = 0;
+uint32_t g_print_uint_offset = 0;
 uint32_t g_print_float_offset = 0;
 uint32_t g_print_hex_offset = 0;
 uint32_t g_print_bool_offset = 0;
@@ -64,6 +87,8 @@ uint32_t g_call_getstdhandle_reloc = 0;
 uint32_t g_call_writeconsolea_reloc = 0;
 uint32_t g_call_getstdhandle_reloc2 = 0;
 uint32_t g_call_writeconsolea_reloc2 = 0;
+uint32_t g_call_getstdhandle_reloc3 = 0;
+uint32_t g_call_writeconsolea_reloc3 = 0;
 uint32_t g_call_exitprocess_reloc = 0;
 
 uint32_t g_call_getprocessheap_reloc1 = 0;
@@ -89,9 +114,40 @@ void asm_builtins_generate(FILE* out) {
     fprintf(out, "    ret\n\n");
     }
 
+    if (g_use_print_uint) {
+    fprintf(out, "__print_uint:\n");
+    fprintf(out, "    subq $104, %%rsp\n");
+    fprintf(out, "    movq %%rcx, %%rax\n");
+    fprintf(out, "    leaq 80(%%rsp), %%r8\n");
+    fprintf(out, "    decq %%r8\n");
+    fprintf(out, "    movq $10, %%r9\n");
+    fprintf(out, ".Luloop:\n");
+    fprintf(out, "    xorq %%rdx, %%rdx\n");
+    fprintf(out, "    divq %%r9\n");
+    fprintf(out, "    addb $'0', %%dl\n");
+    fprintf(out, "    movb %%dl, (%%r8)\n");
+    fprintf(out, "    decq %%r8\n");
+    fprintf(out, "    testq %%rax, %%rax\n");
+    fprintf(out, "    jnz .Luloop\n");
+    fprintf(out, "    incq %%r8\n");
+    fprintf(out, "    leaq 80(%%rsp), %%r10\n");
+    fprintf(out, "    subq %%r8, %%r10\n");
+    fprintf(out, "    movq %%r8, 88(%%rsp)\n");
+    fprintf(out, "    movq %%r10, 96(%%rsp)\n");
+    fprintf(out, "    movl $-11, %%ecx\n");
+    fprintf(out, "    call GetStdHandle\n");
+    fprintf(out, "    movq %%rax, %%rcx\n");
+    fprintf(out, "    movq 88(%%rsp), %%rdx\n");
+    fprintf(out, "    movq 96(%%rsp), %%r8\n");
+    fprintf(out, "    leaq 40(%%rsp), %%r9\n");
+    fprintf(out, "    movq $0, 32(%%rsp)\n");
+    fprintf(out, "    call WriteFile\n");
+    fprintf(out, "    addq $104, %%rsp\n");
+    fprintf(out, "    ret\n\n");
+    }
+
     if (g_use_print_int) {
     fprintf(out, "__print_int:\n");
-    fprintf(out, "    movslq %%ecx, %%rcx\n");
     fprintf(out, "    subq $104, %%rsp\n");
     fprintf(out, "    movq %%rcx, %%r10\n");
     fprintf(out, "    xorq %%r11, %%r11\n");
@@ -196,10 +252,10 @@ void asm_builtins_generate(FILE* out) {
     fprintf(out, "__print_hex:\n");
     fprintf(out, "    subq $56, %%rsp\n");
     fprintf(out, "    movq %%rcx, %%r10\n");
-    fprintf(out, "    leaq 47(%%rsp), %%r8\n");
-    fprintf(out, "    movb $'x', (%%r8)\n");
-    fprintf(out, "    decq %%r8\n");
+    fprintf(out, "    leaq 31(%%rsp), %%r8\n");
     fprintf(out, "    movb $'0', (%%r8)\n");
+    fprintf(out, "    incq %%r8\n");
+    fprintf(out, "    movb $'x', (%%r8)\n");
     fprintf(out, "    leaq 48(%%rsp), %%r8\n");
     fprintf(out, "    movq $16, %%r9\n");
     fprintf(out, ".Lhex_loop:\n");
@@ -324,24 +380,41 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
     emit8(&linker->text_section, 0xC3);
     }
 
+    if (g_use_print_uint) {
+    // 追加内置汇编例程: __print_uint
+    g_print_uint_offset = (uint32_t)linker->text_section.size;
+    uint8_t print_uint_code[] = {
+        0x48, 0x83, 0xEC, 0x68, 0x48, 0x89, 0xC8, 0x4C, 0x8D, 0x44, 0x24, 0x50, 0x49, 0xFF, 0xC8, 0x49,
+        0xC7, 0xC1, 0x0A, 0x00, 0x00, 0x00, 0x48, 0x31, 0xD2, 0x49, 0xF7, 0xF1, 0x80, 0xC2, 0x30, 0x41,
+        0x88, 0x10, 0x49, 0xFF, 0xC8, 0x48, 0x85, 0xC0, 0x75, 0xEC, 0x49, 0xFF, 0xC0, 0x4C, 0x8D, 0x54,
+        0x24, 0x50, 0x4D, 0x29, 0xC2, 0x4C, 0x89, 0x44, 0x24, 0x58, 0x4C, 0x89, 0x54, 0x24, 0x60, 0xB9,
+        0xF5, 0xFF, 0xFF, 0xFF, 0xFF, 0x15, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, 0xC1, 0x48, 0x8B, 0x54,
+        0x24, 0x58, 0x4C, 0x8B, 0x44, 0x24, 0x60, 0x4C, 0x8D, 0x4C, 0x24, 0x28, 0x48, 0xC7, 0x44, 0x24,
+        0x20, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x15, 0x00, 0x00, 0x00, 0x00, 0x48, 0x83, 0xC4, 0x68, 0xC3
+    };
+    for (size_t i = 0; i < sizeof(print_uint_code); i++) emit8(&linker->text_section, print_uint_code[i]);
+    g_call_getstdhandle_reloc3 = g_print_uint_offset + 70;
+    g_call_writeconsolea_reloc3 = g_print_uint_offset + 103;
+    }
+
     if (g_use_print_int) {
     // 追加内置汇编例程: __print_int
     g_print_int_offset = (uint32_t)linker->text_section.size;
     uint8_t print_int_code[] = {
-        0x48, 0x63, 0xC9, 0x48, 0x83, 0xEC, 0x68, 0x49, 0x89, 0xCA, 0x4D, 0x31, 0xDB, 0x48, 0x85, 0xC9,
-        0x79, 0x0A, 0x49, 0xF7, 0xDA, 0x49, 0xC7, 0xC3, 0x01, 0x00, 0x00, 0x00, 0x4C, 0x8D, 0x44, 0x24,
-        0x50, 0x49, 0xFF, 0xC8, 0x4C, 0x89, 0xD0, 0x49, 0xC7, 0xC1, 0x0A, 0x00, 0x00, 0x00, 0x48, 0x31,
-        0xD2, 0x49, 0xF7, 0xF1, 0x80, 0xC2, 0x30, 0x41, 0x88, 0x10, 0x49, 0xFF, 0xC8, 0x48, 0x85, 0xC0,
-        0x75, 0xEC, 0x4D, 0x85, 0xDB, 0x74, 0x07, 0x41, 0xC6, 0x00, 0x2D, 0x49, 0xFF, 0xC8, 0x49, 0xFF,
-        0xC0, 0x4C, 0x8D, 0x54, 0x24, 0x50, 0x4D, 0x29, 0xC2, 0x4C, 0x89, 0x44, 0x24, 0x58, 0x4C, 0x89,
-        0x54, 0x24, 0x60, 0xB9, 0xF5, 0xFF, 0xFF, 0xFF, 0xFF, 0x15, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89,
-        0xC1, 0x48, 0x8B, 0x54, 0x24, 0x58, 0x4C, 0x8B, 0x44, 0x24, 0x60, 0x4C, 0x8D, 0x4C, 0x24, 0x28,
-        0x48, 0xC7, 0x44, 0x24, 0x20, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x15, 0x00, 0x00, 0x00, 0x00, 0x48,
-        0x83, 0xC4, 0x68, 0xC3
+        0x48, 0x83, 0xEC, 0x68, 0x49, 0x89, 0xCA, 0x4D, 0x31, 0xDB, 0x48, 0x85, 0xC9, 0x79, 0x0A, 0x49,
+        0xF7, 0xDA, 0x49, 0xC7, 0xC3, 0x01, 0x00, 0x00, 0x00, 0x4C, 0x8D, 0x44, 0x24, 0x50, 0x49, 0xFF,
+        0xC8, 0x4C, 0x89, 0xD0, 0x49, 0xC7, 0xC1, 0x0A, 0x00, 0x00, 0x00, 0x48, 0x31, 0xD2, 0x49, 0xF7,
+        0xF1, 0x80, 0xC2, 0x30, 0x41, 0x88, 0x10, 0x49, 0xFF, 0xC8, 0x48, 0x85, 0xC0, 0x75, 0xEC, 0x4D,
+        0x85, 0xDB, 0x74, 0x07, 0x41, 0xC6, 0x00, 0x2D, 0x49, 0xFF, 0xC8, 0x49, 0xFF, 0xC0, 0x4C, 0x8D,
+        0x54, 0x24, 0x50, 0x4D, 0x29, 0xC2, 0x4C, 0x89, 0x44, 0x24, 0x58, 0x4C, 0x89, 0x54, 0x24, 0x60,
+        0xB9, 0xF5, 0xFF, 0xFF, 0xFF, 0xFF, 0x15, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, 0xC1, 0x48, 0x8B,
+        0x54, 0x24, 0x58, 0x4C, 0x8B, 0x44, 0x24, 0x60, 0x4C, 0x8D, 0x4C, 0x24, 0x28, 0x48, 0xC7, 0x44,
+        0x24, 0x20, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x15, 0x00, 0x00, 0x00, 0x00, 0x48, 0x83, 0xC4, 0x68,
+        0xC3
     };
     for (size_t i = 0; i < sizeof(print_int_code); i++) emit8(&linker->text_section, print_int_code[i]);
-    g_call_getstdhandle_reloc2 = g_print_int_offset + 106;
-    g_call_writeconsolea_reloc2 = g_print_int_offset + 139;
+    g_call_getstdhandle_reloc2 = g_print_int_offset + 103;
+    g_call_writeconsolea_reloc2 = g_print_int_offset + 136;
     }
 
     if (g_use_print_float) {
@@ -367,11 +440,11 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
     // 追加内置汇编例程: __print_hex
     g_print_hex_offset = (uint32_t)linker->text_section.size;
     uint8_t print_hex_code[] = {
-        0x48, 0x83, 0xEC, 0x38, 0x49, 0x89, 0xCA, 0x4C, 0x8D, 0x44, 0x24, 0x2F, 0x41, 0xC6, 0x00, 0x78,
-        0x49, 0xFF, 0xC8, 0x41, 0xC6, 0x00, 0x30, 0x4C, 0x8D, 0x44, 0x24, 0x30, 0x49, 0xC7, 0xC1, 0x10,
+        0x48, 0x83, 0xEC, 0x38, 0x49, 0x89, 0xCA, 0x4C, 0x8D, 0x44, 0x24, 0x1F, 0x41, 0xC6, 0x00, 0x30,
+        0x49, 0xFF, 0xC0, 0x41, 0xC6, 0x00, 0x78, 0x4C, 0x8D, 0x44, 0x24, 0x30, 0x49, 0xC7, 0xC1, 0x10,
         0x00, 0x00, 0x00, 0x4C, 0x89, 0xD0, 0x48, 0x83, 0xE0, 0x0F, 0x3C, 0x09, 0x76, 0x04, 0x04, 0x57,
         0xEB, 0x02, 0x04, 0x30, 0x41, 0x88, 0x00, 0x49, 0xFF, 0xC8, 0x49, 0xC1, 0xEA, 0x04, 0x49, 0xFF,
-        0xC9, 0x75, 0xE3, 0x48, 0x8D, 0x4C, 0x24, 0x1F, 0xBA, 0x12, 0x00, 0x00, 0x00, 0xE8, 0x00, 0x00,
+        0xC9, 0x75, 0xE0, 0x48, 0x8D, 0x4C, 0x24, 0x1F, 0xBA, 0x12, 0x00, 0x00, 0x00, 0xE8, 0x00, 0x00,
         0x00, 0x00, 0x48, 0x83, 0xC4, 0x38, 0xC3
     };
     for (size_t i = 0; i < sizeof(print_hex_code); i++) emit8(&linker->text_section, print_hex_code[i]);

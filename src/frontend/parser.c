@@ -216,6 +216,25 @@ static AstNode* primary(Parser* parser) {
         consume(parser, TK_RPAREN, "Post argumenta 'scribe' ')' exspectatur.");
         return node;
     }
+    if (match(parser, TK_LBRACKET)) {
+        Token bracket = parser->previous;
+        AstNode* node = ast_create_node(&parser->arena, AST_ARRAY_LITERAL, bracket);
+        node->as.array_literal.elements = NULL;
+        node->as.array_literal.element_count = 0;
+        int capacity = 0;
+        if (!check(parser, TK_RBRACKET)) {
+            do {
+                if (node->as.array_literal.element_count >= capacity) {
+                    int old_capacity = capacity;
+                    capacity = capacity < 4 ? 4 : capacity * 2;
+                    node->as.array_literal.elements = arena_realloc(&parser->arena, node->as.array_literal.elements, sizeof(AstNode*) * old_capacity, sizeof(AstNode*) * capacity);
+                }
+                node->as.array_literal.elements[node->as.array_literal.element_count++] = expression(parser);
+            } while (match(parser, TK_COMMA));
+        }
+        consume(parser, TK_RBRACKET, "Post elementa aciei ']' exspectatur.");
+        return node;
+    }
     if (match(parser, TK_LPAREN)) {
         AstNode* expr = expression(parser);
         consume(parser, TK_RPAREN, "Post expressionem ')' exspectatur.");
@@ -276,6 +295,31 @@ static AstNode* postfix(Parser* parser) {
             node->as.member_expr.object = expr;
             node->as.member_expr.property = name;
             node->as.member_expr.is_pointer = true;
+            expr = node;
+        } else if (match(parser, TK_LBRACE)) {
+            Token brace = parser->previous;
+            AstNode* node = ast_create_node(&parser->arena, AST_STRUCT_LITERAL, brace);
+            node->as.struct_literal.type_expr = expr;
+            node->as.struct_literal.field_names = NULL;
+            node->as.struct_literal.field_values = NULL;
+            node->as.struct_literal.field_count = 0;
+            int capacity = 0;
+            if (!check(parser, TK_RBRACE)) {
+                do {
+                    if (node->as.struct_literal.field_count >= capacity) {
+                        int old_capacity = capacity;
+                        capacity = capacity < 4 ? 4 : capacity * 2;
+                        node->as.struct_literal.field_names = arena_realloc(&parser->arena, node->as.struct_literal.field_names, sizeof(Token) * old_capacity, sizeof(Token) * capacity);
+                        node->as.struct_literal.field_values = arena_realloc(&parser->arena, node->as.struct_literal.field_values, sizeof(AstNode*) * old_capacity, sizeof(AstNode*) * capacity);
+                    }
+                    consume(parser, TK_IDENTIFIER, "Nomen campi exspectatur.");
+                    node->as.struct_literal.field_names[node->as.struct_literal.field_count] = parser->previous;
+                    consume(parser, TK_COLON, "Post nomen campi ':' exspectatur.");
+                    node->as.struct_literal.field_values[node->as.struct_literal.field_count] = expression(parser);
+                    node->as.struct_literal.field_count++;
+                } while (match(parser, TK_COMMA));
+            }
+            consume(parser, TK_RBRACE, "Post campos formae '}' exspectatur.");
             expr = node;
         } else {
             break;

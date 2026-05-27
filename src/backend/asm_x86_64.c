@@ -288,7 +288,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
             stack_sub_size += 8;
         }
     }
-    int total_frame_size = stack_sub_size + num_callee_pushes * 8;
+    int total_frame_size = stack_sub_size;
 
     // 4. 遍历基本块和指令 (指令选择 Instruction Selection)
     char op0[64], op1[64], op2[64], dest[64];
@@ -339,11 +339,13 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                 int dest_size = (inst->dest->type) ? type_get_size(inst->dest->type) : 8;
                 if (dest_size < 4) dest_size = 4;
                 get_operand_str(dest, inst->dest, &allocator, dest_size, total_frame_size);
-                if (opt_level > 0 && inst->dest->kind == SIR_VAL_VREG && inst->next && (allocator.use_count[inst->dest->as.vreg] == 2 || inst->next->opcode == SIR_RET)) {
-                    if (inst->next->opcode == SIR_RET && inst->next->num_operands > 0 && inst->next->operands[0] == inst->dest) {
-                        strcpy(dest, dest_size <= 4 ? "%eax" : "%rax");
-                    } else if (inst->next->opcode == SIR_CALL && inst->next->num_operands == 2 && inst->next->operands[1] == inst->dest) {
-                        strcpy(dest, dest_size <= 4 ? "%ecx" : "%rcx");
+                if (opt_level > 0 && inst->dest->kind == SIR_VAL_VREG && inst->next && allocator.use_count[inst->dest->as.vreg] == 2) {
+                    if (inst->opcode == SIR_ADD || inst->opcode == SIR_SUB || inst->opcode == SIR_MUL || inst->opcode == SIR_AND || inst->opcode == SIR_OR || inst->opcode == SIR_XOR) {
+                        if (inst->next->opcode == SIR_RET && inst->next->num_operands > 0 && inst->next->operands[0] == inst->dest) {
+                            strcpy(dest, dest_size <= 4 ? "%eax" : "%rax");
+                        } else if (inst->next->opcode == SIR_CALL && inst->next->num_operands == 2 && inst->next->operands[1] == inst->dest) {
+                            strcpy(dest, dest_size <= 4 ? "%ecx" : "%rcx");
+                        }
                     }
                 }
             }
@@ -543,13 +545,13 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                     
                     const char* left_op = op0;
                     if (opt_level > 0 && inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[0]) {
-                        if (inst->operands[0]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[0]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
+                        if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
                             left_op = ax;
                         }
                     }
                     const char* right_op = op1;
                     if (opt_level > 0 && inst->num_operands > 1 && inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[1]) {
-                        if (inst->operands[1]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[1]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
+                        if (inst->operands[1]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[1]->as.vreg] == 2) {
                             right_op = ax;
                         }
                     }
@@ -584,13 +586,13 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                     
                     const char* left_op = op0;
                     if (opt_level > 0 && inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[0]) {
-                        if (inst->operands[0]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[0]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
+                        if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
                             left_op = ax;
                         }
                     }
                     const char* right_op = op1;
                     if (opt_level > 0 && inst->num_operands > 1 && inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[1]) {
-                        if (inst->operands[1]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[1]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
+                        if (inst->operands[1]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[1]->as.vreg] == 2) {
                             right_op = ax;
                         }
                     }
@@ -824,7 +826,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                             }
                         }
                     } else {
-                        int offset = 8 + total_frame_size + (param_idx - max_reg_args) * 8;
+                        int offset = 8 + total_frame_size + num_callee_pushes * 8 + (param_idx - max_reg_args) * 8;
                         int size = type_get_size(inst->dest->type);
                         bool is_signed = type_is_signed(inst->dest->type);
                         
@@ -1213,30 +1215,35 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
 
                 case SIR_CALL:
                     if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "scribe") == 0) {
-                        emit_load_operand(out, "%rcx", "%ecx", inst->operands[1], &allocator, total_frame_size);
+                        emit_load_operand(out, "%rax", "%eax", inst->operands[1], &allocator, total_frame_size);
+                        fprintf(out, "    movq %%rax, %%rcx\n");
                                 
-                        ScoriaType* arg_type = inst->operands[1]->type;
-                        if (arg_type && arg_type->kind == TY_VIA) arg_type = arg_type->as.inner;
-                        bool is_str = (arg_type && arg_type->kind == TY_COHORS && arg_type->as.inner->kind == TY_LITTERA);
-                        bool is_bool = (arg_type && arg_type->kind == TY_LOGICA) || (inst->operands[1]->kind == SIR_VAL_CONST_BOOL);
-                        bool is_ptr = !is_str && (arg_type && (arg_type->kind == TY_VIA || arg_type->kind == TY_COHORS || arg_type->kind == TY_ACIES));
-                        bool is_float = (arg_type && (arg_type->kind == TY_F32 || arg_type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
+                        PrintType pt = builtins_get_print_type(inst->operands[1]);
                                 
-                        if (is_str) {
+                        if (pt == PRINT_STR) {
                             fprintf(out, "    movq 8(%%rcx), %%rdx\n");
                             fprintf(out, "    movq (%%rcx), %%rcx\n");
                             fprintf(out, "    call __print_str\n");
-                        } else if (is_bool) {
+                        } else if (pt == PRINT_BOOL) {
                             fprintf(out, "    call __print_bool\n");
-                        } else if (is_ptr) {
+                        } else if (pt == PRINT_CHAR) {
+                            fprintf(out, "    subq $24, %%rsp\n");
+                            fprintf(out, "    movb %%cl, 15(%%rsp)\n");
+                            fprintf(out, "    leaq 15(%%rsp), %%rcx\n");
+                            fprintf(out, "    movq $1, %%rdx\n");
+                            fprintf(out, "    call __print_str\n");
+                            fprintf(out, "    addq $24, %%rsp\n");
+                        } else if (pt == PRINT_HEX) {
                             fprintf(out, "    call __print_hex\n");
-                        } else if (is_float) {
+                        } else if (pt == PRINT_FLOAT) {
                             if (inst->operands[1]->type && inst->operands[1]->type->kind == TY_F32) {
                                 fprintf(out, "    movd %%ecx, %%xmm0\n");
                                 fprintf(out, "    cvtss2sd %%xmm0, %%xmm0\n");
                                 fprintf(out, "    movq %%xmm0, %%rcx\n");
                             }
                             fprintf(out, "    call __print_float\n");
+                        } else if (pt == PRINT_UINT) {
+                            fprintf(out, "    call __print_uint\n");
                         } else {
                             fprintf(out, "    call __print_int\n");
                         }
@@ -1373,7 +1380,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                         bool skip_store = false;
                         if (opt_level > 0 && !ret_is_float && inst->next && (inst->next->opcode == SIR_ADD || inst->next->opcode == SIR_SUB || inst->next->opcode == SIR_MUL || inst->next->opcode == SIR_AND || inst->next->opcode == SIR_OR || inst->next->opcode == SIR_XOR)) {
                             if (inst->next->operands[0] == inst->dest || inst->next->operands[1] == inst->dest) {
-                                if (allocator.use_count[inst->dest->as.vreg] == 2 || (inst->next->next && inst->next->next->opcode == SIR_RET)) {
+                                if (allocator.use_count[inst->dest->as.vreg] == 2) {
                                     skip_store = true;
                                 }
                             }
@@ -1390,7 +1397,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                     if (inst->num_operands > 0) {
                         bool already_in_rax = false;
                         if (opt_level > 0 && inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[0]) {
-                            if (inst->operands[0]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[0]->as.vreg] == 2 || true)) {
+                            if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
                                 already_in_rax = true;
                             }
                         }

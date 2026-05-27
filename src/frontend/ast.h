@@ -28,6 +28,8 @@ typedef enum {
     AST_BINARY_EXPR,
     AST_UNARY_EXPR,
     AST_LITERAL_EXPR,
+    AST_ARRAY_LITERAL,
+    AST_STRUCT_LITERAL,
     AST_IDENT_EXPR,
     AST_CALL_EXPR,
     AST_INDEX_EXPR,
@@ -132,6 +134,18 @@ struct AstNode {
         struct {
             AstNode* expr;
         } expr_stmt;
+
+        struct {
+            AstNode** elements;
+            int element_count;
+        } array_literal;
+
+        struct {
+            AstNode* type_expr; // 指向 AST_IDENT_EXPR 或 AST_MEMBER_EXPR
+            Token* field_names;
+            AstNode** field_values;
+            int field_count;
+        } struct_literal;
 
         struct {
             AstNode* left;

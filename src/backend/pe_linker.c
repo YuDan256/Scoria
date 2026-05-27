@@ -177,18 +177,9 @@ void emit_mov_reg_imm32(PeCodeBuffer* cb, int reg, int32_t imm) {
         emit_modrm(cb, 3, reg & 7, reg & 7);
         return;
     }
-    if (imm > 0) {
-        // 优化: mov r32, imm32 (自动零扩展到 64 位，省去 REX 前缀，指令更短)
-        if (reg > 7) emit_rex(cb, 0, 0, 0, 1);
-        emit8(cb, 0xB8 | (reg & 7));
-        emit32(cb, (uint32_t)imm);
-    } else {
-        // mov r64, imm32 (符号扩展)
-        emit_rex(cb, 1, 0, 0, reg > 7);
-        emit8(cb, 0xC7);
-        emit_modrm(cb, 3, 0, reg & 7);
-        emit32(cb, (uint32_t)imm);
-    }
+    if (reg > 7) emit_rex(cb, 0, 0, 0, 1);
+    emit8(cb, 0xB8 | (reg & 7));
+    emit32(cb, (uint32_t)imm);
 }
 
 void emit_mov_reg_imm64(PeCodeBuffer* cb, int reg, uint64_t imm) {
@@ -294,7 +285,23 @@ int g_extern_reloc_count = 0;
 static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, int scratch, LinkCtx* ctx) {
     if (!val) return scratch;
     if (val->kind == SIR_VAL_CONST_INT) {
-        emit_mov_reg_imm32(cb, scratch, (int32_t)val->as.int_val);
+        int64_t v = val->as.int_val;
+        if (v == 0) {
+            if (scratch > 7) emit_rex(cb, 0, 1, 0, 1);
+            emit8(cb, 0x31);
+            emit_modrm(cb, 3, scratch & 7, scratch & 7);
+        } else if (v > 0 && v <= 0xFFFFFFFFLL) {
+            if (scratch > 7) emit_rex(cb, 0, 0, 0, 1);
+            emit8(cb, 0xB8 | (scratch & 7));
+            emit32(cb, (uint32_t)v);
+        } else if (v >= -2147483648LL && v < 0) {
+            emit_rex(cb, 1, 0, 0, scratch > 7);
+            emit8(cb, 0xC7);
+            emit_modrm(cb, 3, 0, scratch & 7);
+            emit32(cb, (uint32_t)v);
+        } else {
+            emit_mov_reg_imm64(cb, scratch, (uint64_t)v);
+        }
         return scratch;
     } else if (val->kind == SIR_VAL_CONST_FLOAT) {
         if (val->type && val->type->kind == TY_F32) {
@@ -445,6 +452,9 @@ int g_print_str_reloc_count = 0;
 
 uint32_t g_print_int_relocs[MAX_RELOCS];
 int g_print_int_reloc_count = 0;
+
+uint32_t g_print_uint_relocs[MAX_RELOCS];
+int g_print_uint_reloc_count = 0;
 
 uint32_t g_print_hex_relocs[MAX_RELOCS];
 int g_print_hex_reloc_count = 0;
@@ -605,6 +615,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
         linker->text_section.size = 0;
         g_print_str_reloc_count = 0;
         g_print_int_reloc_count = 0;
+        g_print_uint_reloc_count = 0;
         g_print_hex_reloc_count = 0;
         g_print_float_reloc_count = 0;
         g_print_bool_reloc_count = 0;
@@ -734,7 +745,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                     stack_sub_size += 8;
                 }
             }
-            int total_frame_size = stack_sub_size + num_callee_pushes * 8;
+            int total_frame_size = stack_sub_size;
             ctx.frame_size = total_frame_size;
 
             bool prologue_emitted = false;
@@ -852,7 +863,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                     store_result(&linker->text_section, &allocator, inst->dest, src_reg);
                                 }
                             } else {
-                                int offset = 8 + total_frame_size + (param_idx - max_reg_args) * 8;
+                                int offset = 8 + total_frame_size + num_callee_pushes * 8 + (param_idx - max_reg_args) * 8;
                                 int size = type_get_size(inst->dest->type);
                                 bool is_signed = type_is_signed(inst->dest->type);
                                 
@@ -1008,6 +1019,39 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                             int src = load_operand(&linker->text_section, &allocator, inst->operands[0], REG_RAX, &ctx);
                             if (src != REG_RAX) emit_mov_reg_reg(&linker->text_section, REG_RAX, src);
                             
+                            int src_size = type_get_size(src_type);
+                            if (src_size < 8 && !src_is_float) {
+                                if (type_is_signed(src_type)) {
+                                    if (src_size == 1) {
+                                        emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                        emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xBE);
+                                        emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
+                                    } else if (src_size == 2) {
+                                        emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                        emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xBF);
+                                        emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
+                                    } else if (src_size == 4) {
+                                        emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                        emit8(&linker->text_section, 0x63);
+                                        emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
+                                    }
+                                } else {
+                                    if (src_size == 1) {
+                                        emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                        emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB6);
+                                        emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
+                                    } else if (src_size == 2) {
+                                        emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                        emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB7);
+                                        emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
+                                    } else if (src_size == 4) {
+                                        emit_rex(&linker->text_section, 0, 0, 0, 0);
+                                        emit8(&linker->text_section, 0x8B);
+                                        emit_modrm(&linker->text_section, 3, REG_RAX, REG_RAX);
+                                    }
+                                }
+                            }
+
                             if (src_is_float && !dst_is_float) {
                                 bool is_f32 = (src_type->kind == TY_F32);
                                 // movd/movq xmm0, rax
@@ -1078,7 +1122,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 if (c != -1) dest_reg = get_phys_reg(c);
                                 if (inst->dest->type && type_get_size(inst->dest->type) <= 4) w = 0;
                                 
-                                if (opt_level > 0 && inst->next && (allocator.use_count[inst->dest->as.vreg] == 2 || inst->next->opcode == SIR_RET)) {
+                                if (opt_level > 0 && inst->next && allocator.use_count[inst->dest->as.vreg] == 2) {
                                     if (inst->next->opcode == SIR_RET && inst->next->num_operands > 0 && inst->next->operands[0] == inst->dest) {
                                         dest_reg = REG_RAX;
                                         is_ret_peephole = true;
@@ -1096,7 +1140,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                             int left = REG_RAX;
                             bool left_already_in_rax = false;
                             if (opt_level > 0 && inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[0]) {
-                                if (inst->operands[0]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[0]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
+                                if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
                                     left_already_in_rax = true;
                                 }
                             }
@@ -1172,7 +1216,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 int right = REG_RAX;
                                 bool right_already_in_rax = false;
                                 if (opt_level > 0 && inst->prev && inst->prev->opcode == SIR_CALL && inst->prev->dest == inst->operands[1]) {
-                                    if (inst->operands[1]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[1]->as.vreg] == 2 || (inst->next && inst->next->opcode == SIR_RET))) {
+                                    if (inst->operands[1]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[1]->as.vreg] == 2) {
                                         right_already_in_rax = true;
                                     }
                                 }
@@ -1724,17 +1768,12 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                         }
                         case SIR_CALL: {
                             if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "scribe") == 0) {
-                                ScoriaType* arg_type = inst->operands[1]->type;
-                                if (arg_type && arg_type->kind == TY_VIA) arg_type = arg_type->as.inner;
-                                bool is_str = (arg_type && arg_type->kind == TY_COHORS && arg_type->as.inner->kind == TY_LITTERA);
-                                bool is_bool = (arg_type && arg_type->kind == TY_LOGICA) || (inst->operands[1]->kind == SIR_VAL_CONST_BOOL);
-                                bool is_ptr = !is_str && (arg_type && (arg_type->kind == TY_VIA || arg_type->kind == TY_COHORS || arg_type->kind == TY_ACIES));
-                                bool is_float = (arg_type && (arg_type->kind == TY_F32 || arg_type->kind == TY_F64)) || (inst->operands[1]->kind == SIR_VAL_CONST_FLOAT);
+                                PrintType pt = builtins_get_print_type(inst->operands[1]);
                                 
-                                int arg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
+                                int arg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RAX, &ctx);
                                 if (arg != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, arg);
                                 
-                                if (is_str) {
+                                if (pt == PRINT_STR) {
                                     // mov rdx, [rcx + 8]
                                     emit_rex(&linker->text_section, 1, 0, 0, 0);
                                     emit8(&linker->text_section, 0x8B);
@@ -1748,15 +1787,24 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                     emit8(&linker->text_section, 0xE8); // call rel32
                                     if (pass == 1) g_print_str_relocs[g_print_str_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0); // 占位符
-                                } else if (is_bool) {
+                                } else if (pt == PRINT_BOOL) {
                                     emit8(&linker->text_section, 0xE8); // call rel32
                                     if (pass == 1) g_print_bool_relocs[g_print_bool_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0);
-                                } else if (is_ptr) {
+                                } else if (pt == PRINT_CHAR) {
+                                    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xEC); emit8(&linker->text_section, 0x18); // sub rsp, 24
+                                    emit8(&linker->text_section, 0x88); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x0F); // mov [rsp+15], cl
+                                    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x8D); emit8(&linker->text_section, 0x4C); emit8(&linker->text_section, 0x24); emit8(&linker->text_section, 0x0F); // lea rcx, [rsp+15]
+                                    emit_mov_reg_imm32(&linker->text_section, REG_RDX, 1); // mov rdx, 1
+                                    emit8(&linker->text_section, 0xE8); // call rel32
+                                    if (pass == 1) g_print_str_relocs[g_print_str_reloc_count++] = (uint32_t)linker->text_section.size;
+                                    emit32(&linker->text_section, 0);
+                                    emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xC4); emit8(&linker->text_section, 0x18); // add rsp, 24
+                                } else if (pt == PRINT_HEX) {
                                     emit8(&linker->text_section, 0xE8); // call rel32
                                     if (pass == 1) g_print_hex_relocs[g_print_hex_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0);
-                                } else if (is_float) {
+                                } else if (pt == PRINT_FLOAT) {
                                     if (inst->operands[1]->type && inst->operands[1]->type->kind == TY_F32) {
                                         // movd xmm0, ecx
                                         emit8(&linker->text_section, 0x66); emit_rex(&linker->text_section, 0, 0, 0, 0); emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0x6E); emit_modrm(&linker->text_section, 3, 0, REG_RCX);
@@ -1768,7 +1816,59 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                     emit8(&linker->text_section, 0xE8); // call rel32
                                     if (pass == 1) g_print_float_relocs[g_print_float_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0);
+                                } else if (pt == PRINT_UINT) {
+                                    int arg_size = type_get_size(inst->operands[1]->type);
+                                    if (arg_size < 8) {
+                                        if (arg_size == 1) {
+                                            emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                            emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB6);
+                                            emit_modrm(&linker->text_section, 3, REG_RCX, REG_RCX);
+                                        } else if (arg_size == 2) {
+                                            emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                            emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB7);
+                                            emit_modrm(&linker->text_section, 3, REG_RCX, REG_RCX);
+                                        } else if (arg_size == 4) {
+                                            emit_rex(&linker->text_section, 0, 0, 0, 0);
+                                            emit8(&linker->text_section, 0x8B);
+                                            emit_modrm(&linker->text_section, 3, REG_RCX, REG_RCX);
+                                        }
+                                    }
+                                    emit8(&linker->text_section, 0xE8); // call rel32
+                                    if (pass == 1) g_print_uint_relocs[g_print_uint_reloc_count++] = (uint32_t)linker->text_section.size;
+                                    emit32(&linker->text_section, 0); // 占位符
                                 } else {
+                                    int arg_size = type_get_size(inst->operands[1]->type);
+                                    if (arg_size < 8) {
+                                        if (type_is_signed(inst->operands[1]->type)) {
+                                            if (arg_size == 1) {
+                                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xBE);
+                                                emit_modrm(&linker->text_section, 3, REG_RCX, REG_RCX);
+                                            } else if (arg_size == 2) {
+                                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xBF);
+                                                emit_modrm(&linker->text_section, 3, REG_RCX, REG_RCX);
+                                            } else if (arg_size == 4) {
+                                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                                emit8(&linker->text_section, 0x63);
+                                                emit_modrm(&linker->text_section, 3, REG_RCX, REG_RCX);
+                                            }
+                                        } else {
+                                            if (arg_size == 1) {
+                                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB6);
+                                                emit_modrm(&linker->text_section, 3, REG_RCX, REG_RCX);
+                                            } else if (arg_size == 2) {
+                                                emit_rex(&linker->text_section, 1, 0, 0, 0);
+                                                emit8(&linker->text_section, 0x0F); emit8(&linker->text_section, 0xB7);
+                                                emit_modrm(&linker->text_section, 3, REG_RCX, REG_RCX);
+                                            } else if (arg_size == 4) {
+                                                emit_rex(&linker->text_section, 0, 0, 0, 0);
+                                                emit8(&linker->text_section, 0x8B);
+                                                emit_modrm(&linker->text_section, 3, REG_RCX, REG_RCX);
+                                            }
+                                        }
+                                    }
                                     emit8(&linker->text_section, 0xE8); // call rel32
                                     if (pass == 1) g_print_int_relocs[g_print_int_reloc_count++] = (uint32_t)linker->text_section.size;
                                     emit32(&linker->text_section, 0); // 占位符
@@ -1993,7 +2093,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 bool skip_store = false;
                                 if (opt_level > 0 && !ret_is_float && inst->next && (inst->next->opcode == SIR_ADD || inst->next->opcode == SIR_SUB || inst->next->opcode == SIR_MUL || inst->next->opcode == SIR_AND || inst->next->opcode == SIR_OR || inst->next->opcode == SIR_XOR)) {
                                     if (inst->next->operands[0] == inst->dest || inst->next->operands[1] == inst->dest) {
-                                        if (allocator.use_count[inst->dest->as.vreg] == 2 || (inst->next->next && inst->next->next->opcode == SIR_RET)) {
+                                        if (allocator.use_count[inst->dest->as.vreg] == 2) {
                                             skip_store = true;
                                         }
                                     }
@@ -2141,7 +2241,7 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                             if (inst->num_operands > 0) {
                                 bool already_in_rax = false;
                                 if (opt_level > 0 && inst->prev && (inst->prev->opcode == SIR_ADD || inst->prev->opcode == SIR_SUB || inst->prev->opcode == SIR_MUL || inst->prev->opcode == SIR_AND || inst->prev->opcode == SIR_OR || inst->prev->opcode == SIR_XOR) && inst->prev->dest == inst->operands[0]) {
-                                    if (inst->operands[0]->kind == SIR_VAL_VREG && (allocator.use_count[inst->operands[0]->as.vreg] == 2 || true)) {
+                                    if (inst->operands[0]->kind == SIR_VAL_VREG && allocator.use_count[inst->operands[0]->as.vreg] == 2) {
                                         already_in_rax = true;
                                     }
                                 }
@@ -2289,7 +2389,7 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     uint32_t rdata_rva = align_up(text_sec.VirtualAddress + text_sec.VirtualSize, sec_align);
     
     PeImportTable* idata = pe_idata_create();
-    if (g_use_print_str || g_use_print_int) {
+    if (g_use_print_str || g_use_print_int || g_use_print_uint) {
         pe_idata_add_import(idata, "kernel32.dll", "GetStdHandle");
         pe_idata_add_import(idata, "kernel32.dll", "WriteFile");
     }
@@ -2396,6 +2496,15 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
         }
     }
 
+    // 回填 __print_uint 调用重定位
+    if (g_use_print_uint) {
+        for (int i = 0; i < g_print_uint_reloc_count; i++) {
+            uint32_t text_off = g_print_uint_relocs[i];
+            int32_t rel32 = (int32_t)(g_print_uint_offset - (text_off + 4));
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        }
+    }
+
     // 回填 __print_float 调用重定位
     if (g_use_print_float) {
         for (int i = 0; i < g_print_float_reloc_count; i++) {
@@ -2493,6 +2602,10 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     if (g_use_print_int) {
         RELOC_IAT(g_call_getstdhandle_reloc2, "kernel32.dll", "GetStdHandle");
         RELOC_IAT(g_call_writeconsolea_reloc2, "kernel32.dll", "WriteFile");
+    }
+    if (g_use_print_uint) {
+        RELOC_IAT(g_call_getstdhandle_reloc3, "kernel32.dll", "GetStdHandle");
+        RELOC_IAT(g_call_writeconsolea_reloc3, "kernel32.dll", "WriteFile");
     }
     RELOC_IAT(g_call_exitprocess_reloc, "kernel32.dll", "ExitProcess");
     if (g_use_crea) {
