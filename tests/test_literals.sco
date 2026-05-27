@@ -1,35 +1,21 @@
+forma Punctum {
+    sit x: i32;
+    sit y: i32;
+}
+
 actio princeps() -> i32 {
-    // 1. 测试字面量自适应推导与多种进制解析
-    // 这里的字面量会根据左侧的期待类型自动推导，并在编译期进行值域校验
-    sit a: i8 = 120;          // 十进制
-    sit b: p16 = 0xFFFF;      // 十六进制 (65535)
-    sit c: i32 = 0b101010;    // 二进制 (42)
-    sit d: i64 = 0o777;       // 八进制 (511)
-    sit e: i32 = 0rXIV;       // 罗马数字 (14)
+    // 1. 完整的经典写法
+    sit p1: Punctum = Punctum { x: 1, y: 2 };
 
-    scribe("--- Numeri ---\n");
-    scribe("a (i8, dec): ", a, "\n");
-    scribe("b (p16, hex): ", b, "\n");
-    scribe("c (i32, bin): ", c, "\n");
-    scribe("d (i64, oct): ", d, "\n");
-    scribe("e (i32, rom): ", e, "\n\n");
+    // 2. 省略左侧类型 (依赖右侧显式类型)
+    sit p2 = Punctum { x: 10, y: 20 };
 
-    // 2. 测试 C 语言风格的转义字符
-    sit str_normal: textus = "Linea prima\nLinea secunda\tTabulata\n";
-    sit str_hex: textus = "Hex: \x4A\x4B\x4C\n"; // JKL
-    sit str_oct: textus = "Oct: \115\116\117\n"; // MNO
-    sit str_ctrl: textus = "Sonus\a, Recessus\b, \?, \\, \', \"\n";
+    // 3. 省略右侧类型 (依赖左侧期待类型，匿名结构体)
+    sit p3: Punctum = { x: 100, y: 200 };
 
-    sit ch_hex: littera = '\x41'; // A
-    sit ch_oct: littera = '\102'; // B
-    sit ch_nl: littera = '\n';
-
-    scribe("--- Textus et Litterae ---\n");
-    scribe(str_normal);
-    scribe(str_hex);
-    scribe(str_oct);
-    scribe(str_ctrl);
-    scribe("Litterae: ", ch_hex, ch_oct, ch_nl);
+    scribe("p1: ", p1.x, ", ", p1.y, "\n");
+    scribe("p2: ", p2.x, ", ", p2.y, "\n");
+    scribe("p3: ", p3.x, ", ", p3.y, "\n");
 
     redde 0;
 }

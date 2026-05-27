@@ -246,10 +246,24 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
         }
 
         case AST_STRUCT_LITERAL: {
-            ScoriaType* struct_type = check_expression(checker, expr->as.struct_literal.type_expr, NULL);
+            ScoriaType* struct_type = NULL;
+            if (expr->as.struct_literal.type_expr) {
+                struct_type = check_expression(checker, expr->as.struct_literal.type_expr, NULL);
+            } else {
+                if (expected_type && (expected_type->kind == TY_FORMA || expected_type->kind == TY_UNIO)) {
+                    struct_type = expected_type;
+                } else {
+                    type_error(checker, expr->token, "Typus formae ex contextu inferri non potest.");
+                    struct_type = type_get_basic(TY_UNKNOWN);
+                }
+            }
             
             if (struct_type->kind != TY_FORMA && struct_type->kind != TY_UNIO) {
-                type_error(checker, expr->as.struct_literal.type_expr->token, "Symbolum non est forma vel unio.");
+                if (expr->as.struct_literal.type_expr) {
+                    type_error(checker, expr->as.struct_literal.type_expr->token, "Symbolum non est forma vel unio.");
+                } else {
+                    type_error(checker, expr->token, "Typus exspectatus non est forma vel unio.");
+                }
             } else {
                 if (struct_type->kind == TY_UNIO && expr->as.struct_literal.field_count > 1) {
                     type_error(checker, expr->token, "Unio unum tantum campum initializare potest.");
