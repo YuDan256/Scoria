@@ -17,5 +17,19 @@ actio princeps() -> i32 {
     scribe("p2: ", p2.x, ", ", p2.y, "\n");
     scribe("p3: ", p3.x, ", ", p3.y, "\n");
 
+    p3 = { x: 999, y: 888 };
+    scribe("p3 (post assignationem): ", p3.x, ", ", p3.y, "\n");
+
+    // 1. 基础类型的赋值推导
+    sit a: i8 = 10;
+    a = 120; // 120 接收到左侧 a 的类型，自动推导为 i8，并进行值域校验
+
+    // 2. 数组的赋值推导
+    sit arr: acies[3] i8 = [1, 2, 3];
+    arr = [10, 20, 30]; // 数组字面量及其内部元素都会根据 arr 的类型自动推导为 acies[3] i8 和 i8
+
+    scribe("a: ", a, "\n");
+    scribe("arr: ", arr[0], ", ", arr[1], ", ", arr[2], "\n");
+
     redde 0;
 }
