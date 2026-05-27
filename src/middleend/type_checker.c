@@ -277,7 +277,7 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
                     bool found = false;
                     
                     if (struct_type->kind == TY_COHORS) {
-                        if (field_name.length == 5 && strncmp(field_name.start, "locus", 5) == 0) {
+                        if (field_name.length == 5 && strncmp(field_name.start, "caput", 5) == 0) {
                             found = true;
                             expected_field_type = type_get_via(struct_type->as.inner);
                         } else if (field_name.length == 9 && strncmp(field_name.start, "longitudo", 9) == 0) {
@@ -450,12 +450,12 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
             }
 
             if (obj_type->kind == TY_COHORS) {
-                if (expr->as.member_expr.property.length == 5 && strncmp(expr->as.member_expr.property.start, "locus", 5) == 0) {
+                if (expr->as.member_expr.property.length == 5 && strncmp(expr->as.member_expr.property.start, "caput", 5) == 0) {
                     type = type_get_via(obj_type->as.inner);
                 } else if (expr->as.member_expr.property.length == 9 && strncmp(expr->as.member_expr.property.start, "longitudo", 9) == 0) {
                     type = type_get_basic(TY_I64);
                 } else {
-                    type_error(checker, expr->as.member_expr.property, "In cohorte proprietas ignota est (solum 'locus' et 'longitudo' licent).");
+                    type_error(checker, expr->as.member_expr.property, "In cohorte proprietas ignota est (solum 'caput' et 'longitudo' licent).");
                 }
                 break;
             }

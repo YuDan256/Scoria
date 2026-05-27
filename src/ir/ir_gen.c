@@ -405,7 +405,7 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
             if (obj_type && obj_type->kind == TY_COHORS) {
                 if (expr->as.member_expr.property.length == 9 && strncmp(expr->as.member_expr.property.start, "longitudo", 9) == 0) {
                     byte_offset = 8;
-                } else if (expr->as.member_expr.property.length == 5 && strncmp(expr->as.member_expr.property.start, "locus", 5) == 0) {
+                } else if (expr->as.member_expr.property.length == 5 && strncmp(expr->as.member_expr.property.start, "caput", 5) == 0) {
                     byte_offset = 0;
                 }
             } else if (obj_type && obj_type->kind == TY_FORMA) {
@@ -604,7 +604,15 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 int byte_offset = 0;
                 ScoriaType* field_type = NULL;
                 
-                if (struct_type->kind == TY_FORMA) {
+                if (struct_type->kind == TY_COHORS) {
+                    if (field_name.length == 5 && strncmp(field_name.start, "caput", 5) == 0) {
+                        byte_offset = 0;
+                        field_type = type_get_via(struct_type->as.inner);
+                    } else if (field_name.length == 9 && strncmp(field_name.start, "longitudo", 9) == 0) {
+                        byte_offset = 8;
+                        field_type = type_get_basic(TY_I64);
+                    }
+                } else if (struct_type->kind == TY_FORMA) {
                     for (int j = 0; j < struct_type->as.struct_type.field_count; j++) {
                         StructField f = struct_type->as.struct_type.fields[j];
                         int f_size = type_get_size(f.type);

@@ -305,7 +305,7 @@ static AstNode* postfix(Parser* parser) {
             expr = node;
         } else if (match(parser, TK_DOT)) {
             Token dot = parser->previous;
-            if (!match(parser, TK_IDENTIFIER) && !match(parser, TK_KW_LOCUS)) {
+            if (!match(parser, TK_IDENTIFIER)) {
                 error(parser, "Post '.' nomen proprietatis exspectatur.");
             }
             Token name = parser->previous;
@@ -316,7 +316,7 @@ static AstNode* postfix(Parser* parser) {
             expr = node;
         } else if (match(parser, TK_ARROW)) {
             Token arrow = parser->previous;
-            if (!match(parser, TK_IDENTIFIER) && !match(parser, TK_KW_LOCUS)) {
+            if (!match(parser, TK_IDENTIFIER)) {
                 error(parser, "Post '->' nomen proprietatis exspectatur.");
             }
             Token name = parser->previous;

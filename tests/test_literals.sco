@@ -33,5 +33,12 @@ actio princeps() -> i32 {
     scribe("b: ", b, "\n");
     scribe("arr: ", arr[0], ", ", arr[1], ", ", arr[2], "\n");
 
+    // 3. 胖指针 (切片) 的初始化推导
+    sit arr2: acies[5] i32 = [100, 200, 300, 400, 500];
+    sit slice: cohors i32 = { caput: locus arr2[0], longitudo: 3 };
+    
+    scribe("slice.longitudo: ", slice.longitudo, "\n");
+    scribe("slice[0]: ", slice[0], ", slice[2]: ", slice[2], "\n");
+
     redde 0;
 }
