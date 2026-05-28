@@ -67,7 +67,7 @@ static ScoriaType* resolve_type_node(TypeChecker* checker, AstNode* type_node) {
         case TK_TY_F64: base_type = type_get_basic(TY_F64); break;
         case TK_TY_LOGICA: base_type = type_get_basic(TY_LOGICA); break;
         case TK_TY_LITTERA: base_type = type_get_basic(TY_LITTERA); break;
-        case TK_TY_TEXTUS: base_type = type_get_basic(TY_TEXTUS); break;
+        case TK_TY_TEXTUS: base_type = type_get_cohors(type_get_basic(TY_LITTERA)); break;
         case TK_KW_NIHIL: base_type = type_get_basic(TY_NIHIL); break;
         case TK_IDENTIFIER: {
             Symbol* sym = NULL;
@@ -86,10 +86,22 @@ static ScoriaType* resolve_type_node(TypeChecker* checker, AstNode* type_node) {
                 sym = symtab_lookup(&checker->symtab, base_tok);
             }
 
-            if (sym && (sym->kind == SYM_STRUCT || sym->kind == SYM_UNION)) {
+            if (sym && sym->kind == SYM_TYPE_ALIAS) {
+                if (sym->is_resolving) {
+                    type_error(checker, base_tok, "Definitio imaginis circularis detecta est.");
+                    base_type = type_get_basic(TY_UNKNOWN);
+                } else if (sym->type == NULL) {
+                    sym->is_resolving = true;
+                    sym->type = resolve_type_node(checker, sym->node->as.type_alias_decl.target_type);
+                    sym->is_resolving = false;
+                    base_type = sym->type;
+                } else {
+                    base_type = sym->type;
+                }
+            } else if (sym && (sym->kind == SYM_STRUCT || sym->kind == SYM_UNION)) {
                 base_type = sym->type;
             } else {
-                type_error(checker, base_tok, "Forma vel unio ignota est.");
+                type_error(checker, base_tok, "Forma, unio vel imago ignota est.");
                 base_type = type_get_basic(TY_UNKNOWN);
             }
             break;
@@ -226,7 +238,7 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
                 }
                 case TK_BOOL_CONST:   type = type_get_basic(TY_LOGICA); break;
                 case TK_CHAR_CONST:   type = type_get_basic(TY_LITTERA); break;
-                case TK_STRING_CONST: type = type_get_basic(TY_TEXTUS); break;
+                case TK_STRING_CONST: type = type_get_cohors(type_get_basic(TY_LITTERA)); break;
                 case TK_KW_NIHIL:     type = type_get_basic(TY_NIHIL); break;
                 default: break;
             }
@@ -762,6 +774,10 @@ static void collect_declarations(TypeChecker* checker, AstNode* program) {
             if (!symtab_define(&checker->symtab, decl->as.struct_decl.name, SYM_UNION, unio_type, decl, decl->as.struct_decl.is_editus)) {
                 type_error(checker, decl->as.struct_decl.name, "Nomen unionis iam definitum est.");
             }
+        } else if (decl->kind == AST_TYPE_ALIAS_DECL) {
+            if (!symtab_define(&checker->symtab, decl->as.type_alias_decl.name, SYM_TYPE_ALIAS, NULL, decl, decl->as.type_alias_decl.is_editus)) {
+                type_error(checker, decl->as.type_alias_decl.name, "Nomen imaginis iam definitum est.");
+            }
         }
     }
 
@@ -822,6 +838,14 @@ static void collect_declarations(TypeChecker* checker, AstNode* program) {
             SymbolKind sym_kind = (decl->kind == AST_CONST_DECL) ? SYM_CONST : SYM_VAR;
             if (!symtab_define(&checker->symtab, decl->as.var_decl.name, sym_kind, var_type, decl, decl->as.var_decl.is_editus)) {
                 type_error(checker, decl->as.var_decl.name, "Nomen iam definitum est.");
+            }
+        }
+        else if (decl->kind == AST_TYPE_ALIAS_DECL) {
+            Symbol* sym = symtab_lookup(&checker->symtab, decl->as.type_alias_decl.name);
+            if (sym && sym->type == NULL) {
+                sym->is_resolving = true;
+                sym->type = resolve_type_node(checker, decl->as.type_alias_decl.target_type);
+                sym->is_resolving = false;
             }
         }
     }

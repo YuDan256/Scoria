@@ -10,7 +10,8 @@ typedef enum {
     SYM_FUNC,
     SYM_STRUCT,
     SYM_UNION,
-    SYM_MODULE
+    SYM_MODULE,
+    SYM_TYPE_ALIAS
 } SymbolKind;
 
 struct SirValue; // 前置声明
@@ -21,6 +22,7 @@ struct Symbol {
     ScoriaType* type;
     AstNode* node; // 声明该符号的 AST 节点
     bool is_editus;
+    bool is_resolving; // 用于检测类型别名的循环依赖
     struct SirValue* ir_val; // 后端 IR 生成时绑定的虚拟寄存器/内存地址
     struct Scope* module_scope; // 仅用于 SYM_MODULE，指向该模块的全局作用域
     struct Symbol* alias_target; // 指向真实的符号 (用于跨模块导入)

@@ -13,7 +13,6 @@ typedef enum {
     TY_F32, TY_F64,
     TY_LOGICA,
     TY_LITTERA,
-    TY_TEXTUS,
     TY_VIA,      // 裸指针
     TY_COHORS,   // 切片
     TY_ACIES,    // 数组

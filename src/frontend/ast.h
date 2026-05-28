@@ -17,6 +17,7 @@ typedef enum {
     AST_CONST_DECL,
     AST_STRUCT_DECL,
     AST_UNION_DECL,
+    AST_TYPE_ALIAS_DECL,
     AST_BLOCK_STMT,
     AST_EXPR_STMT,
     AST_IF_STMT,
@@ -106,6 +107,12 @@ struct AstNode {
             AstNode** fields;
             int field_count;
         } struct_decl;
+
+        struct {
+            Token name;
+            AstNode* target_type;
+            bool is_editus;
+        } type_alias_decl;
 
         struct {
             AstNode** statements;

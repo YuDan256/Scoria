@@ -9,14 +9,13 @@ static ScoriaType basic_types[] = {
     {TY_P8}, {TY_P16}, {TY_P32}, {TY_P64},
     {TY_F32}, {TY_F64},
     {TY_LOGICA}, {TY_LITTERA},
-    {TY_TEXTUS},   // 14 - 占位，实际 textus 在 type_get_basic 中特殊处理
-    {TY_VIA},      // 15 - 占位
-    {TY_COHORS},   // 16 - 占位
-    {TY_ACIES},    // 17 - 占位
-    {TY_FORMA},    // 18 - 占位
-    {TY_UNIO},     // 19 - 占位
-    {TY_ACTIO},    // 20 - 占位
-    {TY_MODULE}    // 21
+    {TY_VIA},      // 14 - 占位
+    {TY_COHORS},   // 15 - 占位
+    {TY_ACIES},    // 16 - 占位
+    {TY_FORMA},    // 17 - 占位
+    {TY_UNIO},     // 18 - 占位
+    {TY_ACTIO},    // 19 - 占位
+    {TY_MODULE}    // 20
 };
 
 // 简单的链表用于 Type Interning
@@ -32,9 +31,6 @@ void types_init(void) {
 }
 
 ScoriaType* type_get_basic(TypeKind kind) {
-    if (kind == TY_TEXTUS) {
-        return type_get_cohors(type_get_basic(TY_LITTERA));
-    }
     if (kind >= TY_UNKNOWN && kind <= TY_MODULE) {
         return &basic_types[kind];
     }
@@ -75,9 +71,38 @@ bool type_equals(ScoriaType* a, ScoriaType* b) {
     }
 }
 
+static bool type_strict_equals(ScoriaType* a, ScoriaType* b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (a->kind != b->kind) return false;
+    
+    switch (a->kind) {
+        case TY_VIA:
+        case TY_COHORS:
+            return type_strict_equals(a->as.inner, b->as.inner);
+        case TY_ACIES:
+            return a->as.array.length == b->as.array.length && type_strict_equals(a->as.array.inner, b->as.array.inner);
+        case TY_FORMA:
+        case TY_UNIO:
+            return a->as.struct_type.name.length == b->as.struct_type.name.length &&
+                   memcmp(a->as.struct_type.name.start, b->as.struct_type.name.start, a->as.struct_type.name.length) == 0;
+        case TY_ACTIO:
+            if (a->as.func_type.param_count != b->as.func_type.param_count) return false;
+            if (a->as.func_type.is_variadic != b->as.func_type.is_variadic) return false;
+            if (a->as.func_type.is_native_variadic != b->as.func_type.is_native_variadic) return false;
+            if (!type_strict_equals(a->as.func_type.return_type, b->as.func_type.return_type)) return false;
+            for (int i = 0; i < a->as.func_type.param_count; i++) {
+                if (!type_strict_equals(a->as.func_type.param_types[i], b->as.func_type.param_types[i])) return false;
+            }
+            return true;
+        default:
+            return true;
+    }
+}
+
 static ScoriaType* intern_type(ScoriaType* new_type) {
     for (TypeNode* node = interned_types; node != NULL; node = node->next) {
-        if (type_equals(node->type, new_type)) {
+        if (type_strict_equals(node->type, new_type)) {
             free(new_type); // 已经存在，释放新分配的
             return node->type;
         }

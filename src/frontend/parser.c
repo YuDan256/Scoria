@@ -934,6 +934,26 @@ static AstNode* union_declaration(Parser* parser) {
     return node;
 }
 
+static AstNode* type_alias_declaration(Parser* parser) {
+    Token keyword = parser->previous;
+    bool is_edita = match(parser, TK_KW_EDITA);
+    
+    consume(parser, TK_IDENTIFIER, "Nomen imaginis exspectatur.");
+    Token name = parser->previous;
+    
+    consume(parser, TK_ASSIGN, "Post nomen imaginis '=' exspectatur.");
+    
+    AstNode* target_type = parse_type(parser);
+    
+    consume(parser, TK_SEMI, "Post declarationem imaginis ';' exspectatur.");
+    
+    AstNode* node = ast_create_node(&parser->arena, AST_TYPE_ALIAS_DECL, keyword);
+    node->as.type_alias_decl.name = name;
+    node->as.type_alias_decl.target_type = target_type;
+    node->as.type_alias_decl.is_editus = is_edita;
+    return node;
+}
+
 static AstNode* struct_declaration(Parser* parser) {
     Token keyword = parser->previous;
     bool is_densa = false;
@@ -1064,6 +1084,8 @@ static AstNode* declaration(Parser* parser) {
             decl = struct_declaration(parser);
         } else if (match(parser, TK_KW_UNIO)) {
             decl = union_declaration(parser);
+        } else if (match(parser, TK_KW_IMAGO)) {
+            decl = type_alias_declaration(parser);
         } else {
             decl = statement(parser);
         }

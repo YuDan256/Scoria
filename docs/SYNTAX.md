@@ -97,8 +97,14 @@ Scoria 提供了极其显式的内存操作指令，拒绝隐式转换：
     *   `neca(<指针>)` (相当于 free/delete)
 *   **强制类型转换**：`muta(<目标类型>, <表达式>)` (唯一打破类型安全边界的系统特权)
 
-## 6. 结构体与联合体 (Structurae et Uniones)
+## 6. 结构体、联合体与类型别名 (Structurae, Uniones et Imagines)
 
+*   **类型别名 (Imago)**：
+    使用 `imago` 关键字为现有类型创建透明的等价别名。在底层编译时，别名会被完全展开，零运行时开销。
+    ```scoria
+    imago [edita] <别名> = <目标类型>;
+    // 示例: imago AstNodePtr = via AstNode;
+    ```
 *   **标准结构体**：遵循 C ABI 内存对齐。
     ```scoria
     forma [edita] <结构体名> {
@@ -150,6 +156,7 @@ Scoria 提供了极其显式的内存操作指令，拒绝隐式转换：
 | `logica` | `lgc` | 逻辑电平(bool) |
 | `littera` | `ltr` | 1字节 ASCII |
 | `textus` | `txt` | 静态文本字面量 |
+| `imago` | `img` | 声明类型别名 |
 | `forma` | `frm` | 声明标准结构体 |
 | `densa` | `dns` | 紧凑内存无缝隙 |
 | `cohors` | `crs` | 16字节胖指针 |

@@ -85,6 +85,7 @@ bool symtab_define(Symtab* symtab, Token name, SymbolKind kind, ScoriaType* type
     sym->type = type;
     sym->node = node;
     sym->is_editus = is_editus;
+    sym->is_resolving = false;
     sym->ir_val = NULL;
     sym->module_scope = NULL;
     sym->alias_target = NULL;
@@ -127,6 +128,7 @@ bool symtab_insert_alias(Symtab* symtab, Token name, Symbol* target) {
     sym->type = target->type;
     sym->node = target->node;
     sym->is_editus = false;
+    sym->is_resolving = false;
     sym->ir_val = NULL;
     sym->module_scope = target->module_scope;
     sym->alias_target = target; // 记录真实目标

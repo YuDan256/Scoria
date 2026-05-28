@@ -89,6 +89,7 @@ static TokenKind identifier_type(Lexer* lexer) {
     if (len == 3 && memcmp(lexer->start, "i16", 3) == 0) return TK_TY_I16;
     if (len == 3 && memcmp(lexer->start, "i32", 3) == 0) return TK_TY_I32;
     if (len == 3 && memcmp(lexer->start, "i64", 3) == 0) return TK_TY_I64;
+    if (len == 3 && memcmp(lexer->start, "img", 3) == 0) return TK_KW_IMAGO;
 
     if (len == 2 && c == 'p' && lexer->start[1] == '8') return TK_TY_P8;
     if (len == 3 && memcmp(lexer->start, "p16", 3) == 0) return TK_TY_P16;
@@ -155,7 +156,10 @@ static TokenKind identifier_type(Lexer* lexer) {
         if (len == 5 && lexer->start[1] == 'o') return check_keyword(lexer, 2, 3, "rma", TK_TY_FORMA);
         if (len == 7 && lexer->start[1] == 'r') return check_keyword(lexer, 2, 5, "actus", TK_TY_F64);
         break;
-    case 'i': return check_keyword(lexer, 1, 6, "nteger", TK_TY_I64);
+    case 'i':
+        if (len == 7) return check_keyword(lexer, 1, 6, "nteger", TK_TY_I64);
+        if (len == 5) return check_keyword(lexer, 1, 4, "mago", TK_KW_IMAGO);
+        break;
     case 'l':
         if (len == 5 && lexer->start[1] == 'i') return check_keyword(lexer, 2, 3, "ber", TK_KW_LIBER);
         if (len == 6 && lexer->start[1] == 'o') return check_keyword(lexer, 2, 4, "gica", TK_TY_LOGICA);
