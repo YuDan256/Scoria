@@ -1493,7 +1493,20 @@ void asm_x86_64_generate(FILE* out, SirModule* module, int opt_level) {
             fprintf(out, "    .globl %s\n", g->name);
             fprintf(out, "    .align 8\n");
             fprintf(out, "%s:\n", g->name);
-            fprintf(out, "    .zero %d\n", g->size);
+            if (g->init_data) {
+                for (int i = 0; i < g->size; i++) {
+                    if (i % 16 == 0) {
+                        if (i > 0) fprintf(out, "\n");
+                        fprintf(out, "    .byte ");
+                    } else {
+                        fprintf(out, ", ");
+                    }
+                    fprintf(out, "%d", g->init_data[i]);
+                }
+                fprintf(out, "\n");
+            } else {
+                fprintf(out, "    .zero %d\n", g->size);
+            }
         }
         fprintf(out, "\n");
     }

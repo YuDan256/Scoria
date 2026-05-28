@@ -8,6 +8,90 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr);
 static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr);
 static void gen_statement(IrBuilder* builder, AstNode* stmt);
 
+static bool evaluate_const_expr(AstNode* expr, uint8_t* buffer, int size) {
+    if (!expr) return false;
+    if (expr->kind == AST_LITERAL_EXPR) {
+        if (expr->token.kind == TK_INT_CONST) {
+            int64_t v = expr->as.literal_expr.int_val;
+            memcpy(buffer, &v, size > 8 ? 8 : size);
+            return true;
+        } else if (expr->token.kind == TK_FLOAT_CONST) {
+            if (expr->expr_type && expr->expr_type->kind == TY_F32) {
+                float f = (float)expr->as.literal_expr.float_val;
+                memcpy(buffer, &f, 4);
+            } else {
+                double d = expr->as.literal_expr.float_val;
+                memcpy(buffer, &d, 8);
+            }
+            return true;
+        } else if (expr->token.kind == TK_BOOL_CONST) {
+            bool b = (expr->token.length == 5 && strncmp(expr->token.start, "verum", 5) == 0);
+            buffer[0] = b ? 1 : 0;
+            return true;
+        } else if (expr->token.kind == TK_CHAR_CONST) {
+            int64_t v = expr->as.literal_expr.int_val;
+            buffer[0] = (uint8_t)v;
+            return true;
+        }
+    } else if (expr->kind == AST_ARRAY_LITERAL) {
+        ScoriaType* arr_type = expr->expr_type;
+        if (!arr_type || arr_type->kind != TY_ACIES) return false;
+        ScoriaType* elem_type = arr_type->as.array.inner;
+        int elem_size = type_get_size(elem_type);
+        for (int i = 0; i < expr->as.array_literal.element_count; i++) {
+            if (!evaluate_const_expr(expr->as.array_literal.elements[i], buffer + i * elem_size, elem_size)) {
+                return false;
+            }
+        }
+        return true;
+    } else if (expr->kind == AST_STRUCT_LITERAL) {
+        ScoriaType* struct_type = expr->expr_type;
+        if (!struct_type || (struct_type->kind != TY_FORMA && struct_type->kind != TY_UNIO)) return false;
+        for (int i = 0; i < expr->as.struct_literal.field_count; i++) {
+            Token field_name = expr->as.struct_literal.field_names[i];
+            AstNode* field_val = expr->as.struct_literal.field_values[i];
+            
+            int byte_offset = 0;
+            ScoriaType* field_type = NULL;
+            
+            if (struct_type->kind == TY_FORMA) {
+                for (int j = 0; j < struct_type->as.struct_type.field_count; j++) {
+                    StructField f = struct_type->as.struct_type.fields[j];
+                    int f_size = type_get_size(f.type);
+                    int f_align = struct_type->as.struct_type.is_densa ? 1 : (f_size > 8 ? 8 : f_size);
+                    
+                    if (!struct_type->as.struct_type.is_densa) {
+                        byte_offset = (byte_offset + f_align - 1) & ~(f_align - 1);
+                    }
+                    
+                    if (f.name.length == field_name.length && memcmp(f.name.start, field_name.start, f.name.length) == 0) {
+                        field_type = f.type;
+                        break;
+                    }
+                    byte_offset += f_size;
+                }
+            } else if (struct_type->kind == TY_UNIO) {
+                byte_offset = 0;
+                for (int j = 0; j < struct_type->as.struct_type.field_count; j++) {
+                    StructField f = struct_type->as.struct_type.fields[j];
+                    if (f.name.length == field_name.length && memcmp(f.name.start, field_name.start, f.name.length) == 0) {
+                        field_type = f.type;
+                        break;
+                    }
+                }
+            }
+            
+            if (field_type) {
+                if (!evaluate_const_expr(field_val, buffer + byte_offset, type_get_size(field_type))) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
 static bool is_simple_assign(AstNode* stmt, AstNode** out_target, AstNode** out_val) {
     if (!stmt) return false;
     if (stmt->kind == AST_BLOCK_STMT && stmt->as.block.stmt_count == 1) {
@@ -351,15 +435,17 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
                 // 切片：先取切片的左值地址，然后 GEP 取出内部的游标 (前 8 字节)
                 SirValue* slice_ptr = gen_lvalue(builder, expr->as.index_expr.target);
                 SirValue* zero_offset = ir_const_int(builder, type_get_basic(TY_I32), 0);
-                SirValue* raw_ptr_ptr = ir_build_gep(builder, slice_ptr, zero_offset, 1, type_get_via(type_get_via(expr->expr_type)));
+                ScoriaType* inner_type = expr->expr_type ? expr->expr_type : type_get_basic(TY_UNKNOWN);
+                SirValue* raw_ptr_ptr = ir_build_gep(builder, slice_ptr, zero_offset, 1, type_get_via(type_get_via(inner_type)));
                 ptr = ir_build_load(builder, raw_ptr_ptr);
             } else {
                 // 裸指针：正常求值得到指针本身
                 ptr = gen_expression(builder, expr->as.index_expr.target);
             }
             SirValue* index = gen_expression(builder, expr->as.index_expr.index);
-            int element_size = type_get_size(expr->expr_type);
-            return ir_build_gep(builder, ptr, index, element_size, type_get_via(expr->expr_type));
+            int element_size = expr->expr_type ? type_get_size(expr->expr_type) : 8;
+            ScoriaType* res_type = expr->expr_type ? type_get_via(expr->expr_type) : type_get_via(type_get_basic(TY_UNKNOWN));
+            return ir_build_gep(builder, ptr, index, element_size, res_type);
         }
         case AST_ARRAY_LITERAL:
         case AST_STRUCT_LITERAL:
@@ -440,7 +526,8 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
                 byte_offset = 0; // 联合体所有字段偏移均为 0
             }
             SirValue* index_val = ir_const_int(builder, type_get_basic(TY_I32), byte_offset);
-            return ir_build_gep(builder, obj_ptr, index_val, 1, type_get_via(expr->expr_type));
+            ScoriaType* res_type = expr->expr_type ? type_get_via(expr->expr_type) : type_get_via(type_get_basic(TY_UNKNOWN));
+            return ir_build_gep(builder, obj_ptr, index_val, 1, res_type);
         }
         default: break;
     }
@@ -585,6 +672,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
         }
         case AST_ARRAY_LITERAL: {
             ScoriaType* arr_type = expr->expr_type;
+            if (!arr_type) return NULL;
             int arr_size = type_get_size(arr_type);
             SirValue* arr_ptr = ir_build_alloca(builder, arr_type, arr_size);
             
@@ -606,6 +694,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
         }
         case AST_STRUCT_LITERAL: {
             ScoriaType* struct_type = expr->expr_type;
+            if (!struct_type) return NULL;
             int struct_size = type_get_size(struct_type);
             SirValue* struct_ptr = ir_build_alloca(builder, struct_type, struct_size);
             
@@ -1439,7 +1528,18 @@ void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count, int opt_
             Symbol* sym = decl->resolved_symbol;
             if (sym) {
                 int size = type_get_size(sym->type);
-                SirGlobalVar* gvar = ir_builder_create_global(builder, sym->name.start, sym->name.length, sym->type, size);
+                uint8_t* init_data = NULL;
+                AstNode* initializer = decl->as.var_decl.initializer;
+                
+                if (initializer) {
+                    init_data = (uint8_t*)arena_alloc(&builder->arena, size);
+                    memset(init_data, 0, size);
+                    if (!evaluate_const_expr(initializer, init_data, size)) {
+                        init_data = NULL; // 编译期求值失败，回退到动态初始化
+                    }
+                }
+                
+                SirGlobalVar* gvar = ir_builder_create_global(builder, sym->name.start, sym->name.length, sym->type, size, init_data);
                 
                 SirValue* val = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
                 val->kind = SIR_VAL_GLOBAL;
@@ -1447,8 +1547,7 @@ void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count, int opt_
                 val->as.global_name = gvar->name;
                 sym->ir_val = val;
 
-                AstNode* initializer = decl->as.var_decl.initializer;
-                if (initializer) {
+                if (initializer && !init_data) {
                     SirFunction* prev_func = builder->current_func;
                     SirBlock* prev_block = builder->current_block;
                     

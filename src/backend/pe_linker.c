@@ -542,7 +542,11 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
         global_names[global_count] = g->name;
         global_offsets[global_count] = (uint32_t)linker->data_section.size;
         global_count++;
-        for (int i = 0; i < g->size; i++) buf_append(&linker->data_section, 0);
+        if (g->init_data) {
+            for (int i = 0; i < g->size; i++) buf_append(&linker->data_section, g->init_data[i]);
+        } else {
+            for (int i = 0; i < g->size; i++) buf_append(&linker->data_section, 0);
+        }
     }
 
     // 预扫描：收集所有函数名 (解决前向引用问题)

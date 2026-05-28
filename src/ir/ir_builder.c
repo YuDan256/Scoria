@@ -35,7 +35,7 @@ void ir_builder_free(IrBuilder* builder) {
 // =========================================================
 // 结构构建 API
 // =========================================================
-SirGlobalVar* ir_builder_create_global(IrBuilder* builder, const char* name_start, int name_len, ScoriaType* type, int size) {
+SirGlobalVar* ir_builder_create_global(IrBuilder* builder, const char* name_start, int name_len, ScoriaType* type, int size, uint8_t* init_data) {
     SirGlobalVar* gvar = (SirGlobalVar*)arena_alloc(&builder->arena, sizeof(SirGlobalVar));
     char* name = (char*)arena_alloc(&builder->arena, name_len + 1);
     strncpy(name, name_start, name_len);
@@ -43,6 +43,7 @@ SirGlobalVar* ir_builder_create_global(IrBuilder* builder, const char* name_star
     gvar->name = name;
     gvar->type = type;
     gvar->size = size;
+    gvar->init_data = init_data;
     gvar->next = NULL;
     
     if (!builder->module->first_global) {
@@ -1342,12 +1343,12 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                             
                             if (rep) {
                                 replacements[inst->dest->as.vreg] = rep;
-                            } else if (is_pure_compute(inst->opcode)) {
+                            } else if (inst->dest && is_pure_compute(inst->opcode)) {
                                 // 局部公共子表达式消除 (Local CSE)
                                 bool found_cse = false;
                                 for (int s = 0; s < seen_count; s++) {
                                     SirInst* seen = seen_insts[s];
-                                    if (seen->opcode == inst->opcode && seen->num_operands == inst->num_operands && type_equals(seen->dest->type, inst->dest->type)) {
+                                    if (seen->opcode == inst->opcode && seen->num_operands == inst->num_operands && seen->dest && type_equals(seen->dest->type, inst->dest->type)) {
                                         bool ops_match = true;
                                         for (int o = 0; o < inst->num_operands; o++) {
                                             if (!values_equal(seen->operands[o], inst->operands[o])) {
@@ -1704,6 +1705,7 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                                         inst->num_operands = 2;
                                         inst->operands[0] = ir_const_int(builder, type_get_basic(TY_I32), 0);
                                         inst->operands[1] = ir_const_int(builder, type_get_basic(TY_I32), 0);
+                                        inst->dest = create_vreg(builder, type_get_basic(TY_I32)); // 补充 dest 防止后续优化崩溃
                                     }
                                     vm_changed = true;
                                 }

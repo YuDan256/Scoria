@@ -127,6 +127,7 @@ typedef struct SirGlobalVar {
     const char* name;
     ScoriaType* type;
     int size;
+    uint8_t* init_data; // 如果非空，则包含编译期确定的初始值
     struct SirGlobalVar* next;
 } SirGlobalVar;
 

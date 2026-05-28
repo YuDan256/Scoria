@@ -31,7 +31,7 @@ void ir_builder_free(IrBuilder* builder);
 // ---------------------------------------------------------
 // 结构构建 API
 // ---------------------------------------------------------
-SirGlobalVar* ir_builder_create_global(IrBuilder* builder, const char* name_start, int name_len, ScoriaType* type, int size);
+SirGlobalVar* ir_builder_create_global(IrBuilder* builder, const char* name_start, int name_len, ScoriaType* type, int size, uint8_t* init_data);
 void ir_builder_add_extern(IrBuilder* builder, const char* name_start, int name_len, const char* dll_start, int dll_len);
 SirFunction* ir_builder_create_function(IrBuilder* builder, const char* name, ScoriaType* func_type);
 SirBlock* ir_builder_create_block(IrBuilder* builder, const char* name);

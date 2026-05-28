@@ -1016,7 +1016,7 @@ bool type_checker_run(TypeChecker* checker, AstNode** programs, int count) {
     
     if (checker->had_error) return false;
 
-    // 第四遍：深入检查函数体 (Type Checking Pass)
+    // 第四遍：深入检查函数体与全局变量 (Type Checking Pass)
     for (int i = 0; i < count; i++) {
         AstNode* prog = programs[i];
         if (!prog->resolved_symbol) continue;
@@ -1045,6 +1045,25 @@ bool type_checker_run(TypeChecker* checker, AstNode** programs, int count) {
                     
                     symtab_leave_scope(&checker->symtab);
                     checker->current_function_return_type = NULL;
+                }
+            } else if (decl->kind == AST_VAR_DECL || decl->kind == AST_CONST_DECL) {
+                Symbol* sym = symtab_lookup_current(&checker->symtab, decl->as.var_decl.name);
+                ScoriaType* declared_type = sym ? sym->type : NULL;
+
+                ScoriaType* init_type = NULL;
+                if (decl->as.var_decl.initializer) {
+                    init_type = check_expression(checker, decl->as.var_decl.initializer, declared_type);
+                }
+
+                if (declared_type && init_type) {
+                    if (!type_equals(declared_type, init_type)) {
+                        type_error(checker, decl->token, "Typus valoris initialis cum typo declarato non congruit.");
+                    }
+                } else if (!declared_type && init_type) {
+                    if (sym) sym->type = init_type; // 更新推导出的类型
+                } else if (!declared_type && !init_type) {
+                    type_error(checker, decl->token, "Typum declarare vel valorem initialem praebere necesse est.");
+                    if (sym) sym->type = type_get_basic(TY_UNKNOWN);
                 }
             }
         }
