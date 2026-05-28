@@ -462,6 +462,7 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                         else if (strcmp(dest, "%r13") == 0) strcpy(acc32_buf, "%r13d");
                         else if (strcmp(dest, "%r14") == 0) strcpy(acc32_buf, "%r14d");
                         else if (strcmp(dest, "%r15") == 0) strcpy(acc32_buf, "%r15d");
+                        else strcpy(acc32_buf, dest);
                         acc32 = acc32_buf;
                     }
                     

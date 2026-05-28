@@ -51,11 +51,11 @@ actio edita exequere(cmd: textus) -> i32 {
 
     // 2. 准备 CreateProcessA 的参数 (STARTUPINFOA 和 PROCESS_INFORMATION)
     // 64位下 STARTUPINFOA 大小为 104 字节
-    sit si: via littera = crea(littera, muta(i32, 104));
+    sit s_info: via littera = crea(littera, muta(i32, 104));
     per (sit i: i64 = 0; i < 104; i += 1) {
-        tene vade(si, muta(i32, i)) = muta(littera, 0);
+        tene vade(s_info, muta(i32, i)) = muta(littera, 0);
     }
-    tene muta(via DWORD, si) = 104; // si.cb = sizeof(STARTUPINFOA)
+    tene muta(via DWORD, s_info) = 104; // s_info.cb = sizeof(STARTUPINFOA)
 
     // 64位下 PROCESS_INFORMATION 大小为 24 字节
     sit pi: via littera = crea(littera, muta(i32, 24));
@@ -70,7 +70,7 @@ actio edita exequere(cmd: textus) -> i32 {
         0,
         muta(via nihil, 0),
         muta(via nihil, 0),
-        si,
+        s_info,
         pi
     );
 
@@ -82,21 +82,21 @@ actio edita exequere(cmd: textus) -> i32 {
         sit hThread: HANDLE = tene muta(via HANDLE, vade(pi, muta(i32, 8)));
 
         // 等待进程结束
-        WaitForSingleObject(hProcess, INFINITE);
+        WaitForSingleObject(tene hProcess, INFINITE);
 
         // 获取退出码
-        GetExitCodeProcess(hProcess, locus exit_code);
+        GetExitCodeProcess(tene hProcess, locus exit_code);
 
         // 关闭句柄，防止句柄泄漏
-        CloseHandle(hProcess);
-        CloseHandle(hThread);
+        CloseHandle(tene hProcess);
+        CloseHandle(tene hThread);
     } aliter {
         exit_code = muta(DWORD, -1);
     }
 
     // 释放内存
     neca(c_cmd);
-    neca(si);
+    neca(s_info);
     neca(pi);
 
     redde muta(i32, exit_code);

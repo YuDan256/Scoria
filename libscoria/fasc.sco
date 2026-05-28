@@ -1,4 +1,3 @@
-=======
 liber fasc;
 
 // ================= [ Windows API 类型映射 ] =================
@@ -56,6 +55,10 @@ lex FILE_ATTRIBUTE_NORMAL: DWORD = 0x80;
 // 注意：调用者在使用完毕后，需要负责调用 neca(返回的切片.caput) 释放内存
 actio edita lege_fasc(iter: textus) -> cohors littera {
     sit invalid_handle: HANDLE = muta(HANDLE, -1);
+    
+    sit empty_res: cohors littera;
+    empty_res.caput = muta(via littera, 0);
+    empty_res.longitudo = 0;
 
     // 1. 转换文件名为 C 风格字符串 (追加 \0)
     sit c_filename: via littera = crea(littera, muta(i32, iter.longitudo + 1));
@@ -77,44 +80,47 @@ actio edita lege_fasc(iter: textus) -> cohors littera {
 
     neca(c_filename); // 用完立即释放临时文件名内存
 
-    si (hFile == invalid_handle) {
-        redde cohors littera { caput: muta(via littera, 0), longitudo: 0 };
+    si (tene hFile == tene invalid_handle) {
+        redde empty_res;
     }
 
     // 2. 获取文件大小
     sit magnitudo: i64 = 0;
-    sit res_size: BOOL = GetFileSizeEx(hFile, locus magnitudo);
+    sit res_size: BOOL = GetFileSizeEx(tene hFile, locus magnitudo);
     si (res_size == 0) {
-        CloseHandle(hFile);
-        redde cohors littera { caput: muta(via littera, 0), longitudo: 0 };
+        CloseHandle(tene hFile);
+        redde empty_res;
     }
 
     // 3. 分配内存 (严格按照文件大小分配，不追加 \0)
     sit quiddam: via littera = crea(littera, muta(i32, magnitudo));
     si (quiddam == muta(via littera, 0)) {
         CloseHandle(hFile);
-        redde cohors littera { caput: muta(via littera, 0), longitudo: 0 };
+        redde empty_res;
     }
 
     // 4. 读取文件内容
     sit bytes_read: DWORD = 0;
     sit res_read: BOOL = ReadFile(
-        hFile,
+        tene hFile,
         muta(via nihil, quiddam),
         muta(DWORD, magnitudo),
         locus bytes_read,
         muta(via nihil, 0)
     );
 
-    CloseHandle(hFile);
+    CloseHandle(tene hFile);
 
     si (res_read == 0) {
         neca(quiddam);
-        redde cohors littera { caput: muta(via littera, 0), longitudo: 0 };
+        redde empty_res;
     }
 
     // 5. 返回胖指针切片
-    redde cohors littera { caput: quiddam, longitudo: magnitudo };
+    sit final_res: cohors littera;
+    final_res.caput = quiddam;
+    final_res.longitudo = magnitudo;
+    redde final_res;
 }
 
 // 将切片内容写入文件。如果文件存在则覆盖，不存在则创建。
@@ -142,21 +148,21 @@ actio edita scribe_fasc(iter: textus, content: cohors littera) -> i64 {
 
     neca(c_filename); // 用完立即释放临时文件名内存
 
-    si (hFile == invalid_handle) {
+    si (tene hFile == tene invalid_handle) {
         redde -1;
     }
 
     // 3. 写入文件内容
     sit bytes_written: DWORD = 0;
     sit res_write: BOOL = WriteFile(
-        hFile,
+        tene hFile,
         muta(via nihil, content.caput),
         muta(DWORD, content.longitudo),
         locus bytes_written,
         muta(via nihil, 0)
     );
 
-    CloseHandle(hFile);
+    CloseHandle(tene hFile);
 
     si (res_write == 0) {
         redde -1;
