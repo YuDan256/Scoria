@@ -8,7 +8,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr);
 static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr);
 static void gen_statement(IrBuilder* builder, AstNode* stmt);
 
-static bool evaluate_const_expr(AstNode* expr, uint8_t* buffer, int size) {
+static bool evaluate_const_expr(IrBuilder* builder, AstNode* expr, uint8_t* buffer, int size) {
     if (!expr) return false;
     if (expr->kind == AST_LITERAL_EXPR) {
         if (expr->token.kind == TK_INT_CONST) {
@@ -39,7 +39,7 @@ static bool evaluate_const_expr(AstNode* expr, uint8_t* buffer, int size) {
         ScoriaType* elem_type = arr_type->as.array.inner;
         int elem_size = type_get_size(elem_type);
         for (int i = 0; i < expr->as.array_literal.element_count; i++) {
-            if (!evaluate_const_expr(expr->as.array_literal.elements[i], buffer + i * elem_size, elem_size)) {
+            if (!evaluate_const_expr(builder, expr->as.array_literal.elements[i], buffer + i * elem_size, elem_size)) {
                 return false;
             }
         }
@@ -82,12 +82,99 @@ static bool evaluate_const_expr(AstNode* expr, uint8_t* buffer, int size) {
             }
             
             if (field_type) {
-                if (!evaluate_const_expr(field_val, buffer + byte_offset, type_get_size(field_type))) {
+                if (!evaluate_const_expr(builder, field_val, buffer + byte_offset, type_get_size(field_type))) {
                     return false;
                 }
             }
         }
         return true;
+    } else if (expr->kind == AST_IDENT_EXPR) {
+        Symbol* sym = expr->resolved_symbol;
+        if (sym) {
+            // 查找是否是已求值的全局变量
+            for (SirGlobalVar* g = builder->module->first_global; g; g = g->next) {
+                if (strncmp(g->name, sym->name.start, sym->name.length) == 0 && g->name[sym->name.length] == '\0') {
+                    if (g->init_data) {
+                        int copy_size = size > g->size ? g->size : size;
+                        memcpy(buffer, g->init_data, copy_size);
+                        return true;
+                    }
+                    break;
+                }
+            }
+        }
+        return false;
+    } else if (expr->kind == AST_BINARY_EXPR) {
+        uint8_t left_buf[8] = {0};
+        uint8_t right_buf[8] = {0};
+        if (!evaluate_const_expr(builder, expr->as.binary.left, left_buf, size)) return false;
+        if (!evaluate_const_expr(builder, expr->as.binary.right, right_buf, size)) return false;
+        
+        ScoriaType* t = expr->expr_type;
+        if (!t) return false;
+        
+        if (t->kind == TY_F32) {
+            float l, r, res = 0; memcpy(&l, left_buf, 4); memcpy(&r, right_buf, 4);
+            switch (expr->as.binary.op.kind) {
+                case TK_PLUS: res = l + r; break; case TK_MINUS: res = l - r; break;
+                case TK_STAR: res = l * r; break; case TK_SLASH: if (r != 0) res = l / r; else return false; break;
+                default: return false;
+            }
+            memcpy(buffer, &res, 4); return true;
+        } else if (t->kind == TY_F64) {
+            double l, r, res = 0; memcpy(&l, left_buf, 8); memcpy(&r, right_buf, 8);
+            switch (expr->as.binary.op.kind) {
+                case TK_PLUS: res = l + r; break; case TK_MINUS: res = l - r; break;
+                case TK_STAR: res = l * r; break; case TK_SLASH: if (r != 0) res = l / r; else return false; break;
+                default: return false;
+            }
+            memcpy(buffer, &res, 8); return true;
+        } else {
+            int64_t l = 0, r = 0, res = 0;
+            if (size == 1) { l = type_is_signed(t) ? (int8_t)left_buf[0] : (uint8_t)left_buf[0]; r = type_is_signed(t) ? (int8_t)right_buf[0] : (uint8_t)right_buf[0]; }
+            else if (size == 2) { int16_t lv, rv; memcpy(&lv, left_buf, 2); memcpy(&rv, right_buf, 2); l = type_is_signed(t) ? lv : (uint16_t)lv; r = type_is_signed(t) ? rv : (uint16_t)rv; }
+            else if (size == 4) { int32_t lv, rv; memcpy(&lv, left_buf, 4); memcpy(&rv, right_buf, 4); l = type_is_signed(t) ? lv : (uint32_t)lv; r = type_is_signed(t) ? rv : (uint32_t)rv; }
+            else { memcpy(&l, left_buf, 8); memcpy(&r, right_buf, 8); }
+            
+            switch (expr->as.binary.op.kind) {
+                case TK_PLUS: res = l + r; break; case TK_MINUS: res = l - r; break;
+                case TK_STAR: res = l * r; break; case TK_SLASH: if (r != 0) res = l / r; else return false; break;
+                case TK_MOD: if (r != 0) res = l % r; else return false; break;
+                case TK_AMP: res = l & r; break; case TK_PIPE: res = l | r; break;
+                case TK_CARET: res = l ^ r; break; case TK_SHL: res = l << r; break; case TK_SHR: res = l >> r; break;
+                default: return false;
+            }
+            memcpy(buffer, &res, size > 8 ? 8 : size); return true;
+        }
+    } else if (expr->kind == AST_UNARY_EXPR) {
+        if (!evaluate_const_expr(builder, expr->as.unary.operand, buffer, size)) return false;
+        
+        if (expr->as.unary.op.kind == TK_MINUS) {
+            ScoriaType* t = expr->expr_type;
+            if (!t) return false;
+            
+            if (t->kind == TY_F32) {
+                float f; memcpy(&f, buffer, 4); f = -f; memcpy(buffer, &f, 4);
+            } else if (t->kind == TY_F64) {
+                double d; memcpy(&d, buffer, 8); d = -d; memcpy(buffer, &d, 8);
+            } else {
+                if (size == 1) { int8_t v; memcpy(&v, buffer, 1); v = -v; memcpy(buffer, &v, 1); }
+                else if (size == 2) { int16_t v; memcpy(&v, buffer, 2); v = -v; memcpy(buffer, &v, 2); }
+                else if (size == 4) { int32_t v; memcpy(&v, buffer, 4); v = -v; memcpy(buffer, &v, 4); }
+                else if (size >= 8) { int64_t v; memcpy(&v, buffer, 8); v = -v; memcpy(buffer, &v, 8); }
+            }
+            return true;
+        } else if (expr->as.unary.op.kind == TK_TILDE) {
+            // 仅对标量类型安全取反，避免污染结构体 Padding
+            if (size == 1) { uint8_t v; memcpy(&v, buffer, 1); v = ~v; memcpy(buffer, &v, 1); }
+            else if (size == 2) { uint16_t v; memcpy(&v, buffer, 2); v = ~v; memcpy(buffer, &v, 2); }
+            else if (size == 4) { uint32_t v; memcpy(&v, buffer, 4); v = ~v; memcpy(buffer, &v, 4); }
+            else if (size >= 8) { uint64_t v; memcpy(&v, buffer, 8); v = ~v; memcpy(buffer, &v, 8); }
+            return true;
+        } else if (expr->as.unary.op.kind == TK_LOGIC_NOT) {
+            buffer[0] = !buffer[0];
+            return true;
+        }
     }
     return false;
 }
@@ -665,7 +752,7 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                     }
                 }
                 return ir_const_int(builder, expr->expr_type, (int64_t)c);
-            } else if (expr->token.kind == TK_KW_NIHIL) {
+            } else if (expr->token.kind == TK_KW_NULLUS) {
                 return ir_const_int(builder, expr->expr_type, 0);
             }
             break;
@@ -1404,6 +1491,10 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
             }
             break;
         }
+        case AST_TRAP_STMT: {
+            ir_build_trap(builder);
+            break;
+        }
         case AST_GOTO_STMT: {
             SirBlock* target_block = ir_builder_get_or_create_label_block(builder, stmt->as.goto_stmt.label_name.start, stmt->as.goto_stmt.label_name.length);
             ir_build_jmp(builder, target_block);
@@ -1418,7 +1509,8 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
             if (builder->current_block && (!builder->current_block->last_inst || 
                 (builder->current_block->last_inst->opcode != SIR_JMP && 
                  builder->current_block->last_inst->opcode != SIR_BR && 
-                 builder->current_block->last_inst->opcode != SIR_RET))) {
+                 builder->current_block->last_inst->opcode != SIR_RET &&
+                 builder->current_block->last_inst->opcode != SIR_TRAP))) {
                 ir_build_jmp(builder, label_block);
             }
             
@@ -1463,7 +1555,8 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
                 if (builder->current_block && (!builder->current_block->last_inst ||
                     (builder->current_block->last_inst->opcode != SIR_JMP &&
                      builder->current_block->last_inst->opcode != SIR_BR &&
-                     builder->current_block->last_inst->opcode != SIR_RET))) {
+                     builder->current_block->last_inst->opcode != SIR_RET &&
+                     builder->current_block->last_inst->opcode != SIR_TRAP))) {
                     ir_build_jmp(builder, exit_block);
                 }
             }
@@ -1475,7 +1568,8 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
             if (builder->current_block && (!builder->current_block->last_inst ||
                 (builder->current_block->last_inst->opcode != SIR_JMP &&
                  builder->current_block->last_inst->opcode != SIR_BR &&
-                 builder->current_block->last_inst->opcode != SIR_RET))) {
+                 builder->current_block->last_inst->opcode != SIR_RET &&
+                 builder->current_block->last_inst->opcode != SIR_TRAP))) {
                 ir_build_jmp(builder, exit_block);
             }
 
@@ -1516,7 +1610,7 @@ void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count, int opt_
         }
     }
 
-    // 遍历所有模块生成 IR
+    // 遍历所有模块，第一遍：注册所有全局变量和函数符号
     for (int p = 0; p < count; p++) {
         AstNode* program = programs[p];
         if (!program || program->kind != AST_PROGRAM) continue;
@@ -1525,133 +1619,197 @@ void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count, int opt_
             AstNode* decl = program->as.program.declarations[i];
             
             if (decl->kind == AST_VAR_DECL || decl->kind == AST_CONST_DECL) {
-            Symbol* sym = decl->resolved_symbol;
-            if (sym) {
-                int size = type_get_size(sym->type);
-                uint8_t* init_data = NULL;
-                AstNode* initializer = decl->as.var_decl.initializer;
-                
-                if (initializer) {
-                    init_data = (uint8_t*)arena_alloc(&builder->arena, size);
-                    memset(init_data, 0, size);
-                    if (!evaluate_const_expr(initializer, init_data, size)) {
-                        init_data = NULL; // 编译期求值失败，回退到动态初始化
-                    }
+                Symbol* sym = decl->resolved_symbol;
+                if (sym) {
+                    int size = type_get_size(sym->type);
+                    SirGlobalVar* gvar = ir_builder_create_global(builder, sym->name.start, sym->name.length, sym->type, size, NULL);
+                    
+                    SirValue* val = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
+                    val->kind = SIR_VAL_GLOBAL;
+                    val->type = type_get_via(sym->type);
+                    val->as.global_name = gvar->name;
+                    sym->ir_val = val;
                 }
-                
-                SirGlobalVar* gvar = ir_builder_create_global(builder, sym->name.start, sym->name.length, sym->type, size, init_data);
-                
-                SirValue* val = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
-                val->kind = SIR_VAL_GLOBAL;
-                val->type = type_get_via(sym->type);
-                val->as.global_name = gvar->name;
-                sym->ir_val = val;
+            } else if (decl->kind == AST_FUNC_DECL) {
+                Symbol* sym = decl->resolved_symbol;
+                if (!sym || sym->type->kind != TY_ACTIO) continue;
 
-                if (initializer && !init_data) {
-                    SirFunction* prev_func = builder->current_func;
-                    SirBlock* prev_block = builder->current_block;
-                    
-                    builder->current_func = init_func;
-                    ir_builder_set_insert_point(builder, current_init_block);
-                    
-                    SirValue* init_val = gen_expression(builder, initializer);
-                    if (sym->type->kind == TY_FORMA || sym->type->kind == TY_UNIO || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS) {
-                        ir_build_memcpy(builder, sym->ir_val, init_val, size);
-                    } else {
-                        ir_build_store(builder, init_val, sym->ir_val);
-                    }
-                    
-                    current_init_block = builder->current_block;
-                    
-                    builder->current_func = prev_func;
-                    ir_builder_set_insert_point(builder, prev_block);
-                }
-            }
-        } else if (decl->kind == AST_FUNC_DECL) {
-            Symbol* sym = decl->resolved_symbol;
-            if (!sym || sym->type->kind != TY_ACTIO) continue;
-
-            if (!decl->as.func_decl.body) {
-                // 外部函数声明 (barbara)
-                ir_builder_add_extern(builder, decl->as.func_decl.name.start, decl->as.func_decl.name.length, 
-                                      decl->as.func_decl.dll_name.start, decl->as.func_decl.dll_name.length);
-                continue;
-            }
-
-            // 1. 提取函数名并创建 SIR 函数
-            char* func_name = (char*)arena_alloc(&builder->arena, decl->as.func_decl.name.length + 1);
-            memcpy(func_name, decl->as.func_decl.name.start, decl->as.func_decl.name.length);
-            func_name[decl->as.func_decl.name.length] = '\0';
-
-            ir_builder_create_function(builder, func_name, sym->type);
-            
-            // 2. 创建入口基本块 (Entry Block)
-            SirBlock* entry_block = ir_builder_create_block(builder, "ingressus"); // 拉丁语 entry
-            ir_builder_set_insert_point(builder, entry_block);
-
-            builder->current_hidden_ret_ptr = NULL;
-            bool hidden_ret = type_get_size(sym->type->as.func_type.return_type) > 8;
-            int param_offset = hidden_ret ? 1 : 0;
-            
-            // 3. 集中获取所有参数 (避免后续指令破坏传参寄存器 RCX/RDX/R8/R9)
-            int total_params = decl->as.func_decl.param_count + (hidden_ret ? 1 : 0);
-            SirValue** arg_vals = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * (total_params > 0 ? total_params : 1));
-            
-            if (hidden_ret) {
-                arg_vals[0] = ir_get_param(builder, 0, type_get_via(sym->type->as.func_type.return_type));
-                builder->current_hidden_ret_ptr = arg_vals[0];
-            }
-            for (int j = 0; j < decl->as.func_decl.param_count; j++) {
-                Symbol* param_sym = decl->as.func_decl.params[j]->resolved_symbol;
-                if (param_sym) {
-                    ScoriaType* ptype = param_sym->type;
-                    if (type_get_size(ptype) > 8) ptype = type_get_via(ptype);
-                    arg_vals[j + param_offset] = ir_get_param(builder, j + param_offset, ptype);
-                }
-            }
-
-            // 4. 为参数分配栈空间并存储传入的值 (或直接使用寄存器)
-            for (int j = 0; j < decl->as.func_decl.param_count; j++) {
-                AstNode* param_node = decl->as.func_decl.params[j];
-                Symbol* param_sym = param_node->resolved_symbol;
-                if (param_sym) {
-                    int param_size = type_get_size(param_sym->type);
-                    bool is_scalar = (param_sym->type->kind >= TY_I8 && param_sym->type->kind <= TY_LOGICA);
-                    
-                    if (is_scalar && !check_mutated(decl->as.func_decl.body, param_sym)) {
-                        // 极速优化：参数未被修改且为标量，直接使用寄存器，消除 Alloca 和 Load/Store
-                        param_sym->ir_val = arg_vals[j + param_offset];
-                    } else {
-                        param_sym->ir_val = ir_build_alloca(builder, param_sym->type, param_size);
-                        if (param_size > 8) {
-                            ir_build_memcpy(builder, param_sym->ir_val, arg_vals[j + param_offset], param_size);
-                        } else {
-                            ir_build_store(builder, arg_vals[j + param_offset], param_sym->ir_val);
-                        }
-                    }
-                }
-            }
-
-            // 4. 递归生成函数体指令
-            if (decl->as.func_decl.body) {
-                builder->current_func_body = decl->as.func_decl.body;
-                gen_statement(builder, decl->as.func_decl.body);
-                builder->current_func_body = NULL;
-            }
-            
-            // 5. 安全兜底：如果基本块最后没有返回指令，自动补全
-            if (builder->current_block && (!builder->current_block->last_inst || builder->current_block->last_inst->opcode != SIR_RET)) {
-                if (sym->type->as.func_type.return_type->kind == TY_NIHIL) {
-                    ir_build_ret(builder, NULL);
+                if (!decl->as.func_decl.body) {
+                    // 外部函数声明 (barbara)
+                    ir_builder_add_extern(builder, decl->as.func_decl.name.start, decl->as.func_decl.name.length, 
+                                          decl->as.func_decl.dll_name.start, decl->as.func_decl.dll_name.length);
                 } else {
-                    // 对于非 nihil 返回类型，补全默认的 0 返回值以防止控制流崩溃
-                    SirValue* zero_val = ir_const_int(builder, sym->type->as.func_type.return_type, 0);
-                    ir_build_ret(builder, zero_val);
+                    // 1. 提取函数名并创建 SIR 函数
+                    char* func_name = (char*)arena_alloc(&builder->arena, decl->as.func_decl.name.length + 1);
+                    memcpy(func_name, decl->as.func_decl.name.start, decl->as.func_decl.name.length);
+                    func_name[decl->as.func_decl.name.length] = '\0';
+                    ir_builder_create_function(builder, func_name, sym->type);
                 }
             }
         }
     }
-    } // end for programs
+
+    // 第二遍：迭代计算全局变量的编译期常量初始值 (解决前向引用/乱序定义问题)
+    bool const_eval_changed;
+    do {
+        const_eval_changed = false;
+        for (int p = 0; p < count; p++) {
+            AstNode* program = programs[p];
+            if (!program || program->kind != AST_PROGRAM) continue;
+
+            for (int i = 0; i < program->as.program.decl_count; i++) {
+                AstNode* decl = program->as.program.declarations[i];
+                if (decl->kind == AST_VAR_DECL || decl->kind == AST_CONST_DECL) {
+                    Symbol* sym = decl->resolved_symbol;
+                    AstNode* initializer = decl->as.var_decl.initializer;
+                    if (sym && initializer) {
+                        SirGlobalVar* gvar = NULL;
+                        for (SirGlobalVar* g = builder->module->first_global; g; g = g->next) {
+                            if (strncmp(g->name, sym->name.start, sym->name.length) == 0 && g->name[sym->name.length] == '\0') {
+                                gvar = g;
+                                break;
+                            }
+                        }
+                        if (gvar && !gvar->init_data) {
+                            uint8_t* temp_data = (uint8_t*)arena_alloc(&builder->arena, gvar->size);
+                            memset(temp_data, 0, gvar->size);
+                            if (evaluate_const_expr(builder, initializer, temp_data, gvar->size)) {
+                                gvar->init_data = temp_data;
+                                const_eval_changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } while (const_eval_changed);
+
+    // 第三遍：生成动态初始化代码和函数体
+    for (int p = 0; p < count; p++) {
+        AstNode* program = programs[p];
+        if (!program || program->kind != AST_PROGRAM) continue;
+
+        for (int i = 0; i < program->as.program.decl_count; i++) {
+            AstNode* decl = program->as.program.declarations[i];
+            
+            if (decl->kind == AST_VAR_DECL || decl->kind == AST_CONST_DECL) {
+                Symbol* sym = decl->resolved_symbol;
+                AstNode* initializer = decl->as.var_decl.initializer;
+                if (sym && initializer) {
+                    SirGlobalVar* gvar = NULL;
+                    for (SirGlobalVar* g = builder->module->first_global; g; g = g->next) {
+                        if (strncmp(g->name, sym->name.start, sym->name.length) == 0 && g->name[sym->name.length] == '\0') {
+                            gvar = g;
+                            break;
+                        }
+                    }
+                    if (gvar && !gvar->init_data) {
+                        if (decl->kind == AST_CONST_DECL) {
+                            fprintf(stderr, "Clades fatalis: Constans '%.*s' in tempore compilationis computari non potest (circulus vitiosus vel operatio non supportata?).\n", sym->name.length, sym->name.start);
+                            exit(1);
+                        }
+                        
+                        SirFunction* prev_func = builder->current_func;
+                        SirBlock* prev_block = builder->current_block;
+                        
+                        builder->current_func = init_func;
+                        ir_builder_set_insert_point(builder, current_init_block);
+                        
+                        SirValue* init_val = gen_expression(builder, initializer);
+                        if (sym->type->kind == TY_FORMA || sym->type->kind == TY_UNIO || sym->type->kind == TY_ACIES || sym->type->kind == TY_COHORS) {
+                            ir_build_memcpy(builder, sym->ir_val, init_val, gvar->size);
+                        } else {
+                            ir_build_store(builder, init_val, sym->ir_val);
+                        }
+                        
+                        current_init_block = builder->current_block;
+                        
+                        builder->current_func = prev_func;
+                        ir_builder_set_insert_point(builder, prev_block);
+                    }
+                }
+            } else if (decl->kind == AST_FUNC_DECL) {
+                Symbol* sym = decl->resolved_symbol;
+                if (!sym || sym->type->kind != TY_ACTIO || !decl->as.func_decl.body) continue;
+
+                SirFunction* func = NULL;
+                for (SirFunction* f = builder->module->first_func; f; f = f->next) {
+                    if (strncmp(f->name, decl->as.func_decl.name.start, decl->as.func_decl.name.length) == 0 && f->name[decl->as.func_decl.name.length] == '\0') {
+                        func = f;
+                        break;
+                    }
+                }
+                if (!func) continue;
+
+                builder->current_func = func;
+                
+                // 2. 创建入口基本块 (Entry Block)
+                SirBlock* entry_block = ir_builder_create_block(builder, "ingressus"); // 拉丁语 entry
+                ir_builder_set_insert_point(builder, entry_block);
+
+                builder->current_hidden_ret_ptr = NULL;
+                bool hidden_ret = type_get_size(sym->type->as.func_type.return_type) > 8;
+                int param_offset = hidden_ret ? 1 : 0;
+                
+                // 3. 集中获取所有参数 (避免后续指令破坏传参寄存器 RCX/RDX/R8/R9)
+                int total_params = decl->as.func_decl.param_count + (hidden_ret ? 1 : 0);
+                SirValue** arg_vals = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * (total_params > 0 ? total_params : 1));
+                
+                if (hidden_ret) {
+                    arg_vals[0] = ir_get_param(builder, 0, type_get_via(sym->type->as.func_type.return_type));
+                    builder->current_hidden_ret_ptr = arg_vals[0];
+                }
+                for (int j = 0; j < decl->as.func_decl.param_count; j++) {
+                    Symbol* param_sym = decl->as.func_decl.params[j]->resolved_symbol;
+                    if (param_sym) {
+                        ScoriaType* ptype = param_sym->type;
+                        if (type_get_size(ptype) > 8) ptype = type_get_via(ptype);
+                        arg_vals[j + param_offset] = ir_get_param(builder, j + param_offset, ptype);
+                    }
+                }
+
+                // 4. 为参数分配栈空间并存储传入的值 (或直接使用寄存器)
+                for (int j = 0; j < decl->as.func_decl.param_count; j++) {
+                    AstNode* param_node = decl->as.func_decl.params[j];
+                    Symbol* param_sym = param_node->resolved_symbol;
+                    if (param_sym) {
+                        int param_size = type_get_size(param_sym->type);
+                        bool is_scalar = (param_sym->type->kind >= TY_I8 && param_sym->type->kind <= TY_LOGICA);
+                        
+                        if (is_scalar && !check_mutated(decl->as.func_decl.body, param_sym)) {
+                            // 极速优化：参数未被修改且为标量，直接使用寄存器，消除 Alloca 和 Load/Store
+                            param_sym->ir_val = arg_vals[j + param_offset];
+                        } else {
+                            param_sym->ir_val = ir_build_alloca(builder, param_sym->type, param_size);
+                            if (param_size > 8) {
+                                ir_build_memcpy(builder, param_sym->ir_val, arg_vals[j + param_offset], param_size);
+                            } else {
+                                ir_build_store(builder, arg_vals[j + param_offset], param_sym->ir_val);
+                            }
+                        }
+                    }
+                }
+
+                // 4. 递归生成函数体指令
+                if (decl->as.func_decl.body) {
+                    builder->current_func_body = decl->as.func_decl.body;
+                    gen_statement(builder, decl->as.func_decl.body);
+                    builder->current_func_body = NULL;
+                }
+                
+                // 5. 安全兜底：如果基本块最后没有返回指令，自动补全
+                if (builder->current_block && (!builder->current_block->last_inst || (builder->current_block->last_inst->opcode != SIR_RET && builder->current_block->last_inst->opcode != SIR_TRAP))) {
+                    if (sym->type->as.func_type.return_type->kind == TY_NIHIL) {
+                        ir_build_ret(builder, NULL);
+                    } else {
+                        // 对于非 nihil 返回类型，补全默认的 0 返回值以防止控制流崩溃
+                        SirValue* zero_val = ir_const_int(builder, sym->type->as.func_type.return_type, 0);
+                        ir_build_ret(builder, zero_val);
+                    }
+                }
+            }
+        }
+    }
 
     // 结束 __scoria_init 函数
     SirFunction* prev_func = builder->current_func;

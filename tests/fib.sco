@@ -4,8 +4,11 @@ actio fib(n: medius) -> medius {
 }
 
 actio princeps() -> medius {
-    scribe("Calculando Fib(40)... Exspecta!\n");
-    sit res: medius = fib(40);
+    sit n: medius;
+    scribe("Da mihi integrum n, quaeso! \n");
+    lege(n);
+    scribe("Calculando Fib(n)... Exspecta!\n");
+    sit res: medius = fib(n);
     scribe("Resultatum: ", res, "\n");
     redde 0;
 }

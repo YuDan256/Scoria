@@ -208,7 +208,7 @@ static SirInst* create_inst(IrBuilder* builder, SirOpcode opcode, int num_operan
     if (builder->current_block) {
         if (builder->current_block->last_inst) {
             SirOpcode last_op = builder->current_block->last_inst->opcode;
-            if (last_op == SIR_RET || last_op == SIR_JMP || last_op == SIR_BR || last_op == SIR_SWITCH) {
+            if (last_op == SIR_RET || last_op == SIR_JMP || last_op == SIR_BR || last_op == SIR_SWITCH || last_op == SIR_TRAP) {
                 // 这是一个不可达的死指令，直接丢弃
                 return inst;
             }
@@ -461,6 +461,10 @@ void ir_build_ret(IrBuilder* builder, SirValue* val) {
     } else {
         create_inst(builder, SIR_RET, 0);
     }
+}
+
+void ir_build_trap(IrBuilder* builder) {
+    create_inst(builder, SIR_TRAP, 0);
 }
 
 SirValue* ir_build_select(IrBuilder* builder, SirValue* cond, SirValue* true_val, SirValue* false_val) {

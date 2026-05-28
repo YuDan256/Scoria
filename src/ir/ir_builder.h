@@ -62,6 +62,7 @@ void ir_build_jmp(IrBuilder* builder, SirBlock* target);
 void ir_build_br(IrBuilder* builder, SirValue* cond, SirBlock* true_block, SirBlock* false_block);
 void ir_build_switch(IrBuilder* builder, SirValue* cond, SirBlock* default_block, SirValue** case_vals, SirBlock** case_blocks, int case_count);
 void ir_build_ret(IrBuilder* builder, SirValue* val);
+void ir_build_trap(IrBuilder* builder);
 SirValue* ir_build_select(IrBuilder* builder, SirValue* cond, SirValue* true_val, SirValue* false_val);
 
 // 获取函数的第 N 个参数 (作为虚拟寄存器)

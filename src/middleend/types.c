@@ -4,19 +4,19 @@
 
 // 基础类型单例
 static ScoriaType basic_types[] = {
-    {TY_UNKNOWN}, {TY_NIHIL},
+    {TY_UNKNOWN}, {TY_NIHIL}, {TY_NULLUS},
     {TY_I8}, {TY_I16}, {TY_I32}, {TY_I64},
     {TY_P8}, {TY_P16}, {TY_P32}, {TY_P64},
     {TY_F32}, {TY_F64},
     {TY_LOGICA}, {TY_LITTERA},
-    {TY_VIA},      // 14 - 占位
-    {TY_COHORS},   // 15 - 占位
-    {TY_ACIES},    // 16 - 占位
-    {TY_FORMA},    // 17 - 占位
-    {TY_UNIO},     // 18 - 占位
-    {TY_ENUM},     // 19 - 占位
-    {TY_ACTIO},    // 20 - 占位
-    {TY_MODULE}    // 21
+    {TY_VIA},      // 15 - 占位
+    {TY_COHORS},   // 16 - 占位
+    {TY_ACIES},    // 17 - 占位
+    {TY_FORMA},    // 18 - 占位
+    {TY_UNIO},     // 19 - 占位
+    {TY_ENUM},     // 20 - 占位
+    {TY_ACTIO},    // 21 - 占位
+    {TY_MODULE}    // 22
 };
 
 // 简单的链表用于 Type Interning
@@ -41,9 +41,9 @@ ScoriaType* type_get_basic(TypeKind kind) {
 bool type_equals(ScoriaType* a, ScoriaType* b) {
     if (a == b) return true;
     if (!a || !b) return false;
-    // 允许 nihil 隐式匹配任何指针、切片或函数类型 (类似 C 语言的 NULL)
-    if (a->kind == TY_NIHIL && (b->kind == TY_VIA || b->kind == TY_COHORS || b->kind == TY_ACTIO)) return true;
-    if (b->kind == TY_NIHIL && (a->kind == TY_VIA || a->kind == TY_COHORS || a->kind == TY_ACTIO)) return true;
+    // 允许 nullus 隐式匹配任何指针、切片或函数类型
+    if (a->kind == TY_NULLUS && (b->kind == TY_VIA || b->kind == TY_COHORS || b->kind == TY_ACTIO)) return true;
+    if (b->kind == TY_NULLUS && (a->kind == TY_VIA || a->kind == TY_COHORS || a->kind == TY_ACTIO)) return true;
 
     if (a->kind != b->kind) return false;
     
@@ -194,6 +194,7 @@ int type_get_size(ScoriaType* type) {
     if (!type) return 0;
     switch (type->kind) {
         case TY_NIHIL: case TY_UNKNOWN: return 0;
+        case TY_NULLUS: return 8;
         case TY_I8: case TY_P8: case TY_LITTERA: case TY_LOGICA: return 1;
         case TY_I16: case TY_P16: return 2;
         case TY_I32: case TY_P32: case TY_F32: return 4;

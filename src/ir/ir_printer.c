@@ -17,6 +17,7 @@ static void print_type(FILE* out, ScoriaType* type) {
         case TY_LOGICA: fprintf(out, "logica"); break;
         case TY_LITTERA: fprintf(out, "littera"); break;
         case TY_NIHIL: fprintf(out, "nihil"); break;
+        case TY_NULLUS: fprintf(out, "nullus"); break;
         case TY_VIA:
             fprintf(out, "via ");
             print_type(out, type->as.inner);
@@ -117,6 +118,7 @@ static void print_inst(FILE* out, SirInst* inst) {
         case SIR_SWITCH: fprintf(out, "switch "); break;
         case SIR_CALL: fprintf(out, "call "); break;
         case SIR_RET: fprintf(out, "ret "); break;
+        case SIR_TRAP: fprintf(out, "trap "); break;
         case SIR_CAST: fprintf(out, "cast "); break;
         case SIR_GET_PARAM: fprintf(out, "get_param "); break;
         case SIR_SELECT: fprintf(out, "select "); break;

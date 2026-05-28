@@ -19,6 +19,7 @@ static void type_error(TypeChecker* checker, Token token, const char* message) {
 static ScoriaType* resolve_type_node(TypeChecker* checker, AstNode* type_node);
 static void check_statement(TypeChecker* checker, AstNode* stmt);
 static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaType* expected_type);
+static bool check_returns(AstNode* stmt);
 
 // ---------------------------------------------------------
 // 类型解析 (AST_TYPE -> ScoriaType)
@@ -239,7 +240,7 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
                 case TK_BOOL_CONST:   type = type_get_basic(TY_LOGICA); break;
                 case TK_CHAR_CONST:   type = type_get_basic(TY_LITTERA); break;
                 case TK_STRING_CONST: type = type_get_cohors(type_get_basic(TY_LITTERA)); break;
-                case TK_KW_NIHIL:     type = type_get_basic(TY_NIHIL); break;
+                case TK_KW_NULLUS:    type = type_get_basic(TY_NULLUS); break;
                 default: break;
             }
             break;
@@ -404,7 +405,12 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
                 type = type_get_via(operand_type);
             } else if (expr->as.unary.op.kind == TK_KW_TENE) {
                 if (operand_type->kind == TY_VIA) {
-                    type = operand_type->as.inner;
+                    if (operand_type->as.inner->kind == TY_NIHIL) {
+                        type_error(checker, expr->token, "'via nihil' directe dereferentiari non potest.");
+                        type = type_get_basic(TY_UNKNOWN);
+                    } else {
+                        type = operand_type->as.inner;
+                    }
                 } else {
                     type_error(checker, expr->token, "'tene' ad 'via' solum applicari potest.");
                 }
@@ -591,7 +597,10 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
 
             if (ptr_type->kind != TY_VIA && ptr_type->kind != TY_COHORS) {
                 type_error(checker, expr->token, "'vade/recede' ad 'via' vel 'cohors' solum applicari potest.");
+            } else if (ptr_type->as.inner->kind == TY_NIHIL) {
+                type_error(checker, expr->token, "'via nihil' moveri non potest.");
             }
+            
             if (offset_type->kind < TY_I8 || offset_type->kind > TY_P64) {
                 type_error(checker, expr->token, "Offset integer esse debet.");
             }
@@ -667,6 +676,10 @@ static void check_statement(TypeChecker* checker, AstNode* stmt) {
             } else if (!declared_type && !init_type) {
                 type_error(checker, stmt->token, "Typum declarare vel valorem initialem praebere necesse est.");
                 final_type = type_get_basic(TY_UNKNOWN);
+            }
+
+            if (final_type && (final_type->kind == TY_NIHIL || final_type->kind == TY_NULLUS)) {
+                type_error(checker, stmt->as.var_decl.name, "Variabilis huius typi declarari non potest.");
             }
 
             SymbolKind sym_kind = (stmt->kind == AST_CONST_DECL) ? SYM_CONST : SYM_VAR;
@@ -750,6 +763,9 @@ static void check_statement(TypeChecker* checker, AstNode* stmt) {
             if (checker->loop_depth == 0) {
                 type_error(checker, stmt->token, "'perge' intra cyclum solum adhiberi potest.");
             }
+            break;
+
+        case AST_TRAP_STMT:
             break;
 
         case AST_GOTO_STMT:
@@ -908,6 +924,34 @@ static void collect_declarations(TypeChecker* checker, AstNode* program) {
 }
 
 // ---------------------------------------------------------
+// 返回路径检查 (Return Path Analysis)
+// ---------------------------------------------------------
+static bool check_returns(AstNode* stmt) {
+    if (!stmt) return false;
+    switch (stmt->kind) {
+        case AST_RETURN_STMT:
+        case AST_TRAP_STMT:
+            return true;
+        case AST_BLOCK_STMT:
+            for (int i = 0; i < stmt->as.block.stmt_count; i++) {
+                if (check_returns(stmt->as.block.statements[i])) return true;
+            }
+            return false;
+        case AST_IF_STMT:
+            return check_returns(stmt->as.if_stmt.then_branch) &&
+                   check_returns(stmt->as.if_stmt.else_branch);
+        case AST_SWITCH_STMT:
+            if (!stmt->as.switch_stmt.default_branch) return false;
+            for (int i = 0; i < stmt->as.switch_stmt.case_count; i++) {
+                if (!check_returns(stmt->as.switch_stmt.case_stmts[i])) return false;
+            }
+            return check_returns(stmt->as.switch_stmt.default_branch);
+        default:
+            return false;
+    }
+}
+
+// ---------------------------------------------------------
 // 核心 API
 // ---------------------------------------------------------
 void type_checker_init(TypeChecker* checker) {
@@ -1041,6 +1085,12 @@ bool type_checker_run(TypeChecker* checker, AstNode** programs, int count) {
                     
                     if (decl->as.func_decl.body) {
                         check_statement(checker, decl->as.func_decl.body);
+                        
+                        if (checker->current_function_return_type->kind != TY_NIHIL) {
+                            if (!check_returns(decl->as.func_decl.body)) {
+                                type_error(checker, decl->as.func_decl.name, "Actio valorem reddere debet in omnibus viis.");
+                            }
+                        }
                     }
                     
                     symtab_leave_scope(&checker->symtab);
@@ -1064,6 +1114,10 @@ bool type_checker_run(TypeChecker* checker, AstNode** programs, int count) {
                 } else if (!declared_type && !init_type) {
                     type_error(checker, decl->token, "Typum declarare vel valorem initialem praebere necesse est.");
                     if (sym) sym->type = type_get_basic(TY_UNKNOWN);
+                }
+
+                if (sym && sym->type && (sym->type->kind == TY_NIHIL || sym->type->kind == TY_NULLUS)) {
+                    type_error(checker, decl->as.var_decl.name, "Variabilis huius typi declarari non potest.");
                 }
             }
         }

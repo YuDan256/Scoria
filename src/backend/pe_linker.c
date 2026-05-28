@@ -2289,6 +2289,11 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                             }
                             break;
                         }
+                        case SIR_TRAP: {
+                            emit8(&linker->text_section, 0x0F);
+                            emit8(&linker->text_section, 0x0B); // ud2
+                            break;
+                        }
                         case SIR_RET: {
                             if (inst->num_operands > 0) {
                                 bool already_in_rax = false;

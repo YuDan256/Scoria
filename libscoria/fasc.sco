@@ -57,7 +57,7 @@ actio edita lege_fasc(iter: textus) -> cohors littera {
     sit invalid_handle: HANDLE = muta(HANDLE, -1);
     
     sit empty_res: cohors littera;
-    empty_res.caput = muta(via littera, 0);
+    empty_res.caput = nullus;
     empty_res.longitudo = 0;
 
     // 1. 转换文件名为 C 风格字符串 (追加 \0)
@@ -72,29 +72,29 @@ actio edita lege_fasc(iter: textus) -> cohors littera {
         c_filename,
         GENERIC_READ,
         FILE_SHARE_READ,
-        muta(via nihil, 0),
+        nullus,
         OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL,
-        muta(via nihil, 0)
+        nullus
     );
 
     neca(c_filename); // 用完立即释放临时文件名内存
 
-    si (tene hFile == tene invalid_handle) {
+    si (hFile == invalid_handle) {
         redde empty_res;
     }
 
     // 2. 获取文件大小
     sit magnitudo: i64 = 0;
-    sit res_size: BOOL = GetFileSizeEx(tene hFile, locus magnitudo);
+    sit res_size: BOOL = GetFileSizeEx(hFile, locus magnitudo);
     si (res_size == 0) {
-        CloseHandle(tene hFile);
+        CloseHandle(hFile);
         redde empty_res;
     }
 
     // 3. 分配内存 (严格按照文件大小分配，不追加 \0)
     sit quiddam: via littera = crea(littera, muta(i32, magnitudo));
-    si (quiddam == muta(via littera, 0)) {
+    si (quiddam == nullus) {
         CloseHandle(hFile);
         redde empty_res;
     }
@@ -102,14 +102,14 @@ actio edita lege_fasc(iter: textus) -> cohors littera {
     // 4. 读取文件内容
     sit bytes_read: DWORD = 0;
     sit res_read: BOOL = ReadFile(
-        tene hFile,
+        hFile,
         muta(via nihil, quiddam),
         muta(DWORD, magnitudo),
         locus bytes_read,
-        muta(via nihil, 0)
+        nullus
     );
 
-    CloseHandle(tene hFile);
+    CloseHandle(hFile);
 
     si (res_read == 0) {
         neca(quiddam);
@@ -140,29 +140,29 @@ actio edita scribe_fasc(iter: textus, content: cohors littera) -> i64 {
         c_filename,
         GENERIC_WRITE,
         0, 
-        muta(via nihil, 0),
+        nullus,
         CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL,
-        muta(via nihil, 0)
+        nullus
     );
 
     neca(c_filename); // 用完立即释放临时文件名内存
 
-    si (tene hFile == tene invalid_handle) {
+    si (hFile == invalid_handle) {
         redde -1;
     }
 
     // 3. 写入文件内容
     sit bytes_written: DWORD = 0;
     sit res_write: BOOL = WriteFile(
-        tene hFile,
+        hFile,
         muta(via nihil, content.caput),
         muta(DWORD, content.longitudo),
         locus bytes_written,
-        muta(via nihil, 0)
+        nullus
     );
 
-    CloseHandle(tene hFile);
+    CloseHandle(hFile);
 
     si (res_write == 0) {
         redde -1;

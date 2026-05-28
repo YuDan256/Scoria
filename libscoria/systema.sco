@@ -62,14 +62,14 @@ actio edita exequere(cmd: textus) -> i32 {
 
     // 3. 调用 CreateProcessA
     sit res: BOOL = CreateProcessA(
-        muta(via nihil, 0),
+        nullus,
         c_cmd,
-        muta(via nihil, 0),
-        muta(via nihil, 0),
+        nullus,
+        nullus,
         0,
         0,
-        muta(via nihil, 0),
-        muta(via nihil, 0),
+        nullus,
+        nullus,
         s_info,
         pi
     );
@@ -82,14 +82,14 @@ actio edita exequere(cmd: textus) -> i32 {
         sit hThread: HANDLE = tene muta(via HANDLE, vade(pi, muta(i32, 8)));
 
         // 等待进程结束
-        WaitForSingleObject(tene hProcess, INFINITE);
+        WaitForSingleObject(hProcess, INFINITE);
 
         // 获取退出码
-        GetExitCodeProcess(tene hProcess, locus exit_code);
+        GetExitCodeProcess(hProcess, locus exit_code);
 
         // 关闭句柄，防止句柄泄漏
-        CloseHandle(tene hProcess);
-        CloseHandle(tene hThread);
+        CloseHandle(hProcess);
+        CloseHandle(hThread);
     } aliter {
         exit_code = muta(DWORD, -1);
     }

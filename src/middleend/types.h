@@ -8,6 +8,7 @@
 typedef enum {
     TY_UNKNOWN,
     TY_NIHIL,
+    TY_NULLUS,
     TY_I8, TY_I16, TY_I32, TY_I64,
     TY_P8, TY_P16, TY_P32, TY_P64,
     TY_F32, TY_F64,

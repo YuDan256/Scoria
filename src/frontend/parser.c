@@ -169,7 +169,7 @@ static AstNode* parse_struct_literal_body(Parser* parser, AstNode* type_expr, To
 static AstNode* primary(Parser* parser) {
     if (match(parser, TK_INT_CONST) || match(parser, TK_FLOAT_CONST) ||
         match(parser, TK_BOOL_CONST) || match(parser, TK_STRING_CONST) ||
-        match(parser, TK_CHAR_CONST) || match(parser, TK_KW_NIHIL)) {
+        match(parser, TK_CHAR_CONST) || match(parser, TK_KW_NULLUS)) {
         return ast_create_node(&parser->arena, AST_LITERAL_EXPR, parser->previous);
     }
     if (match(parser, TK_IDENTIFIER)) {
@@ -733,6 +733,11 @@ static AstNode* statement(Parser* parser) {
         Token keyword = parser->previous;
         consume(parser, TK_SEMI, "Post 'perge' ';' exspectatur.");
         return ast_create_node(&parser->arena, AST_CONTINUE_STMT, keyword);
+    }
+    if (match(parser, TK_KW_MORI)) {
+        Token keyword = parser->previous;
+        consume(parser, TK_SEMI, "Post 'mori' ';' exspectatur.");
+        return ast_create_node(&parser->arena, AST_TRAP_STMT, keyword);
     }
     if (match(parser, TK_KW_SALI)) {
         Token keyword = parser->previous;

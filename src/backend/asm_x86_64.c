@@ -1427,6 +1427,10 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                     }
                     break;
 
+                case SIR_TRAP:
+                    fprintf(out, "    ud2\n");
+                    break;
+
                 case SIR_RET:
                     if (inst->num_operands > 0) {
                         bool already_in_rax = false;

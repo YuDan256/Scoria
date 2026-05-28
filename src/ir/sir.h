@@ -31,6 +31,7 @@ typedef enum {
     SIR_SWITCH,  // 多路分支 (跳转表)
     SIR_CALL,    // 函数调用
     SIR_RET,     // 返回
+    SIR_TRAP,    // 硬件陷阱 (mori)
     
     // 其他
     SIR_CAST,    // 类型转换

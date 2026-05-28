@@ -28,7 +28,8 @@ Scoria 摒弃了传统的 `#include`，采用纯净的命名空间管理：
 *   **浮点数**：`f32` (fractus medius), `f64` (fractus)
 *   **布尔值**：`logica` (字面量为 `verum` 和 `falsum`)
 *   **字符与文本**：`littera` (单字符), `textus` (不可变字符串)
-*   **空/无**：`nihil` / `nhl` (相当于 C 的 `NULL` 或 `void`)
+*   **空类型**：`nihil` / `nhl` (相当于 C 的 `void`)
+*   **空指针值**：`nullus` / `nls` (相当于 C 的 `NULL`)
 
 **内存多级抽象 (防线)**：
 *   `via <类型>`：裸游标 (Raw Pointer)，无边界检查。
@@ -91,16 +92,21 @@ Scoria 摒弃了传统的 `#include`，采用纯净的命名空间管理：
     }
     ```
 *   **循环控制**：`rumpe` / `rmp` (跳出循环, break), `perge` / `prg` (继续下一次循环, continue)
+*   **异常终止**：`mori` / `mor` (触发硬件陷阱 Trap，如 x86 的 `ud2`，表示不可达或致命错误)
 
 ## 5. 内存与指针操作 (Memoria)
 
-Scoria 提供了极其显式的内存操作指令，拒绝隐式转换：
+Scoria 提供了极其显式的内存操作指令，**绝对拒绝指针类型的隐式转换**：
 
-*   **取址与解引用**：`locus <变量>` (取地址), `tene <指针>` (解引用)
-*   **指针偏移**：`vade(指针, 偏移量)` (指针前进), `recede(指针, 偏移量)` (指针后退)
+*   **空值与不透明指针**：
+    *   `nullus`：纯粹的空指针字面量（Bottom Type），**唯一**允许隐式转换为任何指针类型（`via T`, `cohors T`, `actio`）的值。
+    *   `via nihil`：不透明指针（相当于 C 的 `void*`），表示“未知类型的内存”。`via T` 与 `via nihil` 之间**没有任何隐式转换**，必须使用 `muta` 强制跨越边界。
+*   **取址与解引用**：`locus <变量>` (取地址), `tene <指针>` (解引用)。**严禁直接解引用 `via nihil`**，因为编译器无法得知目标内存的大小与布局。必须先使用 `muta` 将其转换为具体类型的指针（如 `via i8`）后方可解引用。
+*   **指针偏移**：`vade(指针, 偏移量)` (指针前进), `recede(指针, 偏移量)` (指针后退)。同理，**严禁对 `via nihil` 进行偏移操作**，必须先转换为具体类型指针。
 *   **动态内存分配**：
     *   `crea(<类型>)` 或 `crea(<类型>, <数量>)` (相当于 malloc/new)
     *   `neca(<指针>)` (相当于 free/delete)
+*   **内存大小计算**：`magnitudo(<类型>)` 或 `magnitudo(<表达式>)` (编译期求值为 `i64` 常量，相当于 C 的 `sizeof`)
 *   **强制类型转换**：`muta(<目标类型>, <表达式>)` (唯一打破类型安全边界的系统特权)
 
 ## 6. 结构体、联合体、枚举与类型别名 (Structurae, Uniones, Ordines et Imagines)
@@ -185,4 +191,7 @@ Scoria 提供了极其显式的内存操作指令，拒绝隐式转换：
 | `redde` | `rdd` | 返回并切断栈帧 |
 | `rumpe` | `rmp` | 打破并跳出当前循环 |
 | `perge` | `prg` | 推进至下一次循环 |
-| `nihil` | `nhl` | 空指针或无返回类型 |
+| `mori` | `mor` | 触发硬件陷阱并终止程序 |
+| `nihil` | `nhl` | 无返回类型(void) |
+| `nullus` | `nls` | 空指针值(NULL) |
+| `magnitudo` | `mgn` | 编译期计算内存大小(sizeof) |

@@ -111,8 +111,10 @@ static TokenKind identifier_type(Lexer* lexer) {
     if (len == 3 && memcmp(lexer->start, "act", 3) == 0) return TK_KW_ACTIO;
     if (len == 3 && memcmp(lexer->start, "rdd", 3) == 0) return TK_KW_REDDE;
     if (len == 3 && memcmp(lexer->start, "nhl", 3) == 0) return TK_KW_NIHIL;
+    if (len == 3 && memcmp(lexer->start, "nls", 3) == 0) return TK_KW_NULLUS;
     if (len == 3 && memcmp(lexer->start, "rmp", 3) == 0) return TK_KW_RUMPE;
     if (len == 3 && memcmp(lexer->start, "prg", 3) == 0) return TK_KW_PERGE;
+    if (len == 3 && memcmp(lexer->start, "mor", 3) == 0) return TK_KW_MORI;
     if (len == 3 && memcmp(lexer->start, "csl", 3) == 0) return TK_KW_CONSULE;
     if (len == 3 && memcmp(lexer->start, "xcp", 3) == 0) return TK_KW_EXCERPE;
     if (len == 3 && memcmp(lexer->start, "alt", 3) == 0) return TK_KW_ALITER;
@@ -170,13 +172,17 @@ static TokenKind identifier_type(Lexer* lexer) {
         if (len == 3 && lexer->start[1] == 'e') return check_keyword(lexer, 2, 1, "x", TK_KW_LEX);
         break;
     case 'm':
-        if (len == 4) return check_keyword(lexer, 1, 3, "uta", TK_KW_MUTA);
+        if (len == 4) {
+            if (memcmp(lexer->start + 1, "uta", 3) == 0) return TK_KW_MUTA;
+            if (memcmp(lexer->start + 1, "ori", 3) == 0) return TK_KW_MORI;
+        }
         if (len == 6) return check_keyword(lexer, 1, 5, "edius", TK_TY_I32);
         if (len == 7) return check_keyword(lexer, 1, 6, "inimus", TK_TY_I8);
         break;
     case 'n':
         if (len == 4) return check_keyword(lexer, 1, 3, "eca", TK_KW_NECA);
         if (len == 5) return check_keyword(lexer, 1, 4, "ihil", TK_KW_NIHIL);
+        if (len == 6) return check_keyword(lexer, 1, 5, "ullus", TK_KW_NULLUS);
         break;
     case 'o':
         if (len == 4) return check_keyword(lexer, 1, 3, "rdo", TK_KW_ORDO);
