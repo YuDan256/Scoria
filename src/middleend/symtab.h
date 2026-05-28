@@ -11,7 +11,8 @@ typedef enum {
     SYM_STRUCT,
     SYM_UNION,
     SYM_MODULE,
-    SYM_TYPE_ALIAS
+    SYM_TYPE_ALIAS,
+    SYM_ENUM
 } SymbolKind;
 
 struct SirValue; // 前置声明

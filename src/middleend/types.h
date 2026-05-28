@@ -18,6 +18,7 @@ typedef enum {
     TY_ACIES,    // 数组
     TY_FORMA,    // 结构体
     TY_UNIO,     // 联合体
+    TY_ENUM,     // 枚举
     TY_ACTIO,    // 函数
     TY_MODULE    // 模块命名空间
 } TypeKind;
@@ -29,6 +30,12 @@ typedef struct {
     Token name;
     ScoriaType* type;
 } StructField;
+
+// 枚举变体
+typedef struct {
+    Token name;
+    int64_t value;
+} EnumVariant;
 
 struct ScoriaType {
     TypeKind kind;
@@ -50,6 +57,13 @@ struct ScoriaType {
             int field_count;
             bool is_densa;
         } struct_type;
+
+        // 用于 TY_ENUM
+        struct {
+            Token name;
+            EnumVariant* variants;
+            int variant_count;
+        } enum_type;
         
         // 用于 TY_ACTIO
         struct {
@@ -77,6 +91,9 @@ ScoriaType* type_get_acies(ScoriaType* inner, uint32_t length);
 ScoriaType* type_create_forma(Token name, bool is_densa);
 ScoriaType* type_create_unio(Token name);
 void type_forma_add_field(ScoriaType* forma_type, Token name, ScoriaType* field_type);
+
+ScoriaType* type_create_enum(Token name);
+void type_enum_add_variant(ScoriaType* enum_type, Token name, int64_t value);
 
 ScoriaType* type_create_actio(ScoriaType* return_type, ScoriaType** param_types, int param_count, bool is_variadic, bool is_native_variadic);
 

@@ -14,8 +14,9 @@ static ScoriaType basic_types[] = {
     {TY_ACIES},    // 16 - 占位
     {TY_FORMA},    // 17 - 占位
     {TY_UNIO},     // 18 - 占位
-    {TY_ACTIO},    // 19 - 占位
-    {TY_MODULE}    // 20
+    {TY_ENUM},     // 19 - 占位
+    {TY_ACTIO},    // 20 - 占位
+    {TY_MODULE}    // 21
 };
 
 // 简单的链表用于 Type Interning
@@ -86,6 +87,9 @@ static bool type_strict_equals(ScoriaType* a, ScoriaType* b) {
         case TY_UNIO:
             return a->as.struct_type.name.length == b->as.struct_type.name.length &&
                    memcmp(a->as.struct_type.name.start, b->as.struct_type.name.start, a->as.struct_type.name.length) == 0;
+        case TY_ENUM:
+            return a->as.enum_type.name.length == b->as.enum_type.name.length &&
+                   memcmp(a->as.enum_type.name.start, b->as.enum_type.name.start, a->as.enum_type.name.length) == 0;
         case TY_ACTIO:
             if (a->as.func_type.param_count != b->as.func_type.param_count) return false;
             if (a->as.func_type.is_variadic != b->as.func_type.is_variadic) return false;
@@ -167,6 +171,25 @@ void type_forma_add_field(ScoriaType* forma_type, Token name, ScoriaType* field_
     forma_type->as.struct_type.field_count++;
 }
 
+ScoriaType* type_create_enum(Token name) {
+    ScoriaType* t = (ScoriaType*)malloc(sizeof(ScoriaType));
+    t->kind = TY_ENUM;
+    t->as.enum_type.name = name;
+    t->as.enum_type.variants = NULL;
+    t->as.enum_type.variant_count = 0;
+    return t; // 枚举通过名字区分，不放入 intern 池
+}
+
+void type_enum_add_variant(ScoriaType* enum_type, Token name, int64_t value) {
+    if (enum_type->kind != TY_ENUM) return;
+    
+    int count = enum_type->as.enum_type.variant_count;
+    enum_type->as.enum_type.variants = realloc(enum_type->as.enum_type.variants, sizeof(EnumVariant) * (count + 1));
+    enum_type->as.enum_type.variants[count].name = name;
+    enum_type->as.enum_type.variants[count].value = value;
+    enum_type->as.enum_type.variant_count++;
+}
+
 int type_get_size(ScoriaType* type) {
     if (!type) return 0;
     switch (type->kind) {
@@ -205,13 +228,14 @@ int type_get_size(ScoriaType* type) {
             }
             return (max_size + max_align - 1) & ~(max_align - 1);
         }
+        case TY_ENUM: return 4; // 枚举底层严格等价于 i32
         default: return 8;
     }
 }
 
 bool type_is_signed(ScoriaType* type) {
     if (!type) return false;
-    return type->kind == TY_I8 || type->kind == TY_I16 || type->kind == TY_I32 || type->kind == TY_I64;
+    return type->kind == TY_I8 || type->kind == TY_I16 || type->kind == TY_I32 || type->kind == TY_I64 || type->kind == TY_ENUM;
 }
 
 bool type_is_unsigned(ScoriaType* type) {

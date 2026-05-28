@@ -97,8 +97,19 @@ Scoria 提供了极其显式的内存操作指令，拒绝隐式转换：
     *   `neca(<指针>)` (相当于 free/delete)
 *   **强制类型转换**：`muta(<目标类型>, <表达式>)` (唯一打破类型安全边界的系统特权)
 
-## 6. 结构体、联合体与类型别名 (Structurae, Uniones et Imagines)
+## 6. 结构体、联合体、枚举与类型别名 (Structurae, Uniones, Ordines et Imagines)
 
+*   **枚举 (Ordo)**：
+    使用 `ordo` 关键字声明一组强类型的常量集合。底层严格等价于 `i32`，零运行时开销。
+    ```scoria
+    ordo [edita] <枚举名> {
+        <变体名1> [= <常量表达式>],
+        <变体名2>, // 自动递增
+        ...
+    }
+    // 示例: ordo TokenKind { TK_EOF, TK_IDENTIFIER = 10 }
+    // 访问: TokenKind.TK_EOF
+    ```
 *   **类型别名 (Imago)**：
     使用 `imago` 关键字为现有类型创建透明的等价别名。在底层编译时，别名会被完全展开，零运行时开销。
     ```scoria
@@ -157,6 +168,7 @@ Scoria 提供了极其显式的内存操作指令，拒绝隐式转换：
 | `littera` | `ltr` | 1字节 ASCII |
 | `textus` | `txt` | 静态文本字面量 |
 | `imago` | `img` | 声明类型别名 |
+| `ordo` | `ord` | 声明枚举类型 |
 | `forma` | `frm` | 声明标准结构体 |
 | `densa` | `dns` | 紧凑内存无缝隙 |
 | `cohors` | `crs` | 16字节胖指针 |

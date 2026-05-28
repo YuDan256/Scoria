@@ -18,6 +18,7 @@ typedef enum {
     AST_STRUCT_DECL,
     AST_UNION_DECL,
     AST_TYPE_ALIAS_DECL,
+    AST_ENUM_DECL,
     AST_BLOCK_STMT,
     AST_EXPR_STMT,
     AST_IF_STMT,
@@ -113,6 +114,14 @@ struct AstNode {
             AstNode* target_type;
             bool is_editus;
         } type_alias_decl;
+
+        struct {
+            Token name;
+            bool is_editus;
+            Token* variant_names;
+            AstNode** variant_values;
+            int variant_count;
+        } enum_decl;
 
         struct {
             AstNode** statements;

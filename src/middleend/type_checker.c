@@ -98,10 +98,10 @@ static ScoriaType* resolve_type_node(TypeChecker* checker, AstNode* type_node) {
                 } else {
                     base_type = sym->type;
                 }
-            } else if (sym && (sym->kind == SYM_STRUCT || sym->kind == SYM_UNION)) {
+            } else if (sym && (sym->kind == SYM_STRUCT || sym->kind == SYM_UNION || sym->kind == SYM_ENUM)) {
                 base_type = sym->type;
             } else {
-                type_error(checker, base_tok, "Forma, unio vel imago ignota est.");
+                type_error(checker, base_tok, "Forma, unio, ordo vel imago ignota est.");
                 base_type = type_get_basic(TY_UNKNOWN);
             }
             break;
@@ -480,6 +480,33 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
                 break;
             }
 
+            // 枚举变体访问 (如 TokenKind.TK_EOF)
+            if (obj_type->kind == TY_ENUM) {
+                if (expr->as.member_expr.is_pointer) {
+                    type_error(checker, expr->token, "Operator '->' ad ordinem applicari non potest.");
+                    break;
+                }
+                bool found = false;
+                for (int i = 0; i < obj_type->as.enum_type.variant_count; i++) {
+                    EnumVariant variant = obj_type->as.enum_type.variants[i];
+                    if (variant.name.length == expr->as.member_expr.property.length &&
+                        memcmp(variant.name.start, expr->as.member_expr.property.start, variant.name.length) == 0) {
+                        
+                        // 魔法：直接将 AST_MEMBER_EXPR 折叠为 AST_LITERAL_EXPR (i32 常量)
+                        expr->kind = AST_LITERAL_EXPR;
+                        expr->token.kind = TK_INT_CONST;
+                        expr->as.literal_expr.int_val = variant.value;
+                        type = obj_type; // 保持枚举类型，以供严格类型检查
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    type_error(checker, expr->as.member_expr.property, "Varians in ordine ignota est.");
+                }
+                break;
+            }
+
             if (expr->as.member_expr.is_pointer) {
                 if (obj_type->kind != TY_VIA || (obj_type->as.inner->kind != TY_FORMA && obj_type->as.inner->kind != TY_UNIO && obj_type->as.inner->kind != TY_COHORS)) {
                     type_error(checker, expr->token, "Operator '->' ad 'via forma', 'via unio' vel 'via cohors' solum applicari potest.");
@@ -550,9 +577,9 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
                 type_error(checker, expr->token, "Index ad aciem, cohortem vel viam solum applicari potest.");
             }
 
-            // 简单校验索引是否为整数类型 (i8~i64, p8~p64)
-            if (index_type->kind < TY_I8 || index_type->kind > TY_P64) {
-                type_error(checker, expr->token, "Index integer esse debet.");
+            // 简单校验索引是否为整数类型 (i8~i64, p8~p64) 或枚举
+            if ((index_type->kind < TY_I8 || index_type->kind > TY_P64) && index_type->kind != TY_ENUM) {
+                type_error(checker, expr->token, "Index integer vel ordo esse debet.");
             }
             break;
         }
@@ -778,6 +805,11 @@ static void collect_declarations(TypeChecker* checker, AstNode* program) {
             if (!symtab_define(&checker->symtab, decl->as.type_alias_decl.name, SYM_TYPE_ALIAS, NULL, decl, decl->as.type_alias_decl.is_editus)) {
                 type_error(checker, decl->as.type_alias_decl.name, "Nomen imaginis iam definitum est.");
             }
+        } else if (decl->kind == AST_ENUM_DECL) {
+            ScoriaType* enum_type = type_create_enum(decl->as.enum_decl.name);
+            if (!symtab_define(&checker->symtab, decl->as.enum_decl.name, SYM_ENUM, enum_type, decl, decl->as.enum_decl.is_editus)) {
+                type_error(checker, decl->as.enum_decl.name, "Nomen ordinis iam definitum est.");
+            }
         }
     }
 
@@ -846,6 +878,30 @@ static void collect_declarations(TypeChecker* checker, AstNode* program) {
                 sym->is_resolving = true;
                 sym->type = resolve_type_node(checker, decl->as.type_alias_decl.target_type);
                 sym->is_resolving = false;
+            }
+        }
+        else if (decl->kind == AST_ENUM_DECL) {
+            Symbol* sym = symtab_lookup(&checker->symtab, decl->as.enum_decl.name);
+            if (sym && sym->type->kind == TY_ENUM) {
+                ScoriaType* enum_type = sym->type;
+                int64_t current_val = 0;
+                for (int j = 0; j < decl->as.enum_decl.variant_count; j++) {
+                    Token v_name = decl->as.enum_decl.variant_names[j];
+                    AstNode* v_val_node = decl->as.enum_decl.variant_values[j];
+                    
+                    if (v_val_node) {
+                        // 简单常量折叠：目前仅支持直接的整数常量
+                        if (v_val_node->kind == AST_LITERAL_EXPR && v_val_node->token.kind == TK_INT_CONST) {
+                            parse_and_check_literal(checker, v_val_node, type_get_basic(TY_I32), false);
+                            current_val = v_val_node->as.literal_expr.int_val;
+                        } else {
+                            type_error(checker, v_name, "Valor variantis constans integer esse debet.");
+                        }
+                    }
+                    
+                    type_enum_add_variant(enum_type, v_name, current_val);
+                    current_val++;
+                }
             }
         }
     }

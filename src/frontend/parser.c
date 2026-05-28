@@ -934,6 +934,53 @@ static AstNode* union_declaration(Parser* parser) {
     return node;
 }
 
+static AstNode* enum_declaration(Parser* parser) {
+    Token keyword = parser->previous;
+    bool is_edita = match(parser, TK_KW_EDITA);
+    
+    consume(parser, TK_IDENTIFIER, "Nomen ordinis exspectatur.");
+    Token name = parser->previous;
+    
+    consume(parser, TK_LBRACE, "Ante corpus ordinis '{' exspectatur.");
+    
+    Token* variant_names = NULL;
+    AstNode** variant_values = NULL;
+    int variant_count = 0;
+    int capacity = 0;
+    
+    if (!check(parser, TK_RBRACE)) {
+        do {
+            if (variant_count >= capacity) {
+                int old_capacity = capacity;
+                capacity = capacity < 8 ? 8 : capacity * 2;
+                variant_names = arena_realloc(&parser->arena, variant_names, sizeof(Token) * old_capacity, sizeof(Token) * capacity);
+                variant_values = arena_realloc(&parser->arena, variant_values, sizeof(AstNode*) * old_capacity, sizeof(AstNode*) * capacity);
+            }
+            
+            consume(parser, TK_IDENTIFIER, "Nomen variantis exspectatur.");
+            variant_names[variant_count] = parser->previous;
+            
+            AstNode* value = NULL;
+            if (match(parser, TK_ASSIGN)) {
+                value = expression(parser);
+            }
+            variant_values[variant_count] = value;
+            variant_count++;
+            
+        } while (match(parser, TK_COMMA));
+    }
+    
+    consume(parser, TK_RBRACE, "Post corpus ordinis '}' exspectatur.");
+    
+    AstNode* node = ast_create_node(&parser->arena, AST_ENUM_DECL, keyword);
+    node->as.enum_decl.name = name;
+    node->as.enum_decl.is_editus = is_edita;
+    node->as.enum_decl.variant_names = variant_names;
+    node->as.enum_decl.variant_values = variant_values;
+    node->as.enum_decl.variant_count = variant_count;
+    return node;
+}
+
 static AstNode* type_alias_declaration(Parser* parser) {
     Token keyword = parser->previous;
     bool is_edita = match(parser, TK_KW_EDITA);
@@ -1086,6 +1133,8 @@ static AstNode* declaration(Parser* parser) {
             decl = union_declaration(parser);
         } else if (match(parser, TK_KW_IMAGO)) {
             decl = type_alias_declaration(parser);
+        } else if (match(parser, TK_KW_ORDO)) {
+            decl = enum_declaration(parser);
         } else {
             decl = statement(parser);
         }
