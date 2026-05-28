@@ -283,7 +283,12 @@ int g_extern_reloc_count = 0;
 
 // 智能操作数加载器：处理常量、物理寄存器、栈溢出和 RIP 寻址
 static int load_operand(PeCodeBuffer* cb, RegAllocator* alloc, SirValue* val, int scratch, LinkCtx* ctx) {
-    if (!val) return scratch;
+    if (!val) {
+        if (scratch > 7) emit_rex(cb, 0, 1, 0, 1);
+        emit8(cb, 0x31);
+        emit_modrm(cb, 3, scratch & 7, scratch & 7);
+        return scratch;
+    }
     if (val->kind == SIR_VAL_CONST_INT) {
         int64_t v = val->as.int_val;
         if (v == 0) {
@@ -480,6 +485,18 @@ int g_crea_reloc_count = 0;
 uint32_t g_neca_relocs[MAX_RELOCS];
 int g_neca_reloc_count = 0;
 
+uint32_t g_lege_int_relocs[MAX_RELOCS];
+int g_lege_int_reloc_count = 0;
+
+uint32_t g_lege_float_relocs[MAX_RELOCS];
+int g_lege_float_reloc_count = 0;
+
+uint32_t g_lege_char_relocs[MAX_RELOCS];
+int g_lege_char_reloc_count = 0;
+
+uint32_t g_lege_bool_relocs[MAX_RELOCS];
+int g_lege_bool_reloc_count = 0;
+
 static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_level) {
     builtins_analyze_usage(module);
     
@@ -622,6 +639,10 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
         g_str_reloc_count = 0;
         g_crea_reloc_count = 0;
         g_neca_reloc_count = 0;
+        g_lege_int_reloc_count = 0;
+        g_lege_float_reloc_count = 0;
+        g_lege_char_reloc_count = 0;
+        g_lege_bool_reloc_count = 0;
         g_data_reloc_count = 0;
         g_func_reloc_count = 0;
         g_extern_reloc_count = 0;
@@ -1875,6 +1896,33 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                                 }
                                 break;
                             }
+                            if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "lege") == 0) {
+                                ScoriaType* target_type = inst->operands[1]->type;
+                                if (target_type && target_type->kind == TY_VIA) target_type = target_type->as.inner;
+                                int size = target_type ? type_get_size(target_type) : 8;
+                                
+                                int ptr_reg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
+                                if (ptr_reg != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, ptr_reg);
+                                
+                                emit_mov_reg_imm32(&linker->text_section, REG_RDX, size);
+                                
+                                emit8(&linker->text_section, 0xE8); // call rel32
+                                if (target_type && (target_type->kind == TY_F32 || target_type->kind == TY_F64)) {
+                                    if (ctx.pass == 1) g_lege_float_relocs[g_lege_float_reloc_count++] = (uint32_t)linker->text_section.size;
+                                } else if (target_type && target_type->kind == TY_LITTERA) {
+                                    if (ctx.pass == 1) g_lege_char_relocs[g_lege_char_reloc_count++] = (uint32_t)linker->text_section.size;
+                                } else if (target_type && target_type->kind == TY_LOGICA) {
+                                    if (ctx.pass == 1) g_lege_bool_relocs[g_lege_bool_reloc_count++] = (uint32_t)linker->text_section.size;
+                                } else {
+                                    if (ctx.pass == 1) g_lege_int_relocs[g_lege_int_reloc_count++] = (uint32_t)linker->text_section.size;
+                                }
+                                emit32(&linker->text_section, 0);
+                                
+                                if (inst->dest) {
+                                    store_result(&linker->text_section, &allocator, inst->dest, REG_RAX);
+                                }
+                                break;
+                            }
                             if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "crea") == 0) {
                                 int arg = load_operand(&linker->text_section, &allocator, inst->operands[1], REG_RCX, &ctx);
                                 if (arg != REG_RCX) emit_mov_reg_reg(&linker->text_section, REG_RCX, arg);
@@ -2397,6 +2445,10 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     if (g_use_crea || g_use_neca) {
         pe_idata_add_import(idata, "kernel32.dll", "GetProcessHeap");
     }
+    if (g_use_lege) {
+        pe_idata_add_import(idata, "kernel32.dll", "GetStdHandle");
+        pe_idata_add_import(idata, "kernel32.dll", "ReadFile");
+    }
     if (g_use_crea) pe_idata_add_import(idata, "kernel32.dll", "HeapAlloc");
     if (g_use_neca) pe_idata_add_import(idata, "kernel32.dll", "HeapFree");
     
@@ -2414,6 +2466,7 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     opt.DataDirectory[1].Size = import_dir_size;
     opt.DataDirectory[12].VirtualAddress = iat_rva;
     opt.DataDirectory[12].Size = iat_size;
+
 
     rdata_sec.VirtualSize = (uint32_t)linker->rdata_section.size;
     rdata_sec.SizeOfRawData = align_up((uint32_t)linker->rdata_section.size, file_align);
@@ -2569,6 +2622,31 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
         memcpy(linker->text_section.buffer + g_print_bool_offset + 22, &rel_falsum, 4);
     }
 
+    // 回填 __lege 调用重定位
+    if (g_use_lege) {
+        for (int i = 0; i < g_lege_int_reloc_count; i++) {
+            uint32_t text_off = g_lege_int_relocs[i];
+            int32_t rel32 = (int32_t)(g_lege_int_offset - (text_off + 4));
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        }
+        for (int i = 0; i < g_lege_float_reloc_count; i++) {
+            uint32_t text_off = g_lege_float_relocs[i];
+            int32_t rel32 = (int32_t)(g_lege_float_offset - (text_off + 4));
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        }
+        for (int i = 0; i < g_lege_char_reloc_count; i++) {
+            uint32_t text_off = g_lege_char_relocs[i];
+            int32_t rel32 = (int32_t)(g_lege_char_offset - (text_off + 4));
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        }
+        for (int i = 0; i < g_lege_bool_reloc_count; i++) {
+            uint32_t text_off = g_lege_bool_relocs[i];
+            int32_t rel32 = (int32_t)(g_lege_bool_offset - (text_off + 4));
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        }
+
+    }
+
     // 回填 __crea 调用重定位
     if (g_use_crea) {
         for (int i = 0; i < g_crea_reloc_count; i++) {
@@ -2615,6 +2693,10 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     if (g_use_neca) {
         RELOC_IAT(g_call_getprocessheap_reloc2, "kernel32.dll", "GetProcessHeap");
         RELOC_IAT(g_call_heapfree_reloc, "kernel32.dll", "HeapFree");
+    }
+    if (g_use_lege) {
+        RELOC_IAT(g_call_getstdhandle_reloc_read, "kernel32.dll", "GetStdHandle");
+        RELOC_IAT(g_call_readfile_reloc, "kernel32.dll", "ReadFile");
     }
 
     // 回填外部函数 (Externs) 调用重定位

@@ -10,6 +10,7 @@ bool g_use_print_bool = false;
 bool g_use_print_hex = false;
 bool g_use_crea = false;
 bool g_use_neca = false;
+bool g_use_lege = false;
 
 PrintType builtins_get_print_type(SirValue* arg) {
     ScoriaType* arg_type = arg->type;
@@ -61,6 +62,8 @@ void builtins_analyze_usage(SirModule* module) {
                         g_use_crea = true;
                     } else if (strcmp(callee, "neca") == 0) {
                         g_use_neca = true;
+                    } else if (strcmp(callee, "lege") == 0) {
+                        g_use_lege = true;
                     }
                 }
             }
@@ -95,6 +98,15 @@ uint32_t g_call_getprocessheap_reloc1 = 0;
 uint32_t g_call_getprocessheap_reloc2 = 0;
 uint32_t g_call_heapalloc_reloc = 0;
 uint32_t g_call_heapfree_reloc = 0;
+
+uint32_t g_read_char_offset = 0;
+uint32_t g_lege_int_offset = 0;
+uint32_t g_lege_float_offset = 0;
+uint32_t g_lege_char_offset = 0;
+uint32_t g_lege_bool_offset = 0;
+
+uint32_t g_call_getstdhandle_reloc_read = 0;
+uint32_t g_call_readfile_reloc = 0;
 
 void asm_builtins_generate(FILE* out) {
     if (g_use_print_str) {
@@ -312,7 +324,280 @@ void asm_builtins_generate(FILE* out) {
     fprintf(out, "    ret\n\n");
     }
 
-    if (g_use_print_float || g_use_print_bool) {
+    if (g_use_lege) {
+    fprintf(out, "__read_char:\n");
+    fprintf(out, "    subq $56, %%rsp\n");
+    fprintf(out, "    movl $-10, %%ecx\n");
+    fprintf(out, "    call GetStdHandle\n");
+    fprintf(out, "    movq %%rax, %%rcx\n");
+    fprintf(out, "    leaq 48(%%rsp), %%rdx\n");
+    fprintf(out, "    movq $1, %%r8\n");
+    fprintf(out, "    leaq 40(%%rsp), %%r9\n");
+    fprintf(out, "    movq $0, 32(%%rsp)\n");
+    fprintf(out, "    call ReadFile\n");
+    fprintf(out, "    testl %%eax, %%eax\n");
+    fprintf(out, "    jz .Lrc_eof\n");
+    fprintf(out, "    movl 40(%%rsp), %%eax\n");
+    fprintf(out, "    testl %%eax, %%eax\n");
+    fprintf(out, "    jz .Lrc_eof\n");
+    fprintf(out, "    movzbq 48(%%rsp), %%rax\n");
+    fprintf(out, "    addq $56, %%rsp\n");
+    fprintf(out, "    ret\n");
+    fprintf(out, ".Lrc_eof:\n");
+    fprintf(out, "    xorq %%rax, %%rax\n");
+    fprintf(out, "    addq $56, %%rsp\n");
+    fprintf(out, "    ret\n\n");
+
+    fprintf(out, "__lege_int:\n");
+    fprintf(out, "    pushq %%rbx\n");
+    fprintf(out, "    pushq %%r12\n");
+    fprintf(out, "    pushq %%r13\n");
+    fprintf(out, "    pushq %%r14\n");
+    fprintf(out, "    subq $40, %%rsp\n");
+    fprintf(out, "    movq %%rcx, %%rbx\n");
+    fprintf(out, "    movq %%rdx, %%r12\n");
+    fprintf(out, "    xorq %%r13, %%r13\n");
+    fprintf(out, "    xorq %%r14, %%r14\n");
+    fprintf(out, ".Lli_ws:\n");
+    fprintf(out, "    call __read_char\n");
+    fprintf(out, "    testq %%rax, %%rax\n");
+    fprintf(out, "    jz .Lli_fail\n");
+    fprintf(out, "    cmpb $' ', %%al\n");
+    fprintf(out, "    je .Lli_ws\n");
+    fprintf(out, "    cmpb $'\\n', %%al\n");
+    fprintf(out, "    je .Lli_ws\n");
+    fprintf(out, "    cmpb $'\\r', %%al\n");
+    fprintf(out, "    je .Lli_ws\n");
+    fprintf(out, "    cmpb $'\\t', %%al\n");
+    fprintf(out, "    je .Lli_ws\n");
+    fprintf(out, "    cmpb $'-', %%al\n");
+    fprintf(out, "    jne .Lli_chk_plus\n");
+    fprintf(out, "    movq $1, %%r13\n");
+    fprintf(out, "    jmp .Lli_next\n");
+    fprintf(out, ".Lli_chk_plus:\n");
+    fprintf(out, "    cmpb $'+', %%al\n");
+    fprintf(out, "    jne .Lli_digit\n");
+    fprintf(out, ".Lli_next:\n");
+    fprintf(out, "    call __read_char\n");
+    fprintf(out, "    testq %%rax, %%rax\n");
+    fprintf(out, "    jz .Lli_done\n");
+    fprintf(out, ".Lli_digit:\n");
+    fprintf(out, "    cmpb $'0', %%al\n");
+    fprintf(out, "    jb .Lli_done\n");
+    fprintf(out, "    cmpb $'9', %%al\n");
+    fprintf(out, "    ja .Lli_done\n");
+    fprintf(out, "    subb $'0', %%al\n");
+    fprintf(out, "    movzbq %%al, %%rax\n");
+    fprintf(out, "    imulq $10, %%r14\n");
+    fprintf(out, "    addq %%rax, %%r14\n");
+    fprintf(out, "    jmp .Lli_next\n");
+    fprintf(out, ".Lli_done:\n");
+    fprintf(out, "    testq %%r13, %%r13\n");
+    fprintf(out, "    jz .Lli_store\n");
+    fprintf(out, "    negq %%r14\n");
+    fprintf(out, ".Lli_store:\n");
+    fprintf(out, "    cmpq $1, %%r12\n");
+    fprintf(out, "    je .Lli_s1\n");
+    fprintf(out, "    cmpq $2, %%r12\n");
+    fprintf(out, "    je .Lli_s2\n");
+    fprintf(out, "    cmpq $4, %%r12\n");
+    fprintf(out, "    je .Lli_s4\n");
+    fprintf(out, "    movq %%r14, (%%rbx)\n");
+    fprintf(out, "    jmp .Lli_ok\n");
+    fprintf(out, ".Lli_s1:\n");
+    fprintf(out, "    movb %%r14b, (%%rbx)\n");
+    fprintf(out, "    jmp .Lli_ok\n");
+    fprintf(out, ".Lli_s2:\n");
+    fprintf(out, "    movw %%r14w, (%%rbx)\n");
+    fprintf(out, "    jmp .Lli_ok\n");
+    fprintf(out, ".Lli_s4:\n");
+    fprintf(out, "    movl %%r14d, (%%rbx)\n");
+    fprintf(out, ".Lli_ok:\n");
+    fprintf(out, "    movl $1, %%eax\n");
+    fprintf(out, "    addq $40, %%rsp\n");
+    fprintf(out, "    popq %%r14\n");
+    fprintf(out, "    popq %%r13\n");
+    fprintf(out, "    popq %%r12\n");
+    fprintf(out, "    popq %%rbx\n");
+    fprintf(out, "    ret\n");
+    fprintf(out, ".Lli_fail:\n");
+    fprintf(out, "    xorl %%eax, %%eax\n");
+    fprintf(out, "    addq $40, %%rsp\n");
+    fprintf(out, "    popq %%r14\n");
+    fprintf(out, "    popq %%r13\n");
+    fprintf(out, "    popq %%r12\n");
+    fprintf(out, "    popq %%rbx\n");
+    fprintf(out, "    ret\n\n");
+
+    fprintf(out, "__lege_float:\n");
+    fprintf(out, "    pushq %%rbx\n");
+    fprintf(out, "    pushq %%r12\n");
+    fprintf(out, "    pushq %%r13\n");
+    fprintf(out, "    pushq %%r14\n");
+    fprintf(out, "    subq $40, %%rsp\n");
+    fprintf(out, "    movq %%rcx, %%rbx\n");
+    fprintf(out, "    movq %%rdx, %%r12\n");
+    fprintf(out, "    xorq %%r13, %%r13\n");
+    fprintf(out, "    xorq %%r14, %%r14\n");
+    fprintf(out, "    movq $0, 32(%%rsp)\n");
+    fprintf(out, "    movq $1, 24(%%rsp)\n");
+    fprintf(out, ".Llf_ws:\n");
+    fprintf(out, "    call __read_char\n");
+    fprintf(out, "    testq %%rax, %%rax\n");
+    fprintf(out, "    jz .Llf_fail\n");
+    fprintf(out, "    cmpb $' ', %%al\n");
+    fprintf(out, "    je .Llf_ws\n");
+    fprintf(out, "    cmpb $'\\n', %%al\n");
+    fprintf(out, "    je .Llf_ws\n");
+    fprintf(out, "    cmpb $'\\r', %%al\n");
+    fprintf(out, "    je .Llf_ws\n");
+    fprintf(out, "    cmpb $'\\t', %%al\n");
+    fprintf(out, "    je .Llf_ws\n");
+    fprintf(out, "    cmpb $'-', %%al\n");
+    fprintf(out, "    jne .Llf_chk_plus\n");
+    fprintf(out, "    movq $1, %%r13\n");
+    fprintf(out, "    jmp .Llf_next\n");
+    fprintf(out, ".Llf_chk_plus:\n");
+    fprintf(out, "    cmpb $'+', %%al\n");
+    fprintf(out, "    jne .Llf_digit\n");
+    fprintf(out, ".Llf_next:\n");
+    fprintf(out, "    call __read_char\n");
+    fprintf(out, "    testq %%rax, %%rax\n");
+    fprintf(out, "    jz .Llf_done\n");
+    fprintf(out, ".Llf_digit:\n");
+    fprintf(out, "    cmpb $'.', %%al\n");
+    fprintf(out, "    je .Llf_frac_next\n");
+    fprintf(out, "    cmpb $'0', %%al\n");
+    fprintf(out, "    jb .Llf_done\n");
+    fprintf(out, "    cmpb $'9', %%al\n");
+    fprintf(out, "    ja .Llf_done\n");
+    fprintf(out, "    subb $'0', %%al\n");
+    fprintf(out, "    movzbq %%al, %%rax\n");
+    fprintf(out, "    imulq $10, %%r14\n");
+    fprintf(out, "    addq %%rax, %%r14\n");
+    fprintf(out, "    jmp .Llf_next\n");
+    fprintf(out, ".Llf_frac_next:\n");
+    fprintf(out, "    call __read_char\n");
+    fprintf(out, "    testq %%rax, %%rax\n");
+    fprintf(out, "    jz .Llf_done\n");
+    fprintf(out, "    cmpb $'0', %%al\n");
+    fprintf(out, "    jb .Llf_done\n");
+    fprintf(out, "    cmpb $'9', %%al\n");
+    fprintf(out, "    ja .Llf_done\n");
+    fprintf(out, "    subb $'0', %%al\n");
+    fprintf(out, "    movzbq %%al, %%rax\n");
+    fprintf(out, "    movq 32(%%rsp), %%rcx\n");
+    fprintf(out, "    imulq $10, %%rcx\n");
+    fprintf(out, "    addq %%rax, %%rcx\n");
+    fprintf(out, "    movq %%rcx, 32(%%rsp)\n");
+    fprintf(out, "    movq 24(%%rsp), %%rcx\n");
+    fprintf(out, "    imulq $10, %%rcx\n");
+    fprintf(out, "    movq %%rcx, 24(%%rsp)\n");
+    fprintf(out, "    jmp .Llf_frac_next\n");
+    fprintf(out, ".Llf_done:\n");
+    fprintf(out, "    cvtsi2sd %%r14, %%xmm0\n");
+    fprintf(out, "    movq 32(%%rsp), %%rax\n");
+    fprintf(out, "    cvtsi2sd %%rax, %%xmm1\n");
+    fprintf(out, "    movq 24(%%rsp), %%rax\n");
+    fprintf(out, "    cvtsi2sd %%rax, %%xmm2\n");
+    fprintf(out, "    divsd %%xmm2, %%xmm1\n");
+    fprintf(out, "    addsd %%xmm1, %%xmm0\n");
+    fprintf(out, "    testq %%r13, %%r13\n");
+    fprintf(out, "    jz .Llf_store\n");
+    fprintf(out, "    xorpd %%xmm1, %%xmm1\n");
+    fprintf(out, "    subsd %%xmm0, %%xmm1\n");
+    fprintf(out, "    movapd %%xmm1, %%xmm0\n");
+    fprintf(out, ".Llf_store:\n");
+    fprintf(out, "    cmpq $4, %%r12\n");
+    fprintf(out, "    je .Llf_s4\n");
+    fprintf(out, "    movsd %%xmm0, (%%rbx)\n");
+    fprintf(out, "    jmp .Llf_ok\n");
+    fprintf(out, ".Llf_s4:\n");
+    fprintf(out, "    cvtsd2ss %%xmm0, %%xmm0\n");
+    fprintf(out, "    movss %%xmm0, (%%rbx)\n");
+    fprintf(out, ".Llf_ok:\n");
+    fprintf(out, "    movl $1, %%eax\n");
+    fprintf(out, "    addq $40, %%rsp\n");
+    fprintf(out, "    popq %%r14\n");
+    fprintf(out, "    popq %%r13\n");
+    fprintf(out, "    popq %%r12\n");
+    fprintf(out, "    popq %%rbx\n");
+    fprintf(out, "    ret\n");
+    fprintf(out, ".Llf_fail:\n");
+    fprintf(out, "    xorl %%eax, %%eax\n");
+    fprintf(out, "    addq $40, %%rsp\n");
+    fprintf(out, "    popq %%r14\n");
+    fprintf(out, "    popq %%r13\n");
+    fprintf(out, "    popq %%r12\n");
+    fprintf(out, "    popq %%rbx\n");
+    fprintf(out, "    ret\n\n");
+
+    fprintf(out, "__lege_char:\n");
+    fprintf(out, "    pushq %%rbx\n");
+    fprintf(out, "    subq $32, %%rsp\n");
+    fprintf(out, "    movq %%rcx, %%rbx\n");
+    fprintf(out, ".Llc_ws:\n");
+    fprintf(out, "    call __read_char\n");
+    fprintf(out, "    testq %%rax, %%rax\n");
+    fprintf(out, "    jz .Llc_fail\n");
+    fprintf(out, "    cmpb $' ', %%al\n");
+    fprintf(out, "    je .Llc_ws\n");
+    fprintf(out, "    cmpb $'\\n', %%al\n");
+    fprintf(out, "    je .Llc_ws\n");
+    fprintf(out, "    cmpb $'\\r', %%al\n");
+    fprintf(out, "    je .Llc_ws\n");
+    fprintf(out, "    cmpb $'\\t', %%al\n");
+    fprintf(out, "    je .Llc_ws\n");
+    fprintf(out, "    movb %%al, (%%rbx)\n");
+    fprintf(out, "    movl $1, %%eax\n");
+    fprintf(out, "    addq $32, %%rsp\n");
+    fprintf(out, "    popq %%rbx\n");
+    fprintf(out, "    ret\n");
+    fprintf(out, ".Llc_fail:\n");
+    fprintf(out, "    xorl %%eax, %%eax\n");
+    fprintf(out, "    addq $32, %%rsp\n");
+    fprintf(out, "    popq %%rbx\n");
+    fprintf(out, "    ret\n\n");
+
+    fprintf(out, "__lege_bool:\n");
+    fprintf(out, "    pushq %%rbx\n");
+    fprintf(out, "    subq $32, %%rsp\n");
+    fprintf(out, "    movq %%rcx, %%rbx\n");
+    fprintf(out, ".Llb_ws:\n");
+    fprintf(out, "    call __read_char\n");
+    fprintf(out, "    testq %%rax, %%rax\n");
+    fprintf(out, "    jz .Llb_fail\n");
+    fprintf(out, "    cmpb $' ', %%al\n");
+    fprintf(out, "    je .Llb_ws\n");
+    fprintf(out, "    cmpb $'\\n', %%al\n");
+    fprintf(out, "    je .Llb_ws\n");
+    fprintf(out, "    cmpb $'\\r', %%al\n");
+    fprintf(out, "    je .Llb_ws\n");
+    fprintf(out, "    cmpb $'\\t', %%al\n");
+    fprintf(out, "    je .Llb_ws\n");
+    fprintf(out, "    cmpb $'1', %%al\n");
+    fprintf(out, "    je .Llb_true\n");
+    fprintf(out, "    cmpb $'v', %%al\n");
+    fprintf(out, "    je .Llb_true\n");
+    fprintf(out, "    cmpb $'V', %%al\n");
+    fprintf(out, "    je .Llb_true\n");
+    fprintf(out, "    movb $0, (%%rbx)\n");
+    fprintf(out, "    jmp .Llb_ok\n");
+    fprintf(out, ".Llb_true:\n");
+    fprintf(out, "    movb $1, (%%rbx)\n");
+    fprintf(out, ".Llb_ok:\n");
+    fprintf(out, "    movl $1, %%eax\n");
+    fprintf(out, "    addq $32, %%rsp\n");
+    fprintf(out, "    popq %%rbx\n");
+    fprintf(out, "    ret\n");
+    fprintf(out, ".Llb_fail:\n");
+    fprintf(out, "    xorl %%eax, %%eax\n");
+    fprintf(out, "    addq $32, %%rsp\n");
+    fprintf(out, "    popq %%rbx\n");
+    fprintf(out, "    ret\n\n");
+    }
+
+    if (g_use_print_float || g_use_print_bool || g_use_lege) {
         fprintf(out, "    .section .rdata,\"a\"\n");
         if (g_use_print_float) {
             fprintf(out, ".Lstr_minus:\n    .byte 45\n");
@@ -499,6 +784,338 @@ void pe_builtins_generate(PeLinker* linker, uint32_t princeps_offset, uint32_t i
     emit_rex(&linker->text_section, 1, 0, 0, 0); emit8(&linker->text_section, 0x83); emit8(&linker->text_section, 0xC4); emit8(&linker->text_section, 0x20); // add rsp, 32
     emit8(&linker->text_section, 0x5B); // pop rbx
     emit8(&linker->text_section, 0xC3); // ret
+    }
+
+    if (g_use_lege) {
+        PeCodeBuffer* cb = &linker->text_section;
+        
+        // =========================================================
+        // __read_char
+        // =========================================================
+        g_read_char_offset = (uint32_t)cb->size;
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xEC); emit8(cb, 0x38); // sub rsp, 56
+        emit8(cb, 0xB9); emit32(cb, (uint32_t)-10); // mov ecx, -10
+        emit8(cb, 0xFF); emit8(cb, 0x15); g_call_getstdhandle_reloc_read = (uint32_t)cb->size; emit32(cb, 0); // call GetStdHandle
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x89); emit8(cb, 0xC1); // mov rcx, rax
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x8D); emit8(cb, 0x54); emit8(cb, 0x24); emit8(cb, 0x30); // lea rdx, [rsp+48]
+        emit_rex(cb, 1, 0, 0, 1); emit8(cb, 0xC7); emit8(cb, 0xC0); emit32(cb, 1); // mov r8, 1
+        emit_rex(cb, 1, 1, 0, 0); emit8(cb, 0x8D); emit8(cb, 0x4C); emit8(cb, 0x24); emit8(cb, 0x28); // lea r9, [rsp+40]
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0xC7); emit8(cb, 0x44); emit8(cb, 0x24); emit8(cb, 0x20); emit32(cb, 0); // mov qword ptr [rsp+32], 0
+        emit8(cb, 0xFF); emit8(cb, 0x15); g_call_readfile_reloc = (uint32_t)cb->size; emit32(cb, 0); // call ReadFile
+        
+        emit8(cb, 0x85); emit8(cb, 0xC0); // test eax, eax
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t rc_fail_patch1 = (uint32_t)cb->size; emit32(cb, 0); // jz .Lrc_eof
+        
+        emit8(cb, 0x8B); emit8(cb, 0x44); emit8(cb, 0x24); emit8(cb, 0x28); // mov eax, dword ptr [rsp+40]
+        emit8(cb, 0x85); emit8(cb, 0xC0); // test eax, eax
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t rc_fail_patch2 = (uint32_t)cb->size; emit32(cb, 0); // jz .Lrc_eof
+        
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x0F); emit8(cb, 0xB6); emit8(cb, 0x44); emit8(cb, 0x24); emit8(cb, 0x30); // movzx rax, byte ptr [rsp+48]
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xC4); emit8(cb, 0x38); // add rsp, 56
+        emit8(cb, 0xC3); // ret
+        
+        // .Lrc_eof:
+        uint32_t rc_eof = (uint32_t)cb->size;
+        memcpy(cb->buffer + rc_fail_patch1, &(int32_t){rc_eof - (rc_fail_patch1 + 4)}, 4);
+        memcpy(cb->buffer + rc_fail_patch2, &(int32_t){rc_eof - (rc_fail_patch2 + 4)}, 4);
+        
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x31); emit8(cb, 0xC0); // xor rax, rax
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xC4); emit8(cb, 0x38); // add rsp, 56
+        emit8(cb, 0xC3); // ret
+
+        // =========================================================
+        // __lege_int
+        // =========================================================
+        g_lege_int_offset = (uint32_t)cb->size;
+        emit8(cb, 0x53); // push rbx
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x54); // push r12
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x55); // push r13
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x56); // push r14
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xEC); emit8(cb, 0x28); // sub rsp, 40
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x89); emit8(cb, 0xCB); // mov rbx, rcx
+        emit_rex(cb, 1, 0, 0, 1); emit8(cb, 0x89); emit8(cb, 0xD4); // mov r12, rdx
+        emit_rex(cb, 1, 1, 0, 1); emit8(cb, 0x31); emit8(cb, 0xED); // xor r13, r13
+        emit_rex(cb, 1, 1, 0, 1); emit8(cb, 0x31); emit8(cb, 0xF6); // xor r14, r14
+        uint32_t li_ws = (uint32_t)cb->size;
+        emit8(cb, 0xE8); emit32(cb, g_read_char_offset - ((uint32_t)cb->size + 4)); // call __read_char
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x85); emit8(cb, 0xC0); // test rax, rax
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t li_fail_patch = (uint32_t)cb->size; emit32(cb, 0); // jz .Lli_fail
+        emit8(cb, 0x3C); emit8(cb, 0x20); // cmp al, ' '
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, li_ws - ((uint32_t)cb->size + 4)); // je .Lli_ws
+        emit8(cb, 0x3C); emit8(cb, 0x0A); // cmp al, '\n'
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, li_ws - ((uint32_t)cb->size + 4)); // je .Lli_ws
+        emit8(cb, 0x3C); emit8(cb, 0x0D); // cmp al, '\r'
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, li_ws - ((uint32_t)cb->size + 4)); // je .Lli_ws
+        emit8(cb, 0x3C); emit8(cb, 0x09); // cmp al, '\t'
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, li_ws - ((uint32_t)cb->size + 4)); // je .Lli_ws
+        emit8(cb, 0x3C); emit8(cb, 0x2D); // cmp al, '-'
+        emit8(cb, 0x0F); emit8(cb, 0x85); uint32_t li_chk_plus_patch = (uint32_t)cb->size; emit32(cb, 0); // jne .Lli_chk_plus
+        emit_rex(cb, 1, 0, 0, 1); emit8(cb, 0xC7); emit8(cb, 0xC5); emit32(cb, 1); // mov r13, 1
+        emit8(cb, 0xE9); uint32_t li_next_patch1 = (uint32_t)cb->size; emit32(cb, 0); // jmp .Lli_next
+        uint32_t li_chk_plus = (uint32_t)cb->size;
+        memcpy(cb->buffer + li_chk_plus_patch, &(int32_t){li_chk_plus - (li_chk_plus_patch + 4)}, 4);
+        emit8(cb, 0x3C); emit8(cb, 0x2B); // cmp al, '+'
+        emit8(cb, 0x0F); emit8(cb, 0x85); uint32_t li_digit_patch1 = (uint32_t)cb->size; emit32(cb, 0); // jne .Lli_digit
+        uint32_t li_next = (uint32_t)cb->size;
+        memcpy(cb->buffer + li_next_patch1, &(int32_t){li_next - (li_next_patch1 + 4)}, 4);
+        emit8(cb, 0xE8); emit32(cb, g_read_char_offset - ((uint32_t)cb->size + 4)); // call __read_char
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x85); emit8(cb, 0xC0); // test rax, rax
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t li_done_patch1 = (uint32_t)cb->size; emit32(cb, 0); // jz .Lli_done
+        uint32_t li_digit = (uint32_t)cb->size;
+        memcpy(cb->buffer + li_digit_patch1, &(int32_t){li_digit - (li_digit_patch1 + 4)}, 4);
+        emit8(cb, 0x3C); emit8(cb, 0x30); // cmp al, '0'
+        emit8(cb, 0x0F); emit8(cb, 0x82); uint32_t li_done_patch2 = (uint32_t)cb->size; emit32(cb, 0); // jb .Lli_done
+        emit8(cb, 0x3C); emit8(cb, 0x39); // cmp al, '9'
+        emit8(cb, 0x0F); emit8(cb, 0x87); uint32_t li_done_patch3 = (uint32_t)cb->size; emit32(cb, 0); // ja .Lli_done
+        emit8(cb, 0x2C); emit8(cb, 0x30); // sub al, '0'
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x0F); emit8(cb, 0xB6); emit8(cb, 0xC0); // movzx rax, al
+        emit_rex(cb, 1, 1, 0, 1); emit8(cb, 0x6B); emit8(cb, 0xF6); emit8(cb, 0x0A); // imul r14, r14, 10
+        emit_rex(cb, 1, 0, 0, 1); emit8(cb, 0x01); emit8(cb, 0xC6); // add r14, rax
+        emit8(cb, 0xE9); emit32(cb, li_next - ((uint32_t)cb->size + 4)); // jmp .Lli_next
+        uint32_t li_done = (uint32_t)cb->size;
+        memcpy(cb->buffer + li_done_patch1, &(int32_t){li_done - (li_done_patch1 + 4)}, 4);
+        memcpy(cb->buffer + li_done_patch2, &(int32_t){li_done - (li_done_patch2 + 4)}, 4);
+        memcpy(cb->buffer + li_done_patch3, &(int32_t){li_done - (li_done_patch3 + 4)}, 4);
+        emit_rex(cb, 1, 1, 0, 1); emit8(cb, 0x85); emit8(cb, 0xED); // test r13, r13
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t li_store_patch = (uint32_t)cb->size; emit32(cb, 0); // jz .Lli_store
+        emit_rex(cb, 1, 0, 0, 1); emit8(cb, 0xF7); emit8(cb, 0xDE); // neg r14
+        uint32_t li_store = (uint32_t)cb->size;
+        memcpy(cb->buffer + li_store_patch, &(int32_t){li_store - (li_store_patch + 4)}, 4);
+        emit_rex(cb, 1, 0, 0, 1); emit8(cb, 0x83); emit8(cb, 0xFC); emit8(cb, 0x01); // cmp r12, 1
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t li_s1_patch = (uint32_t)cb->size; emit32(cb, 0); // je .Lli_s1
+        emit_rex(cb, 1, 0, 0, 1); emit8(cb, 0x83); emit8(cb, 0xFC); emit8(cb, 0x02); // cmp r12, 2
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t li_s2_patch = (uint32_t)cb->size; emit32(cb, 0); // je .Lli_s2
+        emit_rex(cb, 1, 0, 0, 1); emit8(cb, 0x83); emit8(cb, 0xFC); emit8(cb, 0x04); // cmp r12, 4
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t li_s4_patch = (uint32_t)cb->size; emit32(cb, 0); // je .Lli_s4
+        emit_rex(cb, 1, 1, 0, 0); emit8(cb, 0x89); emit8(cb, 0x33); // mov [rbx], r14
+        emit8(cb, 0xE9); uint32_t li_ok_patch1 = (uint32_t)cb->size; emit32(cb, 0); // jmp .Lli_ok
+        uint32_t li_s1 = (uint32_t)cb->size;
+        memcpy(cb->buffer + li_s1_patch, &(int32_t){li_s1 - (li_s1_patch + 4)}, 4);
+        emit_rex(cb, 0, 1, 0, 0); emit8(cb, 0x88); emit8(cb, 0x33); // mov [rbx], r14b
+        emit8(cb, 0xE9); uint32_t li_ok_patch2 = (uint32_t)cb->size; emit32(cb, 0); // jmp .Lli_ok
+        uint32_t li_s2 = (uint32_t)cb->size;
+        memcpy(cb->buffer + li_s2_patch, &(int32_t){li_s2 - (li_s2_patch + 4)}, 4);
+        emit8(cb, 0x66); emit_rex(cb, 0, 1, 0, 0); emit8(cb, 0x89); emit8(cb, 0x33); // mov [rbx], r14w
+        emit8(cb, 0xE9); uint32_t li_ok_patch3 = (uint32_t)cb->size; emit32(cb, 0); // jmp .Lli_ok
+        uint32_t li_s4 = (uint32_t)cb->size;
+        memcpy(cb->buffer + li_s4_patch, &(int32_t){li_s4 - (li_s4_patch + 4)}, 4);
+        emit_rex(cb, 0, 1, 0, 0); emit8(cb, 0x89); emit8(cb, 0x33); // mov [rbx], r14d
+        uint32_t li_ok = (uint32_t)cb->size;
+        memcpy(cb->buffer + li_ok_patch1, &(int32_t){li_ok - (li_ok_patch1 + 4)}, 4);
+        memcpy(cb->buffer + li_ok_patch2, &(int32_t){li_ok - (li_ok_patch2 + 4)}, 4);
+        memcpy(cb->buffer + li_ok_patch3, &(int32_t){li_ok - (li_ok_patch3 + 4)}, 4);
+        emit8(cb, 0xB8); emit32(cb, 1); // mov eax, 1
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xC4); emit8(cb, 0x28); // add rsp, 40
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x5E); // pop r14
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x5D); // pop r13
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x5C); // pop r12
+        emit8(cb, 0x5B); // pop rbx
+        emit8(cb, 0xC3); // ret
+        uint32_t li_fail = (uint32_t)cb->size;
+        memcpy(cb->buffer + li_fail_patch, &(int32_t){li_fail - (li_fail_patch + 4)}, 4);
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x31); emit8(cb, 0xC0); // xor rax, rax
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xC4); emit8(cb, 0x28); // add rsp, 40
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x5E); // pop r14
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x5D); // pop r13
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x5C); // pop r12
+        emit8(cb, 0x5B); // pop rbx
+        emit8(cb, 0xC3); // ret
+
+        // =========================================================
+        // __lege_float
+        // =========================================================
+        g_lege_float_offset = (uint32_t)cb->size;
+        emit8(cb, 0x53); // push rbx
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x54); // push r12
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x55); // push r13
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x56); // push r14
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xEC); emit8(cb, 0x28); // sub rsp, 40
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x89); emit8(cb, 0xCB); // mov rbx, rcx
+        emit_rex(cb, 1, 0, 0, 1); emit8(cb, 0x89); emit8(cb, 0xD4); // mov r12, rdx
+        emit_rex(cb, 1, 1, 0, 1); emit8(cb, 0x31); emit8(cb, 0xED); // xor r13, r13
+        emit_rex(cb, 1, 1, 0, 1); emit8(cb, 0x31); emit8(cb, 0xF6); // xor r14, r14
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0xC7); emit8(cb, 0x44); emit8(cb, 0x24); emit8(cb, 0x20); emit32(cb, 0); // mov qword ptr [rsp+32], 0
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0xC7); emit8(cb, 0x44); emit8(cb, 0x24); emit8(cb, 0x18); emit32(cb, 1); // mov qword ptr [rsp+24], 1
+        uint32_t lf_ws = (uint32_t)cb->size;
+        emit8(cb, 0xE8); emit32(cb, g_read_char_offset - ((uint32_t)cb->size + 4)); // call __read_char
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x85); emit8(cb, 0xC0); // test rax, rax
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t lf_fail_patch1 = (uint32_t)cb->size; emit32(cb, 0); // jz .Llf_fail
+        emit8(cb, 0x3C); emit8(cb, 0x20); // cmp al, ' '
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, lf_ws - ((uint32_t)cb->size + 4)); // je .Llf_ws
+        emit8(cb, 0x3C); emit8(cb, 0x0A); // cmp al, '\n'
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, lf_ws - ((uint32_t)cb->size + 4)); // je .Llf_ws
+        emit8(cb, 0x3C); emit8(cb, 0x0D); // cmp al, '\r'
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, lf_ws - ((uint32_t)cb->size + 4)); // je .Llf_ws
+        emit8(cb, 0x3C); emit8(cb, 0x09); // cmp al, '\t'
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, lf_ws - ((uint32_t)cb->size + 4)); // je .Llf_ws
+        emit8(cb, 0x3C); emit8(cb, 0x2D); // cmp al, '-'
+        emit8(cb, 0x0F); emit8(cb, 0x85); uint32_t lf_chk_plus_patch = (uint32_t)cb->size; emit32(cb, 0); // jne .Llf_chk_plus
+        emit_rex(cb, 1, 0, 0, 1); emit8(cb, 0xC7); emit8(cb, 0xC5); emit32(cb, 1); // mov r13, 1
+        emit8(cb, 0xE9); uint32_t lf_next_patch1 = (uint32_t)cb->size; emit32(cb, 0); // jmp .Llf_next
+        uint32_t lf_chk_plus = (uint32_t)cb->size;
+        memcpy(cb->buffer + lf_chk_plus_patch, &(int32_t){lf_chk_plus - (lf_chk_plus_patch + 4)}, 4);
+        emit8(cb, 0x3C); emit8(cb, 0x2B); // cmp al, '+'
+        emit8(cb, 0x0F); emit8(cb, 0x85); uint32_t lf_digit_patch1 = (uint32_t)cb->size; emit32(cb, 0); // jne .Llf_digit
+        uint32_t lf_next = (uint32_t)cb->size;
+        memcpy(cb->buffer + lf_next_patch1, &(int32_t){lf_next - (lf_next_patch1 + 4)}, 4);
+        emit8(cb, 0xE8); emit32(cb, g_read_char_offset - ((uint32_t)cb->size + 4)); // call __read_char
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x85); emit8(cb, 0xC0); // test rax, rax
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t lf_done_patch1 = (uint32_t)cb->size; emit32(cb, 0); // jz .Llf_done
+        uint32_t lf_digit = (uint32_t)cb->size;
+        memcpy(cb->buffer + lf_digit_patch1, &(int32_t){lf_digit - (lf_digit_patch1 + 4)}, 4);
+        emit8(cb, 0x3C); emit8(cb, 0x2E); // cmp al, '.'
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t lf_frac_next_patch1 = (uint32_t)cb->size; emit32(cb, 0); // je .Llf_frac_next
+        emit8(cb, 0x3C); emit8(cb, 0x30); // cmp al, '0'
+        emit8(cb, 0x0F); emit8(cb, 0x82); uint32_t lf_done_patch2 = (uint32_t)cb->size; emit32(cb, 0); // jb .Llf_done
+        emit8(cb, 0x3C); emit8(cb, 0x39); // cmp al, '9'
+        emit8(cb, 0x0F); emit8(cb, 0x87); uint32_t lf_done_patch3 = (uint32_t)cb->size; emit32(cb, 0); // ja .Llf_done
+        emit8(cb, 0x2C); emit8(cb, 0x30); // sub al, '0'
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x0F); emit8(cb, 0xB6); emit8(cb, 0xC0); // movzx rax, al
+        emit_rex(cb, 1, 1, 0, 1); emit8(cb, 0x6B); emit8(cb, 0xF6); emit8(cb, 0x0A); // imul r14, r14, 10
+        emit_rex(cb, 1, 0, 0, 1); emit8(cb, 0x01); emit8(cb, 0xC6); // add r14, rax
+        emit8(cb, 0xE9); emit32(cb, lf_next - ((uint32_t)cb->size + 4)); // jmp .Llf_next
+        uint32_t lf_frac_next = (uint32_t)cb->size;
+        memcpy(cb->buffer + lf_frac_next_patch1, &(int32_t){lf_frac_next - (lf_frac_next_patch1 + 4)}, 4);
+        emit8(cb, 0xE8); emit32(cb, g_read_char_offset - ((uint32_t)cb->size + 4)); // call __read_char
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x85); emit8(cb, 0xC0); // test rax, rax
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t lf_done_patch4 = (uint32_t)cb->size; emit32(cb, 0); // jz .Llf_done
+        emit8(cb, 0x3C); emit8(cb, 0x30); // cmp al, '0'
+        emit8(cb, 0x0F); emit8(cb, 0x82); uint32_t lf_done_patch5 = (uint32_t)cb->size; emit32(cb, 0); // jb .Llf_done
+        emit8(cb, 0x3C); emit8(cb, 0x39); // cmp al, '9'
+        emit8(cb, 0x0F); emit8(cb, 0x87); uint32_t lf_done_patch6 = (uint32_t)cb->size; emit32(cb, 0); // ja .Llf_done
+        emit8(cb, 0x2C); emit8(cb, 0x30); // sub al, '0'
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x0F); emit8(cb, 0xB6); emit8(cb, 0xC0); // movzx rax, al
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x8B); emit8(cb, 0x4C); emit8(cb, 0x24); emit8(cb, 0x20); // mov rcx, [rsp+32]
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x6B); emit8(cb, 0xC9); emit8(cb, 0x0A); // imul rcx, rcx, 10
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x01); emit8(cb, 0xC1); // add rcx, rax
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x89); emit8(cb, 0x4C); emit8(cb, 0x24); emit8(cb, 0x20); // mov [rsp+32], rcx
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x8B); emit8(cb, 0x4C); emit8(cb, 0x24); emit8(cb, 0x18); // mov rcx, [rsp+24]
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x6B); emit8(cb, 0xC9); emit8(cb, 0x0A); // imul rcx, rcx, 10
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x89); emit8(cb, 0x4C); emit8(cb, 0x24); emit8(cb, 0x18); // mov [rsp+24], rcx
+        emit8(cb, 0xE9); emit32(cb, lf_frac_next - ((uint32_t)cb->size + 4)); // jmp .Llf_frac_next
+        uint32_t lf_done = (uint32_t)cb->size;
+        memcpy(cb->buffer + lf_done_patch1, &(int32_t){lf_done - (lf_done_patch1 + 4)}, 4);
+        memcpy(cb->buffer + lf_done_patch2, &(int32_t){lf_done - (lf_done_patch2 + 4)}, 4);
+        memcpy(cb->buffer + lf_done_patch3, &(int32_t){lf_done - (lf_done_patch3 + 4)}, 4);
+        memcpy(cb->buffer + lf_done_patch4, &(int32_t){lf_done - (lf_done_patch4 + 4)}, 4);
+        memcpy(cb->buffer + lf_done_patch5, &(int32_t){lf_done - (lf_done_patch5 + 4)}, 4);
+        memcpy(cb->buffer + lf_done_patch6, &(int32_t){lf_done - (lf_done_patch6 + 4)}, 4);
+        emit8(cb, 0xF2); emit_rex(cb, 1, 0, 0, 1); emit8(cb, 0x0F); emit8(cb, 0x2A); emit8(cb, 0xC6); // cvtsi2sd xmm0, r14
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x8B); emit8(cb, 0x44); emit8(cb, 0x24); emit8(cb, 0x20); // mov rax, [rsp+32]
+        emit8(cb, 0xF2); emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x0F); emit8(cb, 0x2A); emit8(cb, 0xC8); // cvtsi2sd xmm1, rax
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x8B); emit8(cb, 0x44); emit8(cb, 0x24); emit8(cb, 0x18); // mov rax, [rsp+24]
+        emit8(cb, 0xF2); emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x0F); emit8(cb, 0x2A); emit8(cb, 0xD0); // cvtsi2sd xmm2, rax
+        emit8(cb, 0xF2); emit8(cb, 0x0F); emit8(cb, 0x5E); emit8(cb, 0xCA); // divsd xmm1, xmm2
+        emit8(cb, 0xF2); emit8(cb, 0x0F); emit8(cb, 0x58); emit8(cb, 0xC1); // addsd xmm0, xmm1
+        emit_rex(cb, 1, 1, 0, 1); emit8(cb, 0x85); emit8(cb, 0xED); // test r13, r13
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t lf_store_patch = (uint32_t)cb->size; emit32(cb, 0); // jz .Llf_store
+        emit8(cb, 0x66); emit8(cb, 0x0F); emit8(cb, 0x57); emit8(cb, 0xC9); // xorpd xmm1, xmm1
+        emit8(cb, 0xF2); emit8(cb, 0x0F); emit8(cb, 0x5C); emit8(cb, 0xC8); // subsd xmm1, xmm0
+        emit8(cb, 0x66); emit8(cb, 0x0F); emit8(cb, 0x28); emit8(cb, 0xC1); // movapd xmm0, xmm1
+        uint32_t lf_store = (uint32_t)cb->size;
+        memcpy(cb->buffer + lf_store_patch, &(int32_t){lf_store - (lf_store_patch + 4)}, 4);
+        emit_rex(cb, 1, 0, 0, 1); emit8(cb, 0x83); emit8(cb, 0xFC); emit8(cb, 0x04); // cmp r12, 4
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t lf_s4_patch = (uint32_t)cb->size; emit32(cb, 0); // je .Llf_s4
+        emit8(cb, 0xF2); emit8(cb, 0x0F); emit8(cb, 0x11); emit8(cb, 0x03); // movsd [rbx], xmm0
+        emit8(cb, 0xE9); uint32_t lf_ok_patch1 = (uint32_t)cb->size; emit32(cb, 0); // jmp .Llf_ok
+        uint32_t lf_s4 = (uint32_t)cb->size;
+        memcpy(cb->buffer + lf_s4_patch, &(int32_t){lf_s4 - (lf_s4_patch + 4)}, 4);
+        emit8(cb, 0xF2); emit8(cb, 0x0F); emit8(cb, 0x5A); emit8(cb, 0xC0); // cvtsd2ss xmm0, xmm0
+        emit8(cb, 0xF3); emit8(cb, 0x0F); emit8(cb, 0x11); emit8(cb, 0x03); // movss [rbx], xmm0
+        uint32_t lf_ok = (uint32_t)cb->size;
+        memcpy(cb->buffer + lf_ok_patch1, &(int32_t){lf_ok - (lf_ok_patch1 + 4)}, 4);
+        emit8(cb, 0xB8); emit32(cb, 1); // mov eax, 1
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xC4); emit8(cb, 0x28); // add rsp, 40
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x5E); // pop r14
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x5D); // pop r13
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x5C); // pop r12
+        emit8(cb, 0x5B); // pop rbx
+        emit8(cb, 0xC3); // ret
+        uint32_t lf_fail = (uint32_t)cb->size;
+        memcpy(cb->buffer + lf_fail_patch1, &(int32_t){lf_fail - (lf_fail_patch1 + 4)}, 4);
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x31); emit8(cb, 0xC0); // xor rax, rax
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xC4); emit8(cb, 0x28); // add rsp, 40
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x5E); // pop r14
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x5D); // pop r13
+        emit_rex(cb, 0, 0, 0, 1); emit8(cb, 0x5C); // pop r12
+        emit8(cb, 0x5B); // pop rbx
+        emit8(cb, 0xC3); // ret
+
+        // =========================================================
+        // __lege_char
+        // =========================================================
+        g_lege_char_offset = (uint32_t)cb->size;
+        emit8(cb, 0x53); // push rbx
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xEC); emit8(cb, 0x20); // sub rsp, 32
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x89); emit8(cb, 0xCB); // mov rbx, rcx
+        uint32_t lc_ws = (uint32_t)cb->size;
+        emit8(cb, 0xE8); emit32(cb, g_read_char_offset - ((uint32_t)cb->size + 4)); // call __read_char
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x85); emit8(cb, 0xC0); // test rax, rax
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t lc_fail_patch = (uint32_t)cb->size; emit32(cb, 0); // jz .Llc_fail
+        emit8(cb, 0x3C); emit8(cb, 0x20); // cmp al, ' '
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, lc_ws - ((uint32_t)cb->size + 4)); // je .Llc_ws
+        emit8(cb, 0x3C); emit8(cb, 0x0A); // cmp al, '\n'
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, lc_ws - ((uint32_t)cb->size + 4)); // je .Llc_ws
+        emit8(cb, 0x3C); emit8(cb, 0x0D); // cmp al, '\r'
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, lc_ws - ((uint32_t)cb->size + 4)); // je .Llc_ws
+        emit8(cb, 0x3C); emit8(cb, 0x09); // cmp al, '\t'
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, lc_ws - ((uint32_t)cb->size + 4)); // je .Llc_ws
+        emit8(cb, 0x88); emit8(cb, 0x03); // mov [rbx], al
+        emit8(cb, 0xB8); emit32(cb, 1); // mov eax, 1
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xC4); emit8(cb, 0x20); // add rsp, 32
+        emit8(cb, 0x5B); // pop rbx
+        emit8(cb, 0xC3); // ret
+        uint32_t lc_fail = (uint32_t)cb->size;
+        memcpy(cb->buffer + lc_fail_patch, &(int32_t){lc_fail - (lc_fail_patch + 4)}, 4);
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x31); emit8(cb, 0xC0); // xor rax, rax
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xC4); emit8(cb, 0x20); // add rsp, 32
+        emit8(cb, 0x5B); // pop rbx
+        emit8(cb, 0xC3); // ret
+
+        // =========================================================
+        // __lege_bool
+        // =========================================================
+        g_lege_bool_offset = (uint32_t)cb->size;
+        emit8(cb, 0x53); // push rbx
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xEC); emit8(cb, 0x20); // sub rsp, 32
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x89); emit8(cb, 0xCB); // mov rbx, rcx
+        uint32_t lb_ws = (uint32_t)cb->size;
+        emit8(cb, 0xE8); emit32(cb, g_read_char_offset - ((uint32_t)cb->size + 4)); // call __read_char
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x85); emit8(cb, 0xC0); // test rax, rax
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t lb_fail_patch = (uint32_t)cb->size; emit32(cb, 0); // jz .Llb_fail
+        emit8(cb, 0x3C); emit8(cb, 0x20); // cmp al, ' '
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, lb_ws - ((uint32_t)cb->size + 4)); // je .Llb_ws
+        emit8(cb, 0x3C); emit8(cb, 0x0A); // cmp al, '\n'
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, lb_ws - ((uint32_t)cb->size + 4)); // je .Llb_ws
+        emit8(cb, 0x3C); emit8(cb, 0x0D); // cmp al, '\r'
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, lb_ws - ((uint32_t)cb->size + 4)); // je .Llb_ws
+        emit8(cb, 0x3C); emit8(cb, 0x09); // cmp al, '\t'
+        emit8(cb, 0x0F); emit8(cb, 0x84); emit32(cb, lb_ws - ((uint32_t)cb->size + 4)); // je .Llb_ws
+        emit8(cb, 0x3C); emit8(cb, 0x31); // cmp al, '1'
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t lb_true_patch1 = (uint32_t)cb->size; emit32(cb, 0); // je .Llb_true
+        emit8(cb, 0x3C); emit8(cb, 0x76); // cmp al, 'v'
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t lb_true_patch2 = (uint32_t)cb->size; emit32(cb, 0); // je .Llb_true
+        emit8(cb, 0x3C); emit8(cb, 0x56); // cmp al, 'V'
+        emit8(cb, 0x0F); emit8(cb, 0x84); uint32_t lb_true_patch3 = (uint32_t)cb->size; emit32(cb, 0); // je .Llb_true
+        emit8(cb, 0xC6); emit8(cb, 0x03); emit8(cb, 0x00); // mov byte ptr [rbx], 0
+        emit8(cb, 0xE9); uint32_t lb_ok_patch = (uint32_t)cb->size; emit32(cb, 0); // jmp .Llb_ok
+        uint32_t lb_true = (uint32_t)cb->size;
+        memcpy(cb->buffer + lb_true_patch1, &(int32_t){lb_true - (lb_true_patch1 + 4)}, 4);
+        memcpy(cb->buffer + lb_true_patch2, &(int32_t){lb_true - (lb_true_patch2 + 4)}, 4);
+        memcpy(cb->buffer + lb_true_patch3, &(int32_t){lb_true - (lb_true_patch3 + 4)}, 4);
+        emit8(cb, 0xC6); emit8(cb, 0x03); emit8(cb, 0x01); // mov byte ptr [rbx], 1
+        uint32_t lb_ok = (uint32_t)cb->size;
+        memcpy(cb->buffer + lb_ok_patch, &(int32_t){lb_ok - (lb_ok_patch + 4)}, 4);
+        emit8(cb, 0xB8); emit32(cb, 1); // mov eax, 1
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xC4); emit8(cb, 0x20); // add rsp, 32
+        emit8(cb, 0x5B); // pop rbx
+        emit8(cb, 0xC3); // ret
+        uint32_t lb_fail = (uint32_t)cb->size;
+        memcpy(cb->buffer + lb_fail_patch, &(int32_t){lb_fail - (lb_fail_patch + 4)}, 4);
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x31); emit8(cb, 0xC0); // xor rax, rax
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xC4); emit8(cb, 0x20); // add rsp, 32
+        emit8(cb, 0x5B); // pop rbx
+        emit8(cb, 0xC3); // ret
     }
 
     // 追加内置汇编例程: _start (真正的入口点)

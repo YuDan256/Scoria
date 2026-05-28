@@ -122,6 +122,13 @@ static bool check_mutated(AstNode* node, Symbol* sym) {
                 if (check_mutated(node->as.scribe_expr.args[i], sym)) return true;
             }
             break;
+        case AST_LEGE_EXPR:
+            for (int i=0; i<node->as.lege_expr.arg_count; i++) {
+                AstNode* arg = node->as.lege_expr.args[i];
+                if (arg->kind == AST_IDENT_EXPR && arg->resolved_symbol == sym) return true;
+                if (check_mutated(arg, sym)) return true;
+            }
+            break;
         case AST_CREA_EXPR:
             if (check_mutated(node->as.crea_expr.count, sym)) return true;
             break;
@@ -357,6 +364,11 @@ static SirValue* gen_lvalue(IrBuilder* builder, AstNode* expr) {
         case AST_ARRAY_LITERAL:
         case AST_STRUCT_LITERAL:
             return gen_expression(builder, expr);
+        case AST_LITERAL_EXPR:
+            if (expr->token.kind == TK_STRING_CONST) {
+                return gen_expression(builder, expr);
+            }
+            break;
         case AST_MEMBER_EXPR: {
             if (expr->resolved_symbol) {
                 // 这是一个跨模块的符号访问 (如 math_lib.Vector)，直接返回目标符号的左值
@@ -827,7 +839,20 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
             
             int arg_count = expr->as.call.arg_count;
             bool hidden_ret = type_get_size(expr->expr_type) > 8;
-            int total_args = hidden_ret ? arg_count + 1 : arg_count;
+            
+            ScoriaType* callee_type = expr->as.call.callee->expr_type;
+            if (callee_type && callee_type->kind == TY_VIA) callee_type = callee_type->as.inner;
+            
+            bool is_native_var = callee_type && callee_type->kind == TY_ACTIO && callee_type->as.func_type.is_native_variadic;
+            int fixed_param_count = callee_type ? callee_type->as.func_type.param_count : 0;
+            if (is_native_var) fixed_param_count--;
+            
+            int total_args = hidden_ret ? 1 : 0;
+            if (is_native_var) {
+                total_args += fixed_param_count + 1;
+            } else {
+                total_args += arg_count;
+            }
             
             SirValue** args = NULL;
             SirValue* ret_ptr = NULL;
@@ -838,8 +863,53 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                     ret_ptr = ir_build_alloca(builder, expr->expr_type, type_get_size(expr->expr_type));
                     args[arg_idx++] = ret_ptr;
                 }
-                for (int i = 0; i < arg_count; i++) {
-                    args[arg_idx++] = gen_expression(builder, expr->as.call.args[i]);
+                
+                if (is_native_var) {
+                    for (int i = 0; i < fixed_param_count; i++) {
+                        args[arg_idx++] = gen_expression(builder, expr->as.call.args[i]);
+                    }
+                    
+                    int var_count = arg_count - fixed_param_count;
+                    ScoriaType* slice_type = callee_type->as.func_type.param_types[fixed_param_count];
+                    ScoriaType* elem_type = slice_type->as.inner;
+                    int elem_size = type_get_size(elem_type);
+                    
+                    SirValue* arr_ptr = NULL;
+                    if (var_count > 0) {
+                        ScoriaType* arr_type = type_get_acies(elem_type, var_count);
+                        arr_ptr = ir_build_alloca(builder, arr_type, var_count * elem_size);
+                        for (int i = 0; i < var_count; i++) {
+                            SirValue* elem_val = gen_expression(builder, expr->as.call.args[fixed_param_count + i]);
+                            SirValue* index_val = ir_const_int(builder, type_get_basic(TY_I32), i);
+                            SirValue* elem_ptr = ir_build_gep(builder, arr_ptr, index_val, elem_size, type_get_via(elem_type));
+                            if (elem_type->kind == TY_FORMA || elem_type->kind == TY_UNIO || elem_type->kind == TY_ACIES || elem_type->kind == TY_COHORS) {
+                                ir_build_memcpy(builder, elem_ptr, elem_val, elem_size);
+                            } else {
+                                ir_build_store(builder, elem_val, elem_ptr);
+                            }
+                        }
+                    } else {
+                        arr_ptr = ir_const_int(builder, type_get_via(elem_type), 0);
+                    }
+                    
+                    SirValue* slice_ptr = ir_build_alloca(builder, slice_type, 16);
+                    ir_build_store(builder, arr_ptr, slice_ptr);
+                    
+                    SirValue* len_offset = ir_const_int(builder, type_get_basic(TY_I32), 1);
+                    SirValue* len_ptr = ir_build_gep(builder, slice_ptr, len_offset, 8, type_get_via(type_get_basic(TY_I64)));
+                    SirValue* len_val = ir_const_int(builder, type_get_basic(TY_I64), var_count);
+                    ir_build_store(builder, len_val, len_ptr);
+                    
+                    args[arg_idx++] = slice_ptr;
+                } else {
+                    for (int i = 0; i < arg_count; i++) {
+                        SirValue* arg_val = gen_expression(builder, expr->as.call.args[i]);
+                        // C ABI 变长参数默认提升 (Default Argument Promotions)
+                        if (i >= fixed_param_count && arg_val && arg_val->type && arg_val->type->kind == TY_F32) {
+                            arg_val = ir_build_cast(builder, arg_val, type_get_basic(TY_F64));
+                        }
+                        args[arg_idx++] = arg_val;
+                    }
                 }
             }
             
@@ -985,6 +1055,29 @@ static SirValue* gen_expression(IrBuilder* builder, AstNode* expr) {
                 return ir_build_load(builder, lval);
             }
             return NULL;
+        }
+        case AST_LEGE_EXPR: {
+            SirValue* callee = (SirValue*)arena_alloc(&builder->arena, sizeof(SirValue));
+            callee->kind = SIR_VAL_GLOBAL;
+            callee->type = type_get_basic(TY_ACTIO);
+            callee->as.global_name = "lege";
+            
+            int arg_count = expr->as.lege_expr.arg_count;
+            if (arg_count == 0) return ir_const_int(builder, type_get_basic(TY_I32), 0);
+            
+            SirValue* total_success = ir_const_int(builder, type_get_basic(TY_I32), 0);
+            
+            for (int i = 0; i < arg_count; i++) {
+                AstNode* arg_expr = expr->as.lege_expr.args[i];
+                SirValue* ptr_val = gen_lvalue(builder, arg_expr);
+                
+                SirValue** args = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * 1);
+                args[0] = ptr_val;
+                SirValue* call_res = ir_build_call(builder, callee, args, 1, type_get_basic(TY_I32));
+                
+                total_success = ir_build_binary(builder, SIR_ADD, total_success, call_res);
+            }
+            return total_success;
         }
         case AST_SCRIBE_EXPR: {
             // 将 scribe(a, b, c) 拆分为多个独立的单参数 scribe 调用
@@ -1251,17 +1344,13 @@ static void gen_statement(IrBuilder* builder, AstNode* stmt) {
                 total_case_vals += stmt->as.switch_stmt.case_val_counts[i];
             }
 
-            SirValue** flat_case_vals = NULL;
-            SirBlock** flat_case_blocks = NULL;
-            if (total_case_vals > 0) {
-                flat_case_vals = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * total_case_vals);
-                flat_case_blocks = (SirBlock**)arena_alloc(&builder->arena, sizeof(SirBlock*) * total_case_vals);
-            }
+            SirValue** flat_case_vals = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * (total_case_vals > 0 ? total_case_vals : 1));
+            SirBlock** flat_case_blocks = (SirBlock**)arena_alloc(&builder->arena, sizeof(SirBlock*) * (total_case_vals > 0 ? total_case_vals : 1));
 
             SirBlock* default_block = ir_builder_create_block(builder, "elige.aliter");
             SirBlock* exit_block = ir_builder_create_block(builder, "elige.exitus");
 
-            SirBlock** branch_blocks = (SirBlock**)arena_alloc(&builder->arena, sizeof(SirBlock*) * stmt->as.switch_stmt.case_count);
+            SirBlock** branch_blocks = (SirBlock**)arena_alloc(&builder->arena, sizeof(SirBlock*) * (stmt->as.switch_stmt.case_count > 0 ? stmt->as.switch_stmt.case_count : 1));
 
             int flat_idx = 0;
             for (int i = 0; i < stmt->as.switch_stmt.case_count; i++) {
@@ -1321,7 +1410,7 @@ void ir_gen_generate(IrBuilder* builder, AstNode** programs, int count, int opt_
     
     SirBlock* current_init_block = NULL;
     if (!init_func) {
-        ScoriaType* init_func_type = type_create_actio(type_get_basic(TY_NIHIL), NULL, 0);
+        ScoriaType* init_func_type = type_create_actio(type_get_basic(TY_NIHIL), NULL, 0, false, false);
         init_func = ir_builder_create_function(builder, "__scoria_init", init_func_type);
         current_init_block = ir_builder_create_block(builder, "ingressus");
     } else {

@@ -146,6 +146,10 @@ static void get_operand_str(char* buf, SirValue* val, RegAllocator* alloc, int s
 }
 
 static void emit_load_operand(FILE* out, const char* dest_reg64, const char* dest_reg32, SirValue* val, RegAllocator* alloc, int frame_size) {
+    if (!val) {
+        fprintf(out, "    xorq %s, %s\n", dest_reg64, dest_reg64);
+        return;
+    }
     char arg_str[64];
     int arg_size = (val->type) ? type_get_size(val->type) : 8;
     if (arg_size < 4) arg_size = 4; // Registers are at least 32-bit
@@ -1214,6 +1218,35 @@ static void generate_function(FILE* out, SirFunction* func, SirModule* module, i
                 }
 
                 case SIR_CALL:
+                    if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "lege") == 0) {
+                        ScoriaType* target_type = inst->operands[1]->type;
+                        if (target_type && target_type->kind == TY_VIA) target_type = target_type->as.inner;
+                        int size = target_type ? type_get_size(target_type) : 8;
+                        
+                        emit_load_operand(out, "%rax", "%eax", inst->operands[1], &allocator, total_frame_size);
+                        fprintf(out, "    movq %%rax, %%rcx\n");
+                        fprintf(out, "    movq $%d, %%rdx\n", size);
+                        
+                        if (target_type && (target_type->kind == TY_F32 || target_type->kind == TY_F64)) {
+                            fprintf(out, "    call __lege_float\n");
+                        } else if (target_type && target_type->kind == TY_LITTERA) {
+                            fprintf(out, "    call __lege_char\n");
+                        } else if (target_type && target_type->kind == TY_LOGICA) {
+                            fprintf(out, "    call __lege_bool\n");
+                        } else {
+                            fprintf(out, "    call __lege_int\n");
+                        }
+                        
+                        if (inst->dest) {
+                            if (strcmp(dest, "%rax") != 0 && strcmp(dest, "%eax") != 0) {
+                                int w = (inst->dest->type && type_get_size(inst->dest->type) <= 4) ? 0 : 1;
+                                if (w) fprintf(out, "    movslq %%eax, %s\n", dest);
+                                else fprintf(out, "    movl %%eax, %s\n", dest);
+                            }
+                        }
+                        break;
+                    }
+
                     if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "scribe") == 0) {
                         emit_load_operand(out, "%rax", "%eax", inst->operands[1], &allocator, total_frame_size);
                         fprintf(out, "    movq %%rax, %%rcx\n");

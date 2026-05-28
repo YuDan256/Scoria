@@ -115,6 +115,7 @@ static TokenKind identifier_type(Lexer* lexer) {
     if (len == 3 && memcmp(lexer->start, "xcp", 3) == 0) return TK_KW_EXCERPE;
     if (len == 3 && memcmp(lexer->start, "alt", 3) == 0) return TK_KW_ALITER;
     if (len == 3 && memcmp(lexer->start, "scb", 3) == 0) return TK_KW_SCRIBE;
+    if (len == 3 && memcmp(lexer->start, "leg", 3) == 0) return TK_KW_LEGE;
     if (len == 3 && memcmp(lexer->start, "rcd", 3) == 0) return TK_KW_RECEDE;
 
     // 【古典宗卷长体映射网络】
@@ -147,6 +148,7 @@ static TokenKind identifier_type(Lexer* lexer) {
             if (memcmp(lexer->start + 1, "dita", 4) == 0) return TK_KW_EDITA;
             if (memcmp(lexer->start + 1, "lige", 4) == 0) return TK_KW_ELIGE;
         }
+        if (len == 3) return check_keyword(lexer, 1, 2, "tc", TK_KW_ETC);
         break;
     case 'f':
         if (len == 6 && lexer->start[1] == 'a') return check_keyword(lexer, 2, 4, "lsum", TK_BOOL_CONST);
@@ -159,6 +161,7 @@ static TokenKind identifier_type(Lexer* lexer) {
         if (len == 6 && lexer->start[1] == 'o') return check_keyword(lexer, 2, 4, "gica", TK_TY_LOGICA);
         if (len == 7 && lexer->start[1] == 'i') return check_keyword(lexer, 2, 5, "ttera", TK_TY_LITTERA);
         if (len == 5 && lexer->start[1] == 'o') return check_keyword(lexer, 2, 3, "cus", TK_KW_LOCUS);
+        if (len == 4 && lexer->start[1] == 'e') return check_keyword(lexer, 2, 2, "ge", TK_KW_LEGE);
         if (len == 3 && lexer->start[1] == 'e') return check_keyword(lexer, 2, 1, "x", TK_KW_LEX);
         break;
     case 'm':

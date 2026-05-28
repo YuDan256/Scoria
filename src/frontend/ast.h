@@ -36,6 +36,7 @@ typedef enum {
     AST_MEMBER_EXPR,
     AST_CAST_EXPR,
     AST_SCRIBE_EXPR,
+    AST_LEGE_EXPR,
     AST_VADE_EXPR,
     AST_RECEDE_EXPR,
     AST_CREA_EXPR,
@@ -87,6 +88,8 @@ struct AstNode {
             bool is_editus;
             bool is_barbarus;
             Token dll_name; // 用于 barbara("dll.dll")
+            bool is_variadic;
+            bool is_native_variadic;
         } func_decl;
 
         struct {
@@ -189,6 +192,11 @@ struct AstNode {
             AstNode** args;
             int arg_count;
         } scribe_expr;
+
+        struct {
+            AstNode** args;
+            int arg_count;
+        } lege_expr;
 
         struct {
             AstNode* pointer;

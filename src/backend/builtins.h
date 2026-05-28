@@ -14,6 +14,7 @@ extern bool g_use_print_bool;
 extern bool g_use_print_hex;
 extern bool g_use_crea;
 extern bool g_use_neca;
+extern bool g_use_lege;
 
 typedef enum {
     PRINT_INT,
@@ -57,5 +58,14 @@ extern uint32_t g_call_getprocessheap_reloc1;
 extern uint32_t g_call_getprocessheap_reloc2;
 extern uint32_t g_call_heapalloc_reloc;
 extern uint32_t g_call_heapfree_reloc;
+
+extern uint32_t g_read_char_offset;
+extern uint32_t g_lege_int_offset;
+extern uint32_t g_lege_float_offset;
+extern uint32_t g_lege_char_offset;
+extern uint32_t g_lege_bool_offset;
+
+extern uint32_t g_call_getstdhandle_reloc_read;
+extern uint32_t g_call_readfile_reloc;
 
 #endif // SCORIA_BUILTINS_H

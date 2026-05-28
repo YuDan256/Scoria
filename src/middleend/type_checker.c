@@ -187,6 +187,20 @@ static void parse_and_check_literal(TypeChecker* checker, AstNode* expr, ScoriaT
 }
 
 // ---------------------------------------------------------
+// 辅助函数：判断是否为左值 (L-Value)
+// ---------------------------------------------------------
+static bool is_lvalue(AstNode* expr) {
+    if (!expr) return false;
+    if (expr->kind == AST_IDENT_EXPR) {
+        return expr->resolved_symbol && expr->resolved_symbol->kind == SYM_VAR;
+    }
+    if (expr->kind == AST_MEMBER_EXPR) return true;
+    if (expr->kind == AST_INDEX_EXPR) return true;
+    if (expr->kind == AST_UNARY_EXPR && expr->as.unary.op.kind == TK_KW_TENE) return true;
+    return false;
+}
+
+// ---------------------------------------------------------
 // 表达式类型检查 (Type Checking Pass - Expressions)
 // ---------------------------------------------------------
 static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaType* expected_type) {
@@ -321,6 +335,9 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
 
         case AST_ASSIGN_EXPR: {
             ScoriaType* target_type = check_expression(checker, expr->as.assign.target, NULL);
+            if (!is_lvalue(expr->as.assign.target)) {
+                type_error(checker, expr->as.assign.target->token, "Expressio ad sinistram assignationis assignabilis esse debet.");
+            }
             ScoriaType* value_type = check_expression(checker, expr->as.assign.value, target_type);
             
             if (!type_equals(target_type, value_type)) {
@@ -403,13 +420,28 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
                 break;
             }
 
-            if (callee_type->as.func_type.param_count != expr->as.call.arg_count) {
+            bool is_var = callee_type->as.func_type.is_variadic;
+            bool is_native_var = callee_type->as.func_type.is_native_variadic;
+            int fixed_param_count = callee_type->as.func_type.param_count;
+            if (is_native_var) fixed_param_count--; // 原生变长的最后一个参数是切片
+
+            if (!is_var && expr->as.call.arg_count != fixed_param_count) {
                 type_error(checker, expr->token, "Numerus argumentorum non congruit.");
+            } else if (is_var && expr->as.call.arg_count < fixed_param_count) {
+                type_error(checker, expr->token, "Argumenta pauciora quam exspectata sunt.");
             } else {
                 for (int i = 0; i < expr->as.call.arg_count; i++) {
-                    ScoriaType* expected_arg_type = callee_type->as.func_type.param_types[i];
+                    ScoriaType* expected_arg_type = NULL;
+                    if (i < fixed_param_count) {
+                        expected_arg_type = callee_type->as.func_type.param_types[i];
+                    } else if (is_native_var) {
+                        // 原生变长参数，期望类型为切片的内部类型
+                        expected_arg_type = callee_type->as.func_type.param_types[fixed_param_count]->as.inner;
+                    } // FFI 变长参数 (is_var && !is_native_var) 没有期望类型
+
                     ScoriaType* arg_type = check_expression(checker, expr->as.call.args[i], expected_arg_type);
-                    if (!type_equals(expected_arg_type, arg_type)) {
+                    
+                    if (expected_arg_type && !type_equals(expected_arg_type, arg_type)) {
                         type_error(checker, expr->as.call.args[i]->token, "Typus argumenti non congruit.");
                     }
                 }
@@ -533,6 +565,17 @@ static ScoriaType* check_expression(TypeChecker* checker, AstNode* expr, ScoriaT
                 check_expression(checker, expr->as.scribe_expr.args[i], NULL);
             }
             type = type_get_basic(TY_NIHIL);
+            break;
+        }
+
+        case AST_LEGE_EXPR: {
+            for (int i = 0; i < expr->as.lege_expr.arg_count; i++) {
+                check_expression(checker, expr->as.lege_expr.args[i], NULL);
+                if (!is_lvalue(expr->as.lege_expr.args[i])) {
+                    type_error(checker, expr->as.lege_expr.args[i]->token, "Argumentum pro 'lege' assignabile esse debet.");
+                }
+            }
+            type = type_get_basic(TY_I32); // 返回成功读取的参数个数
             break;
         }
 
@@ -743,6 +786,10 @@ static void collect_declarations(TypeChecker* checker, AstNode* program) {
                 return_type = resolve_type_node(checker, decl->as.func_decl.return_type);
             }
 
+            if (decl->as.func_decl.is_variadic && !decl->as.func_decl.is_native_variadic && !decl->as.func_decl.is_barbarus) {
+                type_error(checker, decl->as.func_decl.name, "Parametrum varians sine typo 'etc' solum in actionibus 'barbara' adhiberi potest.");
+            }
+
             int param_count = decl->as.func_decl.param_count;
             ScoriaType** param_types = NULL;
             if (param_count > 0) {
@@ -752,11 +799,15 @@ static void collect_declarations(TypeChecker* checker, AstNode* program) {
                     exit(1);
                 }
                 for (int j = 0; j < param_count; j++) {
-                    param_types[j] = resolve_type_node(checker, decl->as.func_decl.params[j]->as.var_decl.type);
+                    ScoriaType* pt = resolve_type_node(checker, decl->as.func_decl.params[j]->as.var_decl.type);
+                    if (decl->as.func_decl.is_native_variadic && j == param_count - 1) {
+                        pt = type_get_cohors(pt); // 原生变长参数自动降级为切片
+                    }
+                    param_types[j] = pt;
                 }
             }
 
-            ScoriaType* actio_type = type_create_actio(return_type, param_types, param_count);
+            ScoriaType* actio_type = type_create_actio(return_type, param_types, param_count, decl->as.func_decl.is_variadic, decl->as.func_decl.is_native_variadic);
             if (param_types) free(param_types);
 
             if (!symtab_define(&checker->symtab, decl->as.func_decl.name, SYM_FUNC, actio_type, decl, decl->as.func_decl.is_editus)) {
@@ -902,6 +953,9 @@ bool type_checker_run(TypeChecker* checker, AstNode** programs, int count) {
                     for (int k = 0; k < decl->as.func_decl.param_count; k++) {
                         AstNode* param = decl->as.func_decl.params[k];
                         ScoriaType* param_type = resolve_type_node(checker, param->as.var_decl.type);
+                        if (decl->as.func_decl.is_native_variadic && k == decl->as.func_decl.param_count - 1) {
+                            param_type = type_get_cohors(param_type); // 原生变长参数在函数体内表现为切片
+                        }
                         symtab_define(&checker->symtab, param->as.var_decl.name, SYM_VAR, param_type, param, false);
                     }
                     

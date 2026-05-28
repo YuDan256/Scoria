@@ -63,6 +63,8 @@ bool type_equals(ScoriaType* a, ScoriaType* b) {
                    memcmp(a->as.struct_type.name.start, b->as.struct_type.name.start, a->as.struct_type.name.length) == 0;
         case TY_ACTIO:
             if (a->as.func_type.param_count != b->as.func_type.param_count) return false;
+            if (a->as.func_type.is_variadic != b->as.func_type.is_variadic) return false;
+            if (a->as.func_type.is_native_variadic != b->as.func_type.is_native_variadic) return false;
             if (!type_equals(a->as.func_type.return_type, b->as.func_type.return_type)) return false;
             for (int i = 0; i < a->as.func_type.param_count; i++) {
                 if (!type_equals(a->as.func_type.param_types[i], b->as.func_type.param_types[i])) return false;
@@ -192,11 +194,13 @@ bool type_is_unsigned(ScoriaType* type) {
     return type->kind == TY_P8 || type->kind == TY_P16 || type->kind == TY_P32 || type->kind == TY_P64 || type->kind == TY_LITTERA || type->kind == TY_LOGICA;
 }
 
-ScoriaType* type_create_actio(ScoriaType* return_type, ScoriaType** param_types, int param_count) {
+ScoriaType* type_create_actio(ScoriaType* return_type, ScoriaType** param_types, int param_count, bool is_variadic, bool is_native_variadic) {
     ScoriaType* t = (ScoriaType*)malloc(sizeof(ScoriaType));
     t->kind = TY_ACTIO;
     t->as.func_type.return_type = return_type;
     t->as.func_type.param_count = param_count;
+    t->as.func_type.is_variadic = is_variadic;
+    t->as.func_type.is_native_variadic = is_native_variadic;
     t->as.func_type.param_types = NULL;
     if (param_count > 0) {
         t->as.func_type.param_types = (ScoriaType**)malloc(sizeof(ScoriaType*) * param_count);

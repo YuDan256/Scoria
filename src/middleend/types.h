@@ -57,6 +57,8 @@ struct ScoriaType {
             ScoriaType** param_types;
             int param_count;
             ScoriaType* return_type;
+            bool is_variadic;
+            bool is_native_variadic;
         } func_type;
     } as;
 };
@@ -77,7 +79,7 @@ ScoriaType* type_create_forma(Token name, bool is_densa);
 ScoriaType* type_create_unio(Token name);
 void type_forma_add_field(ScoriaType* forma_type, Token name, ScoriaType* field_type);
 
-ScoriaType* type_create_actio(ScoriaType* return_type, ScoriaType** param_types, int param_count);
+ScoriaType* type_create_actio(ScoriaType* return_type, ScoriaType** param_types, int param_count, bool is_variadic, bool is_native_variadic);
 
 // 类型比较 (因为使用了 Interning，大部分情况下可以直接比较指针)
 bool type_equals(ScoriaType* a, ScoriaType* b);

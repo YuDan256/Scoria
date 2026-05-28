@@ -242,6 +242,26 @@ static AstNode* primary(Parser* parser) {
         consume(parser, TK_RPAREN, "Post argumenta 'scribe' ')' exspectatur.");
         return node;
     }
+    if (match(parser, TK_KW_LEGE)) {
+        Token keyword = parser->previous;
+        consume(parser, TK_LPAREN, "Post 'lege' '(' exspectatur.");
+        AstNode* node = ast_create_node(&parser->arena, AST_LEGE_EXPR, keyword);
+        node->as.lege_expr.args = NULL;
+        node->as.lege_expr.arg_count = 0;
+        int capacity = 0;
+        if (!check(parser, TK_RPAREN)) {
+            do {
+                if (node->as.lege_expr.arg_count >= capacity) {
+                    int old_capacity = capacity;
+                    capacity = capacity < 4 ? 4 : capacity * 2;
+                    node->as.lege_expr.args = arena_realloc(&parser->arena, node->as.lege_expr.args, sizeof(AstNode*) * old_capacity, sizeof(AstNode*) * capacity);
+                }
+                node->as.lege_expr.args[node->as.lege_expr.arg_count++] = expression(parser);
+            } while (match(parser, TK_COMMA));
+        }
+        consume(parser, TK_RPAREN, "Post argumenta 'lege' ')' exspectatur.");
+        return node;
+    }
     if (match(parser, TK_LBRACKET)) {
         Token bracket = parser->previous;
         AstNode* node = ast_create_node(&parser->arena, AST_ARRAY_LITERAL, bracket);
@@ -809,9 +829,26 @@ static AstNode* func_declaration(Parser* parser) {
     AstNode** params = NULL;
     int param_count = 0;
     int capacity = 0;
+    bool is_variadic = false;
+    bool is_native_variadic = false;
     
     if (!check(parser, TK_RPAREN)) {
         do {
+            if (is_variadic) {
+                error(parser, "Parametrum varians 'etc' ultimum esse debet.");
+                break;
+            }
+            
+            if (match(parser, TK_KW_ETC)) {
+                is_variadic = true;
+                if (check(parser, TK_RPAREN)) {
+                    is_native_variadic = false;
+                    break; // FFI 无类型变长参数，直接结束参数解析
+                } else {
+                    is_native_variadic = true; // 原生变长参数，继续解析参数名和类型
+                }
+            }
+
             if (param_count >= capacity) {
                 int old_capacity = capacity;
                 capacity = capacity < 4 ? 4 : capacity * 2;
@@ -854,6 +891,8 @@ static AstNode* func_declaration(Parser* parser) {
     node->as.func_decl.is_editus = is_edita;
     node->as.func_decl.is_barbarus = is_barbara;
     node->as.func_decl.dll_name = dll_name;
+    node->as.func_decl.is_variadic = is_variadic;
+    node->as.func_decl.is_native_variadic = is_native_variadic;
     return node;
 }
 
