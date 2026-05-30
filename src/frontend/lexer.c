@@ -114,7 +114,7 @@ static TokenKind identifier_type(Lexer* lexer) {
     if (len == 3 && memcmp(lexer->start, "nls", 3) == 0) return TK_KW_NULLUS;
     if (len == 3 && memcmp(lexer->start, "rmp", 3) == 0) return TK_KW_RUMPE;
     if (len == 3 && memcmp(lexer->start, "prg", 3) == 0) return TK_KW_PERGE;
-    if (len == 3 && memcmp(lexer->start, "mor", 3) == 0) return TK_KW_MORI;
+    if (len == 3 && memcmp(lexer->start, "mor", 3) == 0) return TK_KW_MORERE;
     if (len == 3 && memcmp(lexer->start, "csl", 3) == 0) return TK_KW_CONSULE;
     if (len == 3 && memcmp(lexer->start, "xcp", 3) == 0) return TK_KW_EXCERPE;
     if (len == 3 && memcmp(lexer->start, "alt", 3) == 0) return TK_KW_ALITER;
@@ -174,9 +174,11 @@ static TokenKind identifier_type(Lexer* lexer) {
     case 'm':
         if (len == 4) {
             if (memcmp(lexer->start + 1, "uta", 3) == 0) return TK_KW_MUTA;
-            if (memcmp(lexer->start + 1, "ori", 3) == 0) return TK_KW_MORI;
         }
-        if (len == 6) return check_keyword(lexer, 1, 5, "edius", TK_TY_I32);
+        if (len == 6) {
+            if (memcmp(lexer->start + 1, "edius", 5) == 0) return TK_TY_I32;
+            if (memcmp(lexer->start + 1, "orere", 5) == 0) return TK_KW_MORERE;
+        }
         if (len == 7) return check_keyword(lexer, 1, 6, "inimus", TK_TY_I8);
         break;
     case 'n':
