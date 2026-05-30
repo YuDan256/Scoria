@@ -1,14 +1,14 @@
-liber test_mori;
+liber test_morere;
 
 // 测试 1: mori 满足返回路径检查
-// 这个函数声明返回 i32，但在 aliter 分支中没有 redde，只有 mori。
-// 如果编译器没有报错，说明返回路径分析正确识别了 mori。
+// 这个函数声明返回 i32，但在 aliter 分支中没有 redde，只有 morere。
+// 如果编译器没有报错，说明返回路径分析正确识别了 morere。
 actio test_return_path(x: i32) -> i32 {
     si (x > 0) {
         redde x * 2;
     } aliter {
         scribe("  [!] Ingressus in viam mortis...\n");
-        mori; // 触发硬件陷阱，免除 redde 义务
+        morere; // 触发硬件陷阱，免除 redde 义务
     }
 }
 

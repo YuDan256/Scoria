@@ -734,9 +734,9 @@ static AstNode* statement(Parser* parser) {
         consume(parser, TK_SEMI, "Post 'perge' ';' exspectatur.");
         return ast_create_node(&parser->arena, AST_CONTINUE_STMT, keyword);
     }
-    if (match(parser, TK_KW_MORI)) {
+    if (match(parser, TK_KW_MORERE)) {
         Token keyword = parser->previous;
-        consume(parser, TK_SEMI, "Post 'mori' ';' exspectatur.");
+        consume(parser, TK_SEMI, "Post 'morere' ';' exspectatur.");
         return ast_create_node(&parser->arena, AST_TRAP_STMT, keyword);
     }
     if (match(parser, TK_KW_SALI)) {
