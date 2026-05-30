@@ -1084,8 +1084,967 @@ end:
     #undef VM_CHECK_VAL
 }
 
+typedef enum { PRINT_STR, PRINT_INT, PRINT_UINT, PRINT_CHAR, PRINT_FLOAT, PRINT_BOOL, PRINT_HEX } PrintType;
+static PrintType get_print_type(SirValue* arg) {
+    ScoriaType* arg_type = arg->type;
+    bool is_via = (arg_type && arg_type->kind == TY_VIA);
+    ScoriaType* inner_type = is_via ? arg_type->as.inner : arg_type;
+    bool is_str = (inner_type && inner_type->kind == TY_COHORS && inner_type->as.inner->kind == TY_LITTERA);
+    bool is_bool = (inner_type && inner_type->kind == TY_LOGICA) || (arg->kind == SIR_VAL_CONST_BOOL);
+    bool is_char = (inner_type && inner_type->kind == TY_LITTERA);
+    bool is_float = (inner_type && (inner_type->kind == TY_F32 || inner_type->kind == TY_F64)) || (arg->kind == SIR_VAL_CONST_FLOAT);
+    bool is_uint = (inner_type && (inner_type->kind == TY_P8 || inner_type->kind == TY_P16 || inner_type->kind == TY_P32 || inner_type->kind == TY_P64));
+    bool is_ptr = is_via && !is_str;
+    if (is_str) return PRINT_STR;
+    if (is_bool) return PRINT_BOOL;
+    if (is_char) return PRINT_CHAR;
+    if (is_ptr) return PRINT_HEX;
+    if (is_float) return PRINT_FLOAT;
+    if (is_uint) return PRINT_UINT;
+    return PRINT_INT;
+}
+
+static void build_print_str(IrBuilder* builder) {
+    ir_builder_create_function(builder, "__print_str", type_get_basic(TY_UNKNOWN));
+    SirBlock* entry = ir_builder_create_block(builder, "entry");
+    ir_builder_set_insert_point(builder, entry);
+    SirValue* str_ptr = ir_get_param(builder, 0, type_get_via(type_get_basic(TY_LITTERA)));
+    SirValue* str_len = ir_get_param(builder, 1, type_get_basic(TY_I32));
+    SirInst* sys_write = create_inst(builder, SIR_SYS_WRITE, 3);
+    sys_write->operands[0] = ir_const_int(builder, type_get_basic(TY_I32), 1); // stdout
+    sys_write->operands[1] = str_ptr;
+    sys_write->operands[2] = str_len;
+    sys_write->dest = create_vreg(builder, type_get_basic(TY_I32));
+    ir_build_ret(builder, NULL);
+}
+
+static void build_print_uint(IrBuilder* builder) {
+    ir_builder_create_function(builder, "__print_uint", type_get_basic(TY_UNKNOWN));
+    SirBlock* entry = ir_builder_create_block(builder, "entry");
+    SirBlock* loop_body = ir_builder_create_block(builder, "loop_body");
+    SirBlock* loop_end = ir_builder_create_block(builder, "loop_end");
+    ir_builder_set_insert_point(builder, entry);
+    SirValue* val = ir_get_param(builder, 0, type_get_basic(TY_P64));
+    SirValue* buf = ir_build_alloca(builder, type_get_basic(TY_LITTERA), 32);
+    SirValue* pos = ir_build_alloca(builder, type_get_basic(TY_I32), 4);
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I32), 32), pos);
+    SirValue* val_ptr = ir_build_alloca(builder, type_get_basic(TY_P64), 8);
+    ir_build_store(builder, val, val_ptr);
+    ir_build_jmp(builder, loop_body);
+    ir_builder_set_insert_point(builder, loop_body);
+    SirValue* curr_pos = ir_build_load(builder, pos);
+    SirValue* next_pos = ir_build_binary(builder, SIR_SUB, curr_pos, ir_const_int(builder, type_get_basic(TY_I32), 1));
+    ir_build_store(builder, next_pos, pos);
+    SirValue* curr_val = ir_build_load(builder, val_ptr);
+    SirValue* rem = ir_build_binary(builder, SIR_MOD, curr_val, ir_const_int(builder, type_get_basic(TY_P64), 10));
+    SirValue* digit = ir_build_binary(builder, SIR_ADD, rem, ir_const_int(builder, type_get_basic(TY_P64), 48));
+    SirValue* digit_8 = ir_build_cast(builder, digit, type_get_basic(TY_I8));
+    SirValue* ptr = ir_build_gep(builder, buf, next_pos, 1, type_get_via(type_get_basic(TY_LITTERA)));
+    ir_build_store(builder, digit_8, ptr);
+    SirValue* next_val = ir_build_binary(builder, SIR_DIV, curr_val, ir_const_int(builder, type_get_basic(TY_P64), 10));
+    ir_build_store(builder, next_val, val_ptr);
+    SirValue* cmp = ir_build_binary(builder, SIR_ICMP_GT, next_val, ir_const_int(builder, type_get_basic(TY_P64), 0));
+    ir_build_br(builder, cmp, loop_body, loop_end);
+    ir_builder_set_insert_point(builder, loop_end);
+    SirValue* final_pos = ir_build_load(builder, pos);
+    SirValue* str_ptr = ir_build_gep(builder, buf, final_pos, 1, type_get_via(type_get_basic(TY_LITTERA)));
+    SirValue* str_len = ir_build_binary(builder, SIR_SUB, ir_const_int(builder, type_get_basic(TY_I32), 32), final_pos);
+    SirValue* print_str_val = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN)); print_str_val->as.global_name = "__print_str";
+    SirValue* args[] = { str_ptr, str_len };
+    ir_build_call(builder, print_str_val, args, 2, type_get_basic(TY_NIHIL));
+    ir_build_ret(builder, NULL);
+}
+
+static void build_print_int(IrBuilder* builder) {
+    ir_builder_create_function(builder, "__print_int", type_get_basic(TY_UNKNOWN));
+    SirBlock* entry = ir_builder_create_block(builder, "entry");
+    SirBlock* is_neg = ir_builder_create_block(builder, "is_neg");
+    SirBlock* print_num = ir_builder_create_block(builder, "print_num");
+    ir_builder_set_insert_point(builder, entry);
+    SirValue* val = ir_get_param(builder, 0, type_get_basic(TY_I64));
+    SirValue* cmp = ir_build_binary(builder, SIR_ICMP_LT, val, ir_const_int(builder, type_get_basic(TY_I64), 0));
+    ir_build_br(builder, cmp, is_neg, print_num);
+    ir_builder_set_insert_point(builder, is_neg);
+    SirValue* minus_str = ir_const_string(builder, "-", 1);
+    SirValue* print_str_val = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN)); print_str_val->as.global_name = "__print_str";
+    SirValue* args1[] = { minus_str, ir_const_int(builder, type_get_basic(TY_I32), 1) };
+    ir_build_call(builder, print_str_val, args1, 2, type_get_basic(TY_NIHIL));
+    SirValue* neg_val = ir_build_binary(builder, SIR_SUB, ir_const_int(builder, type_get_basic(TY_I64), 0), val);
+    ir_build_jmp(builder, print_num);
+    ir_builder_set_insert_point(builder, print_num);
+    SirValue* final_val = ir_build_select(builder, cmp, neg_val, val);
+    SirValue* final_val_u64 = ir_build_cast(builder, final_val, type_get_basic(TY_P64));
+    SirValue* print_uint_val = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN)); print_uint_val->as.global_name = "__print_uint";
+    SirValue* args2[] = { final_val_u64 };
+    ir_build_call(builder, print_uint_val, args2, 1, type_get_basic(TY_NIHIL));
+    ir_build_ret(builder, NULL);
+}
+
+static void build_print_float(IrBuilder* builder) {
+    ir_builder_create_function(builder, "__print_float", type_get_basic(TY_UNKNOWN));
+    SirBlock* entry = ir_builder_create_block(builder, "entry");
+    SirBlock* check_special = ir_builder_create_block(builder, "check_special");
+    SirBlock* is_nan = ir_builder_create_block(builder, "is_nan");
+    SirBlock* check_inf = ir_builder_create_block(builder, "check_inf");
+    SirBlock* is_pinf = ir_builder_create_block(builder, "is_pinf");
+    SirBlock* is_minf = ir_builder_create_block(builder, "is_minf");
+    SirBlock* normal = ir_builder_create_block(builder, "normal");
+    SirBlock* is_neg = ir_builder_create_block(builder, "is_neg");
+    SirBlock* print_int = ir_builder_create_block(builder, "print_int");
+    SirBlock* loop_end = ir_builder_create_block(builder, "loop_end");
+    
+    ir_builder_set_insert_point(builder, entry);
+    SirValue* val = ir_get_param(builder, 0, type_get_basic(TY_F64));
+    
+    SirValue* val_ptr = ir_build_alloca(builder, type_get_basic(TY_F64), 8);
+    ir_build_store(builder, val, val_ptr);
+    SirValue* val_ptr_i64 = ir_build_cast(builder, val_ptr, type_get_via(type_get_basic(TY_I64)));
+    SirValue* val_i64 = ir_build_load(builder, val_ptr_i64);
+    
+    SirValue* exp_mask = ir_const_int(builder, type_get_basic(TY_I64), 0x7FF0000000000000LL);
+    SirValue* exp_bits = ir_build_binary(builder, SIR_AND, val_i64, exp_mask);
+    SirValue* is_special_cmp = ir_build_binary(builder, SIR_ICMP_EQ, exp_bits, exp_mask);
+    ir_build_br(builder, is_special_cmp, check_special, normal);
+    
+    ir_builder_set_insert_point(builder, check_special);
+    SirValue* mantissa_mask = ir_const_int(builder, type_get_basic(TY_I64), 0x000FFFFFFFFFFFFFLL);
+    SirValue* mantissa_bits = ir_build_binary(builder, SIR_AND, val_i64, mantissa_mask);
+    SirValue* is_nan_cmp = ir_build_binary(builder, SIR_ICMP_NE, mantissa_bits, ir_const_int(builder, type_get_basic(TY_I64), 0));
+    ir_build_br(builder, is_nan_cmp, is_nan, check_inf);
+    
+    ir_builder_set_insert_point(builder, is_nan);
+    SirValue* nan_str = ir_const_string(builder, "nan", 3);
+    SirValue* print_str_val = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN)); print_str_val->as.global_name = "__print_str";
+    SirValue* args_nan[] = { nan_str, ir_const_int(builder, type_get_basic(TY_I32), 3) };
+    ir_build_call(builder, print_str_val, args_nan, 2, type_get_basic(TY_NIHIL));
+    ir_build_ret(builder, NULL);
+    
+    ir_builder_set_insert_point(builder, check_inf);
+    SirValue* is_neg_inf_cmp = ir_build_binary(builder, SIR_ICMP_LT, val_i64, ir_const_int(builder, type_get_basic(TY_I64), 0));
+    ir_build_br(builder, is_neg_inf_cmp, is_minf, is_pinf);
+    
+    ir_builder_set_insert_point(builder, is_minf);
+    SirValue* minf_str = ir_const_string(builder, "-inf", 4);
+    SirValue* args_minf[] = { minf_str, ir_const_int(builder, type_get_basic(TY_I32), 4) };
+    ir_build_call(builder, print_str_val, args_minf, 2, type_get_basic(TY_NIHIL));
+    ir_build_ret(builder, NULL);
+    
+    ir_builder_set_insert_point(builder, is_pinf);
+    SirValue* pinf_str = ir_const_string(builder, "inf", 3);
+    SirValue* args_pinf[] = { pinf_str, ir_const_int(builder, type_get_basic(TY_I32), 3) };
+    ir_build_call(builder, print_str_val, args_pinf, 2, type_get_basic(TY_NIHIL));
+    ir_build_ret(builder, NULL);
+    
+    ir_builder_set_insert_point(builder, normal);
+    SirValue* cmp = ir_build_binary(builder, SIR_FCMP_LT, val, ir_const_float(builder, type_get_basic(TY_F64), 0.0));
+    ir_build_br(builder, cmp, is_neg, print_int);
+    
+    ir_builder_set_insert_point(builder, is_neg);
+    SirValue* minus_str = ir_const_string(builder, "-", 1);
+    SirValue* args1[] = { minus_str, ir_const_int(builder, type_get_basic(TY_I32), 1) };
+    ir_build_call(builder, print_str_val, args1, 2, type_get_basic(TY_NIHIL));
+    SirValue* neg_val = ir_build_binary(builder, SIR_FSUB, ir_const_float(builder, type_get_basic(TY_F64), 0.0), val);
+    ir_build_jmp(builder, print_int);
+    
+    ir_builder_set_insert_point(builder, print_int);
+    SirValue* abs_val = ir_build_select(builder, cmp, neg_val, val);
+    
+    SirValue* is_zero = ir_build_binary(builder, SIR_FCMP_EQ, abs_val, ir_const_float(builder, type_get_basic(TY_F64), 0.0));
+    SirBlock* print_zero = ir_builder_create_block(builder, "print_zero");
+    SirBlock* calc_exp = ir_builder_create_block(builder, "calc_exp");
+    ir_build_br(builder, is_zero, print_zero, calc_exp);
+
+    ir_builder_set_insert_point(builder, print_zero);
+    SirValue* zero_str = ir_const_string(builder, "0.000000", 8);
+    SirValue* args_zero[] = { zero_str, ir_const_int(builder, type_get_basic(TY_I32), 8) };
+    ir_build_call(builder, print_str_val, args_zero, 2, type_get_basic(TY_NIHIL));
+    ir_build_ret(builder, NULL);
+
+    ir_builder_set_insert_point(builder, calc_exp);
+    SirValue* exp_ptr = ir_build_alloca(builder, type_get_basic(TY_I64), 8);
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I64), 0), exp_ptr);
+    SirValue* norm_val_ptr = ir_build_alloca(builder, type_get_basic(TY_F64), 8);
+    ir_build_store(builder, abs_val, norm_val_ptr);
+
+    SirBlock* div_loop_cond = ir_builder_create_block(builder, "div_loop_cond");
+    SirBlock* div_loop_body = ir_builder_create_block(builder, "div_loop_body");
+    SirBlock* mul_loop_cond = ir_builder_create_block(builder, "mul_loop_cond");
+    SirBlock* mul_loop_body = ir_builder_create_block(builder, "mul_loop_body");
+    SirBlock* check_fmt = ir_builder_create_block(builder, "check_fmt");
+
+    ir_build_jmp(builder, div_loop_cond);
+
+    ir_builder_set_insert_point(builder, div_loop_cond);
+    SirValue* curr_norm = ir_build_load(builder, norm_val_ptr);
+    SirValue* cmp_ge_10 = ir_build_binary(builder, SIR_FCMP_GE, curr_norm, ir_const_float(builder, type_get_basic(TY_F64), 10.0));
+    ir_build_br(builder, cmp_ge_10, div_loop_body, mul_loop_cond);
+
+    ir_builder_set_insert_point(builder, div_loop_body);
+    SirValue* next_norm_div = ir_build_binary(builder, SIR_FDIV, curr_norm, ir_const_float(builder, type_get_basic(TY_F64), 10.0));
+    ir_build_store(builder, next_norm_div, norm_val_ptr);
+    SirValue* curr_exp = ir_build_load(builder, exp_ptr);
+    SirValue* next_exp_inc = ir_build_binary(builder, SIR_ADD, curr_exp, ir_const_int(builder, type_get_basic(TY_I64), 1));
+    ir_build_store(builder, next_exp_inc, exp_ptr);
+    ir_build_jmp(builder, div_loop_cond);
+
+    ir_builder_set_insert_point(builder, mul_loop_cond);
+    curr_norm = ir_build_load(builder, norm_val_ptr);
+    SirValue* cmp_lt_1 = ir_build_binary(builder, SIR_FCMP_LT, curr_norm, ir_const_float(builder, type_get_basic(TY_F64), 1.0));
+    ir_build_br(builder, cmp_lt_1, mul_loop_body, check_fmt);
+
+    ir_builder_set_insert_point(builder, mul_loop_body);
+    SirValue* next_norm_mul = ir_build_binary(builder, SIR_FMUL, curr_norm, ir_const_float(builder, type_get_basic(TY_F64), 10.0));
+    ir_build_store(builder, next_norm_mul, norm_val_ptr);
+    curr_exp = ir_build_load(builder, exp_ptr);
+    SirValue* next_exp_dec = ir_build_binary(builder, SIR_SUB, curr_exp, ir_const_int(builder, type_get_basic(TY_I64), 1));
+    ir_build_store(builder, next_exp_dec, exp_ptr);
+    ir_build_jmp(builder, mul_loop_cond);
+
+    ir_builder_set_insert_point(builder, check_fmt);
+    curr_exp = ir_build_load(builder, exp_ptr);
+    SirValue* cmp_exp_gt_5 = ir_build_binary(builder, SIR_ICMP_GT, curr_exp, ir_const_int(builder, type_get_basic(TY_I64), 5));
+    SirValue* cmp_exp_lt_m3 = ir_build_binary(builder, SIR_ICMP_LT, curr_exp, ir_const_int(builder, type_get_basic(TY_I64), -3));
+    SirValue* is_sci = ir_build_binary(builder, SIR_OR, cmp_exp_gt_5, cmp_exp_lt_m3);
+    
+    SirBlock* print_sci = ir_builder_create_block(builder, "print_sci");
+    SirBlock* print_normal = ir_builder_create_block(builder, "print_normal");
+    ir_build_br(builder, is_sci, print_sci, print_normal);
+
+    SirValue* print_uint_val = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN)); print_uint_val->as.global_name = "__print_uint";
+    SirValue* dot_str = ir_const_string(builder, ".", 1);
+    SirValue* args_dot[] = { dot_str, ir_const_int(builder, type_get_basic(TY_I32), 1) };
+
+    // --- Normal Format ---
+    ir_builder_set_insert_point(builder, print_normal);
+    SirValue* int_part_norm = ir_build_cast(builder, abs_val, type_get_basic(TY_P64));
+    SirValue* args_norm_int[] = { int_part_norm };
+    ir_build_call(builder, print_uint_val, args_norm_int, 1, type_get_basic(TY_NIHIL));
+    ir_build_call(builder, print_str_val, args_dot, 2, type_get_basic(TY_NIHIL));
+    
+    SirValue* int_part_norm_f = ir_build_cast(builder, int_part_norm, type_get_basic(TY_F64));
+    SirValue* frac_part_norm = ir_build_binary(builder, SIR_FSUB, abs_val, int_part_norm_f);
+    SirValue* frac_ptr_norm = ir_build_alloca(builder, type_get_basic(TY_F64), 8);
+    ir_build_store(builder, frac_part_norm, frac_ptr_norm);
+    SirValue* i_ptr_norm = ir_build_alloca(builder, type_get_basic(TY_I32), 4);
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I32), 0), i_ptr_norm);
+    
+    SirBlock* loop_cond_norm = ir_builder_create_block(builder, "loop_cond_norm");
+    SirBlock* loop_body_norm = ir_builder_create_block(builder, "loop_body_norm");
+    ir_build_jmp(builder, loop_cond_norm);
+    
+    ir_builder_set_insert_point(builder, loop_cond_norm);
+    SirValue* curr_i_norm = ir_build_load(builder, i_ptr_norm);
+    SirValue* cmp_i_norm = ir_build_binary(builder, SIR_ICMP_LT, curr_i_norm, ir_const_int(builder, type_get_basic(TY_I32), 6));
+    ir_build_br(builder, cmp_i_norm, loop_body_norm, loop_end);
+    
+    ir_builder_set_insert_point(builder, loop_body_norm);
+    SirValue* curr_frac_norm = ir_build_load(builder, frac_ptr_norm);
+    SirValue* next_frac_norm = ir_build_binary(builder, SIR_FMUL, curr_frac_norm, ir_const_float(builder, type_get_basic(TY_F64), 10.0));
+    SirValue* digit_norm = ir_build_cast(builder, next_frac_norm, type_get_basic(TY_P64));
+    SirValue* args_digit_norm[] = { digit_norm };
+    ir_build_call(builder, print_uint_val, args_digit_norm, 1, type_get_basic(TY_NIHIL));
+    SirValue* digit_norm_f = ir_build_cast(builder, digit_norm, type_get_basic(TY_F64));
+    SirValue* rem_frac_norm = ir_build_binary(builder, SIR_FSUB, next_frac_norm, digit_norm_f);
+    ir_build_store(builder, rem_frac_norm, frac_ptr_norm);
+    SirValue* next_i_norm = ir_build_binary(builder, SIR_ADD, curr_i_norm, ir_const_int(builder, type_get_basic(TY_I32), 1));
+    ir_build_store(builder, next_i_norm, i_ptr_norm);
+    ir_build_jmp(builder, loop_cond_norm);
+
+    // --- Scientific Format ---
+    ir_builder_set_insert_point(builder, print_sci);
+    curr_norm = ir_build_load(builder, norm_val_ptr);
+    SirValue* int_part_sci = ir_build_cast(builder, curr_norm, type_get_basic(TY_P64));
+    SirValue* args_sci_int[] = { int_part_sci };
+    ir_build_call(builder, print_uint_val, args_sci_int, 1, type_get_basic(TY_NIHIL));
+    ir_build_call(builder, print_str_val, args_dot, 2, type_get_basic(TY_NIHIL));
+    
+    SirValue* int_part_sci_f = ir_build_cast(builder, int_part_sci, type_get_basic(TY_F64));
+    SirValue* frac_part_sci = ir_build_binary(builder, SIR_FSUB, curr_norm, int_part_sci_f);
+    SirValue* frac_ptr_sci = ir_build_alloca(builder, type_get_basic(TY_F64), 8);
+    ir_build_store(builder, frac_part_sci, frac_ptr_sci);
+    SirValue* i_ptr_sci = ir_build_alloca(builder, type_get_basic(TY_I32), 4);
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I32), 0), i_ptr_sci);
+    
+    SirBlock* loop_cond_sci = ir_builder_create_block(builder, "loop_cond_sci");
+    SirBlock* loop_body_sci = ir_builder_create_block(builder, "loop_body_sci");
+    SirBlock* print_e = ir_builder_create_block(builder, "print_e");
+    ir_build_jmp(builder, loop_cond_sci);
+    
+    ir_builder_set_insert_point(builder, loop_cond_sci);
+    SirValue* curr_i_sci = ir_build_load(builder, i_ptr_sci);
+    SirValue* cmp_i_sci = ir_build_binary(builder, SIR_ICMP_LT, curr_i_sci, ir_const_int(builder, type_get_basic(TY_I32), 6));
+    ir_build_br(builder, cmp_i_sci, loop_body_sci, print_e);
+    
+    ir_builder_set_insert_point(builder, loop_body_sci);
+    SirValue* curr_frac_sci = ir_build_load(builder, frac_ptr_sci);
+    SirValue* next_frac_sci = ir_build_binary(builder, SIR_FMUL, curr_frac_sci, ir_const_float(builder, type_get_basic(TY_F64), 10.0));
+    SirValue* digit_sci = ir_build_cast(builder, next_frac_sci, type_get_basic(TY_P64));
+    SirValue* args_digit_sci[] = { digit_sci };
+    ir_build_call(builder, print_uint_val, args_digit_sci, 1, type_get_basic(TY_NIHIL));
+    SirValue* digit_sci_f = ir_build_cast(builder, digit_sci, type_get_basic(TY_F64));
+    SirValue* rem_frac_sci = ir_build_binary(builder, SIR_FSUB, next_frac_sci, digit_sci_f);
+    ir_build_store(builder, rem_frac_sci, frac_ptr_sci);
+    SirValue* next_i_sci = ir_build_binary(builder, SIR_ADD, curr_i_sci, ir_const_int(builder, type_get_basic(TY_I32), 1));
+    ir_build_store(builder, next_i_sci, i_ptr_sci);
+    ir_build_jmp(builder, loop_cond_sci);
+    
+    ir_builder_set_insert_point(builder, print_e);
+    SirValue* e_str = ir_const_string(builder, "e", 1);
+    SirValue* args_e[] = { e_str, ir_const_int(builder, type_get_basic(TY_I32), 1) };
+    ir_build_call(builder, print_str_val, args_e, 2, type_get_basic(TY_NIHIL));
+    
+    curr_exp = ir_build_load(builder, exp_ptr);
+    SirValue* print_int_val = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN)); print_int_val->as.global_name = "__print_int";
+    SirValue* args_exp[] = { curr_exp };
+    ir_build_call(builder, print_int_val, args_exp, 1, type_get_basic(TY_NIHIL));
+    ir_build_jmp(builder, loop_end);
+
+    ir_builder_set_insert_point(builder, loop_end);
+    ir_build_ret(builder, NULL);
+}
+
+static void build_print_bool(IrBuilder* builder) {
+    ir_builder_create_function(builder, "__print_bool", type_get_basic(TY_UNKNOWN));
+    SirBlock* entry = ir_builder_create_block(builder, "entry");
+    SirBlock* is_true = ir_builder_create_block(builder, "is_true");
+    SirBlock* is_false = ir_builder_create_block(builder, "is_false");
+    SirBlock* end = ir_builder_create_block(builder, "end");
+    ir_builder_set_insert_point(builder, entry);
+    SirValue* val = ir_get_param(builder, 0, type_get_basic(TY_LOGICA));
+    ir_build_br(builder, val, is_true, is_false);
+    ir_builder_set_insert_point(builder, is_true);
+    SirValue* true_str = ir_const_string(builder, "verum", 5);
+    SirValue* print_str_val = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN)); print_str_val->as.global_name = "__print_str";
+    SirValue* args1[] = { true_str, ir_const_int(builder, type_get_basic(TY_I32), 5) };
+    ir_build_call(builder, print_str_val, args1, 2, type_get_basic(TY_NIHIL));
+    ir_build_jmp(builder, end);
+    ir_builder_set_insert_point(builder, is_false);
+    SirValue* false_str = ir_const_string(builder, "falsum", 6);
+    SirValue* args2[] = { false_str, ir_const_int(builder, type_get_basic(TY_I32), 6) };
+    ir_build_call(builder, print_str_val, args2, 2, type_get_basic(TY_NIHIL));
+    ir_build_jmp(builder, end);
+    ir_builder_set_insert_point(builder, end);
+    ir_build_ret(builder, NULL);
+}
+
+static void build_print_hex(IrBuilder* builder) {
+    ir_builder_create_function(builder, "__print_hex", type_get_basic(TY_UNKNOWN));
+    SirBlock* entry = ir_builder_create_block(builder, "entry");
+    SirBlock* loop_body = ir_builder_create_block(builder, "loop_body");
+    SirBlock* loop_end = ir_builder_create_block(builder, "loop_end");
+    ir_builder_set_insert_point(builder, entry);
+    SirValue* val = ir_get_param(builder, 0, type_get_basic(TY_P64));
+    SirValue* buf = ir_build_alloca(builder, type_get_basic(TY_LITTERA), 20);
+    SirValue* ptr0 = ir_build_gep(builder, buf, ir_const_int(builder, type_get_basic(TY_I32), 0), 1, type_get_via(type_get_basic(TY_LITTERA)));
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I8), '0'), ptr0);
+    SirValue* ptr1 = ir_build_gep(builder, buf, ir_const_int(builder, type_get_basic(TY_I32), 1), 1, type_get_via(type_get_basic(TY_LITTERA)));
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I8), 'x'), ptr1);
+    SirValue* pos = ir_build_alloca(builder, type_get_basic(TY_I32), 4);
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I32), 17), pos);
+    SirValue* val_ptr = ir_build_alloca(builder, type_get_basic(TY_P64), 8);
+    ir_build_store(builder, val, val_ptr);
+    ir_build_jmp(builder, loop_body);
+    ir_builder_set_insert_point(builder, loop_body);
+    SirValue* curr_pos = ir_build_load(builder, pos);
+    SirValue* curr_val = ir_build_load(builder, val_ptr);
+    SirValue* rem = ir_build_binary(builder, SIR_AND, curr_val, ir_const_int(builder, type_get_basic(TY_P64), 15));
+    SirValue* cmp = ir_build_binary(builder, SIR_ICMP_LE, rem, ir_const_int(builder, type_get_basic(TY_P64), 9));
+    SirValue* digit_num = ir_build_binary(builder, SIR_ADD, rem, ir_const_int(builder, type_get_basic(TY_P64), 48));
+    SirValue* digit_alpha = ir_build_binary(builder, SIR_ADD, rem, ir_const_int(builder, type_get_basic(TY_P64), 87));
+    SirValue* digit = ir_build_select(builder, cmp, digit_num, digit_alpha);
+    SirValue* digit_8 = ir_build_cast(builder, digit, type_get_basic(TY_I8));
+    SirValue* ptr = ir_build_gep(builder, buf, curr_pos, 1, type_get_via(type_get_basic(TY_LITTERA)));
+    ir_build_store(builder, digit_8, ptr);
+    SirValue* next_val = ir_build_binary(builder, SIR_SHR, curr_val, ir_const_int(builder, type_get_basic(TY_P64), 4));
+    ir_build_store(builder, next_val, val_ptr);
+    SirValue* next_pos = ir_build_binary(builder, SIR_SUB, curr_pos, ir_const_int(builder, type_get_basic(TY_I32), 1));
+    ir_build_store(builder, next_pos, pos);
+    SirValue* cmp_pos = ir_build_binary(builder, SIR_ICMP_GT, next_pos, ir_const_int(builder, type_get_basic(TY_I32), 1));
+    ir_build_br(builder, cmp_pos, loop_body, loop_end);
+    ir_builder_set_insert_point(builder, loop_end);
+    SirValue* print_str_val = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN)); print_str_val->as.global_name = "__print_str";
+    SirValue* args[] = { buf, ir_const_int(builder, type_get_basic(TY_I32), 18) };
+    ir_build_call(builder, print_str_val, args, 2, type_get_basic(TY_NIHIL));
+    ir_build_ret(builder, NULL);
+}
+
+static void build_read_char(IrBuilder* builder) {
+    ir_builder_create_function(builder, "__read_char", type_get_basic(TY_I64));
+    SirBlock* entry = ir_builder_create_block(builder, "entry");
+    SirBlock* eof_block = ir_builder_create_block(builder, "eof");
+    ir_builder_set_insert_point(builder, entry);
+    SirValue* buf = ir_build_alloca(builder, type_get_basic(TY_I8), 1);
+    SirInst* sys_read = create_inst(builder, SIR_SYS_READ, 3);
+    sys_read->operands[0] = ir_const_int(builder, type_get_basic(TY_I32), 0); // stdin
+    sys_read->operands[1] = buf;
+    sys_read->operands[2] = ir_const_int(builder, type_get_basic(TY_I32), 1);
+    sys_read->dest = create_vreg(builder, type_get_basic(TY_I32));
+    SirValue* read_bytes = sys_read->dest;
+    SirValue* cmp2 = ir_build_binary(builder, SIR_ICMP_EQ, read_bytes, ir_const_int(builder, type_get_basic(TY_I32), 0));
+    SirBlock* ret_char = ir_builder_create_block(builder, "ret_char");
+    ir_build_br(builder, cmp2, eof_block, ret_char);
+    ir_builder_set_insert_point(builder, ret_char);
+    SirValue* char_val = ir_build_load(builder, buf);
+    SirValue* char_ext = ir_build_cast(builder, char_val, type_get_basic(TY_I64));
+    ir_build_ret(builder, char_ext);
+    ir_builder_set_insert_point(builder, eof_block);
+    ir_build_ret(builder, ir_const_int(builder, type_get_basic(TY_I64), 0));
+}
+
+static void build_lege_char(IrBuilder* builder) {
+    ir_builder_create_function(builder, "__lege_char", type_get_basic(TY_I32));
+    SirBlock* entry = ir_builder_create_block(builder, "entry");
+    SirBlock* loop = ir_builder_create_block(builder, "loop");
+    SirBlock* check = ir_builder_create_block(builder, "check");
+    SirBlock* fail = ir_builder_create_block(builder, "fail");
+    SirBlock* success = ir_builder_create_block(builder, "success");
+    ir_builder_set_insert_point(builder, entry);
+    SirValue* ptr = ir_get_param(builder, 0, type_get_via(type_get_basic(TY_LITTERA)));
+    ir_build_jmp(builder, loop);
+    ir_builder_set_insert_point(builder, loop);
+    SirValue* read_char = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN)); read_char->as.global_name = "__read_char";
+    SirValue* c = ir_build_call(builder, read_char, NULL, 0, type_get_basic(TY_I64));
+    SirValue* cmp0 = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), 0));
+    ir_build_br(builder, cmp0, fail, check);
+    ir_builder_set_insert_point(builder, check);
+    SirValue* cmp_sp = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), ' '));
+    SirValue* cmp_nl = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '\n'));
+    SirValue* cmp_cr = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '\r'));
+    SirValue* cmp_tb = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '\t'));
+    SirValue* is_ws1 = ir_build_binary(builder, SIR_OR, cmp_sp, cmp_nl);
+    SirValue* is_ws2 = ir_build_binary(builder, SIR_OR, cmp_cr, cmp_tb);
+    SirValue* is_ws = ir_build_binary(builder, SIR_OR, is_ws1, is_ws2);
+    ir_build_br(builder, is_ws, loop, success);
+    ir_builder_set_insert_point(builder, success);
+    SirValue* c_8 = ir_build_cast(builder, c, type_get_basic(TY_I8));
+    ir_build_store(builder, c_8, ptr);
+    ir_build_ret(builder, ir_const_int(builder, type_get_basic(TY_I32), 1));
+    ir_builder_set_insert_point(builder, fail);
+    ir_build_ret(builder, ir_const_int(builder, type_get_basic(TY_I32), 0));
+}
+
+static void build_lege_bool(IrBuilder* builder) {
+    ir_builder_create_function(builder, "__lege_bool", type_get_basic(TY_I32));
+    SirBlock* entry = ir_builder_create_block(builder, "entry");
+    SirBlock* loop = ir_builder_create_block(builder, "loop");
+    SirBlock* check = ir_builder_create_block(builder, "check");
+    SirBlock* fail = ir_builder_create_block(builder, "fail");
+    SirBlock* check_val = ir_builder_create_block(builder, "check_val");
+    ir_builder_set_insert_point(builder, entry);
+    SirValue* ptr = ir_get_param(builder, 0, type_get_via(type_get_basic(TY_LOGICA)));
+    ir_build_jmp(builder, loop);
+    ir_builder_set_insert_point(builder, loop);
+    SirValue* read_char = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN)); read_char->as.global_name = "__read_char";
+    SirValue* c = ir_build_call(builder, read_char, NULL, 0, type_get_basic(TY_I64));
+    SirValue* cmp0 = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), 0));
+    ir_build_br(builder, cmp0, fail, check);
+    ir_builder_set_insert_point(builder, check);
+    SirValue* cmp_sp = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), ' '));
+    SirValue* cmp_nl = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '\n'));
+    SirValue* cmp_cr = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '\r'));
+    SirValue* cmp_tb = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '\t'));
+    SirValue* is_ws1 = ir_build_binary(builder, SIR_OR, cmp_sp, cmp_nl);
+    SirValue* is_ws2 = ir_build_binary(builder, SIR_OR, cmp_cr, cmp_tb);
+    SirValue* is_ws = ir_build_binary(builder, SIR_OR, is_ws1, is_ws2);
+    ir_build_br(builder, is_ws, loop, check_val);
+    ir_builder_set_insert_point(builder, check_val);
+    SirValue* cmp_1 = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '1'));
+    SirValue* cmp_v = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), 'v'));
+    SirValue* cmp_V = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), 'V'));
+    SirValue* is_true1 = ir_build_binary(builder, SIR_OR, cmp_1, cmp_v);
+    SirValue* is_true = ir_build_binary(builder, SIR_OR, is_true1, cmp_V);
+    SirValue* is_true_8 = ir_build_cast(builder, is_true, type_get_basic(TY_I8));
+    ir_build_store(builder, is_true_8, ptr);
+    ir_build_ret(builder, ir_const_int(builder, type_get_basic(TY_I32), 1));
+    ir_builder_set_insert_point(builder, fail);
+    ir_build_ret(builder, ir_const_int(builder, type_get_basic(TY_I32), 0));
+}
+
+static void build_lege_int(IrBuilder* builder) {
+    ir_builder_create_function(builder, "__lege_int", type_get_basic(TY_I32));
+    SirBlock* entry = ir_builder_create_block(builder, "entry");
+    SirBlock* loop_ws = ir_builder_create_block(builder, "loop_ws");
+    SirBlock* check_ws = ir_builder_create_block(builder, "check_ws");
+    SirBlock* check_sign = ir_builder_create_block(builder, "check_sign");
+    SirBlock* set_neg = ir_builder_create_block(builder, "set_neg");
+    SirBlock* check_plus = ir_builder_create_block(builder, "check_plus");
+    SirBlock* check_digit = ir_builder_create_block(builder, "check_digit");
+    SirBlock* process_digit = ir_builder_create_block(builder, "process_digit");
+    SirBlock* loop_digit = ir_builder_create_block(builder, "loop_digit");
+    SirBlock* done = ir_builder_create_block(builder, "done");
+    SirBlock* fail = ir_builder_create_block(builder, "fail");
+    ir_builder_set_insert_point(builder, entry);
+    SirValue* ptr = ir_get_param(builder, 0, type_get_via(type_get_basic(TY_I64)));
+    SirValue* size = ir_get_param(builder, 1, type_get_basic(TY_I32));
+    SirValue* is_neg_ptr = ir_build_alloca(builder, type_get_basic(TY_I32), 4);
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I32), 0), is_neg_ptr);
+    SirValue* val_ptr = ir_build_alloca(builder, type_get_basic(TY_I64), 8);
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I64), 0), val_ptr);
+    SirValue* c_ptr = ir_build_alloca(builder, type_get_basic(TY_I64), 8);
+    ir_build_jmp(builder, loop_ws);
+    ir_builder_set_insert_point(builder, loop_ws);
+    SirValue* read_char = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN)); read_char->as.global_name = "__read_char";
+    SirValue* c = ir_build_call(builder, read_char, NULL, 0, type_get_basic(TY_I64));
+    ir_build_store(builder, c, c_ptr);
+    SirValue* cmp0 = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), 0));
+    ir_build_br(builder, cmp0, fail, check_ws);
+    ir_builder_set_insert_point(builder, check_ws);
+    SirValue* cmp_sp = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), ' '));
+    SirValue* cmp_nl = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '\n'));
+    SirValue* cmp_cr = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '\r'));
+    SirValue* cmp_tb = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '\t'));
+    SirValue* is_ws1 = ir_build_binary(builder, SIR_OR, cmp_sp, cmp_nl);
+    SirValue* is_ws2 = ir_build_binary(builder, SIR_OR, cmp_cr, cmp_tb);
+    SirValue* is_ws = ir_build_binary(builder, SIR_OR, is_ws1, is_ws2);
+    ir_build_br(builder, is_ws, loop_ws, check_sign);
+    ir_builder_set_insert_point(builder, check_sign);
+    SirValue* cmp_minus = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '-'));
+    ir_build_br(builder, cmp_minus, set_neg, check_plus);
+    ir_builder_set_insert_point(builder, set_neg);
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I32), 1), is_neg_ptr);
+    ir_build_jmp(builder, loop_digit);
+    ir_builder_set_insert_point(builder, check_plus);
+    SirValue* cmp_plus = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '+'));
+    ir_build_br(builder, cmp_plus, loop_digit, check_digit);
+    ir_builder_set_insert_point(builder, check_digit);
+    SirValue* curr_c = ir_build_load(builder, c_ptr);
+    SirValue* cmp_ge_0 = ir_build_binary(builder, SIR_ICMP_GE, curr_c, ir_const_int(builder, type_get_basic(TY_I64), '0'));
+    SirValue* cmp_le_9 = ir_build_binary(builder, SIR_ICMP_LE, curr_c, ir_const_int(builder, type_get_basic(TY_I64), '9'));
+    SirValue* is_digit = ir_build_binary(builder, SIR_AND, cmp_ge_0, cmp_le_9);
+    ir_build_br(builder, is_digit, process_digit, done);
+    ir_builder_set_insert_point(builder, process_digit);
+    SirValue* digit = ir_build_binary(builder, SIR_SUB, curr_c, ir_const_int(builder, type_get_basic(TY_I64), '0'));
+    SirValue* curr_val = ir_build_load(builder, val_ptr);
+    SirValue* next_val1 = ir_build_binary(builder, SIR_MUL, curr_val, ir_const_int(builder, type_get_basic(TY_I64), 10));
+    SirValue* next_val = ir_build_binary(builder, SIR_ADD, next_val1, digit);
+    ir_build_store(builder, next_val, val_ptr);
+    ir_build_jmp(builder, loop_digit);
+    ir_builder_set_insert_point(builder, loop_digit);
+    SirValue* c2 = ir_build_call(builder, read_char, NULL, 0, type_get_basic(TY_I64));
+    ir_build_store(builder, c2, c_ptr);
+    SirValue* cmp0_2 = ir_build_binary(builder, SIR_ICMP_EQ, c2, ir_const_int(builder, type_get_basic(TY_I64), 0));
+    ir_build_br(builder, cmp0_2, done, check_digit);
+    ir_builder_set_insert_point(builder, done);
+    SirValue* final_val = ir_build_load(builder, val_ptr);
+    SirValue* is_neg = ir_build_load(builder, is_neg_ptr);
+    SirValue* neg_val = ir_build_binary(builder, SIR_SUB, ir_const_int(builder, type_get_basic(TY_I64), 0), final_val);
+    SirValue* cmp_is_neg = ir_build_binary(builder, SIR_ICMP_EQ, is_neg, ir_const_int(builder, type_get_basic(TY_I32), 1));
+    SirValue* res_val = ir_build_select(builder, cmp_is_neg, neg_val, final_val);
+    SirBlock* store_1 = ir_builder_create_block(builder, "store_1");
+    SirBlock* store_2 = ir_builder_create_block(builder, "store_2");
+    SirBlock* do_store_2 = ir_builder_create_block(builder, "do_store_2");
+    SirBlock* store_4 = ir_builder_create_block(builder, "store_4");
+    SirBlock* do_store_4 = ir_builder_create_block(builder, "do_store_4");
+    SirBlock* store_8 = ir_builder_create_block(builder, "store_8");
+    SirBlock* ok = ir_builder_create_block(builder, "ok");
+    SirValue* cmp_s1 = ir_build_binary(builder, SIR_ICMP_EQ, size, ir_const_int(builder, type_get_basic(TY_I32), 1));
+    ir_build_br(builder, cmp_s1, store_1, store_2);
+    ir_builder_set_insert_point(builder, store_1);
+    SirValue* res_1 = ir_build_cast(builder, res_val, type_get_basic(TY_I8));
+    SirValue* ptr_1 = ir_build_cast(builder, ptr, type_get_via(type_get_basic(TY_I8)));
+    ir_build_store(builder, res_1, ptr_1);
+    ir_build_jmp(builder, ok);
+    ir_builder_set_insert_point(builder, store_2);
+    SirValue* cmp_s2 = ir_build_binary(builder, SIR_ICMP_EQ, size, ir_const_int(builder, type_get_basic(TY_I32), 2));
+    ir_build_br(builder, cmp_s2, do_store_2, store_4);
+    ir_builder_set_insert_point(builder, do_store_2);
+    SirValue* res_2 = ir_build_cast(builder, res_val, type_get_basic(TY_I16));
+    SirValue* ptr_2 = ir_build_cast(builder, ptr, type_get_via(type_get_basic(TY_I16)));
+    ir_build_store(builder, res_2, ptr_2);
+    ir_build_jmp(builder, ok);
+    ir_builder_set_insert_point(builder, store_4);
+    SirValue* cmp_s4 = ir_build_binary(builder, SIR_ICMP_EQ, size, ir_const_int(builder, type_get_basic(TY_I32), 4));
+    ir_build_br(builder, cmp_s4, do_store_4, store_8);
+    ir_builder_set_insert_point(builder, do_store_4);
+    SirValue* res_4 = ir_build_cast(builder, res_val, type_get_basic(TY_I32));
+    SirValue* ptr_4 = ir_build_cast(builder, ptr, type_get_via(type_get_basic(TY_I32)));
+    ir_build_store(builder, res_4, ptr_4);
+    ir_build_jmp(builder, ok);
+    ir_builder_set_insert_point(builder, store_8);
+    ir_build_store(builder, res_val, ptr);
+    ir_build_jmp(builder, ok);
+    ir_builder_set_insert_point(builder, ok);
+    ir_build_ret(builder, ir_const_int(builder, type_get_basic(TY_I32), 1));
+    ir_builder_set_insert_point(builder, fail);
+    ir_build_ret(builder, ir_const_int(builder, type_get_basic(TY_I32), 0));
+}
+
+static void build_lege_float(IrBuilder* builder) {
+    ir_builder_create_function(builder, "__lege_float", type_get_basic(TY_I32));
+    SirBlock* entry = ir_builder_create_block(builder, "entry");
+    SirBlock* loop_ws = ir_builder_create_block(builder, "loop_ws");
+    SirBlock* check_ws = ir_builder_create_block(builder, "check_ws");
+    SirBlock* check_sign = ir_builder_create_block(builder, "check_sign");
+    SirBlock* set_neg = ir_builder_create_block(builder, "set_neg");
+    SirBlock* check_plus = ir_builder_create_block(builder, "check_plus");
+    SirBlock* check_digit = ir_builder_create_block(builder, "check_digit");
+    SirBlock* process_digit = ir_builder_create_block(builder, "process_digit");
+    SirBlock* loop_digit = ir_builder_create_block(builder, "loop_digit");
+    SirBlock* check_dot = ir_builder_create_block(builder, "check_dot");
+    SirBlock* loop_frac = ir_builder_create_block(builder, "loop_frac");
+    SirBlock* check_frac_digit = ir_builder_create_block(builder, "check_frac_digit");
+    SirBlock* process_frac = ir_builder_create_block(builder, "process_frac");
+    SirBlock* done = ir_builder_create_block(builder, "done");
+    SirBlock* fail = ir_builder_create_block(builder, "fail");
+    ir_builder_set_insert_point(builder, entry);
+    SirValue* ptr = ir_get_param(builder, 0, type_get_via(type_get_basic(TY_F64)));
+    SirValue* size = ir_get_param(builder, 1, type_get_basic(TY_I32));
+    SirValue* is_neg_ptr = ir_build_alloca(builder, type_get_basic(TY_I32), 4);
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I32), 0), is_neg_ptr);
+    SirValue* int_val_ptr = ir_build_alloca(builder, type_get_basic(TY_I64), 8);
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I64), 0), int_val_ptr);
+    SirValue* frac_val_ptr = ir_build_alloca(builder, type_get_basic(TY_I64), 8);
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I64), 0), frac_val_ptr);
+    SirValue* frac_div_ptr = ir_build_alloca(builder, type_get_basic(TY_I64), 8);
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I64), 1), frac_div_ptr);
+    SirValue* c_ptr = ir_build_alloca(builder, type_get_basic(TY_I64), 8);
+    ir_build_jmp(builder, loop_ws);
+    ir_builder_set_insert_point(builder, loop_ws);
+    SirValue* read_char = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN)); read_char->as.global_name = "__read_char";
+    SirValue* c = ir_build_call(builder, read_char, NULL, 0, type_get_basic(TY_I64));
+    ir_build_store(builder, c, c_ptr);
+    SirValue* cmp0 = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), 0));
+    ir_build_br(builder, cmp0, fail, check_ws);
+    ir_builder_set_insert_point(builder, check_ws);
+    SirValue* cmp_sp = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), ' '));
+    SirValue* cmp_nl = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '\n'));
+    SirValue* cmp_cr = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '\r'));
+    SirValue* cmp_tb = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '\t'));
+    SirValue* is_ws1 = ir_build_binary(builder, SIR_OR, cmp_sp, cmp_nl);
+    SirValue* is_ws2 = ir_build_binary(builder, SIR_OR, cmp_cr, cmp_tb);
+    SirValue* is_ws = ir_build_binary(builder, SIR_OR, is_ws1, is_ws2);
+    ir_build_br(builder, is_ws, loop_ws, check_sign);
+    ir_builder_set_insert_point(builder, check_sign);
+    SirValue* cmp_minus = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '-'));
+    ir_build_br(builder, cmp_minus, set_neg, check_plus);
+    ir_builder_set_insert_point(builder, set_neg);
+    ir_build_store(builder, ir_const_int(builder, type_get_basic(TY_I32), 1), is_neg_ptr);
+    ir_build_jmp(builder, loop_digit);
+    ir_builder_set_insert_point(builder, check_plus);
+    SirValue* cmp_plus = ir_build_binary(builder, SIR_ICMP_EQ, c, ir_const_int(builder, type_get_basic(TY_I64), '+'));
+    ir_build_br(builder, cmp_plus, loop_digit, check_digit);
+    ir_builder_set_insert_point(builder, check_digit);
+    SirValue* curr_c = ir_build_load(builder, c_ptr);
+    SirValue* cmp_dot = ir_build_binary(builder, SIR_ICMP_EQ, curr_c, ir_const_int(builder, type_get_basic(TY_I64), '.'));
+    ir_build_br(builder, cmp_dot, loop_frac, check_dot);
+    ir_builder_set_insert_point(builder, check_dot);
+    SirValue* cmp_ge_0 = ir_build_binary(builder, SIR_ICMP_GE, curr_c, ir_const_int(builder, type_get_basic(TY_I64), '0'));
+    SirValue* cmp_le_9 = ir_build_binary(builder, SIR_ICMP_LE, curr_c, ir_const_int(builder, type_get_basic(TY_I64), '9'));
+    SirValue* is_digit = ir_build_binary(builder, SIR_AND, cmp_ge_0, cmp_le_9);
+    ir_build_br(builder, is_digit, process_digit, done);
+    ir_builder_set_insert_point(builder, process_digit);
+    SirValue* digit = ir_build_binary(builder, SIR_SUB, curr_c, ir_const_int(builder, type_get_basic(TY_I64), '0'));
+    SirValue* curr_val = ir_build_load(builder, int_val_ptr);
+    SirValue* next_val1 = ir_build_binary(builder, SIR_MUL, curr_val, ir_const_int(builder, type_get_basic(TY_I64), 10));
+    SirValue* next_val = ir_build_binary(builder, SIR_ADD, next_val1, digit);
+    ir_build_store(builder, next_val, int_val_ptr);
+    ir_build_jmp(builder, loop_digit);
+    ir_builder_set_insert_point(builder, loop_digit);
+    SirValue* c2 = ir_build_call(builder, read_char, NULL, 0, type_get_basic(TY_I64));
+    ir_build_store(builder, c2, c_ptr);
+    SirValue* cmp0_2 = ir_build_binary(builder, SIR_ICMP_EQ, c2, ir_const_int(builder, type_get_basic(TY_I64), 0));
+    ir_build_br(builder, cmp0_2, done, check_digit);
+    ir_builder_set_insert_point(builder, loop_frac);
+    SirValue* c3 = ir_build_call(builder, read_char, NULL, 0, type_get_basic(TY_I64));
+    ir_build_store(builder, c3, c_ptr);
+    SirValue* cmp0_3 = ir_build_binary(builder, SIR_ICMP_EQ, c3, ir_const_int(builder, type_get_basic(TY_I64), 0));
+    ir_build_br(builder, cmp0_3, done, check_frac_digit);
+    ir_builder_set_insert_point(builder, check_frac_digit);
+    SirValue* curr_c3 = ir_build_load(builder, c_ptr);
+    SirValue* cmp_ge_0_3 = ir_build_binary(builder, SIR_ICMP_GE, curr_c3, ir_const_int(builder, type_get_basic(TY_I64), '0'));
+    SirValue* cmp_le_9_3 = ir_build_binary(builder, SIR_ICMP_LE, curr_c3, ir_const_int(builder, type_get_basic(TY_I64), '9'));
+    SirValue* is_digit_3 = ir_build_binary(builder, SIR_AND, cmp_ge_0_3, cmp_le_9_3);
+    ir_build_br(builder, is_digit_3, process_frac, done);
+    ir_builder_set_insert_point(builder, process_frac);
+    SirValue* digit_3 = ir_build_binary(builder, SIR_SUB, curr_c3, ir_const_int(builder, type_get_basic(TY_I64), '0'));
+    SirValue* curr_frac = ir_build_load(builder, frac_val_ptr);
+    SirValue* next_frac1 = ir_build_binary(builder, SIR_MUL, curr_frac, ir_const_int(builder, type_get_basic(TY_I64), 10));
+    SirValue* next_frac = ir_build_binary(builder, SIR_ADD, next_frac1, digit_3);
+    ir_build_store(builder, next_frac, frac_val_ptr);
+    SirValue* curr_div = ir_build_load(builder, frac_div_ptr);
+    SirValue* next_div = ir_build_binary(builder, SIR_MUL, curr_div, ir_const_int(builder, type_get_basic(TY_I64), 10));
+    ir_build_store(builder, next_div, frac_div_ptr);
+    ir_build_jmp(builder, loop_frac);
+    ir_builder_set_insert_point(builder, done);
+    SirValue* int_part = ir_build_load(builder, int_val_ptr);
+    SirValue* frac_part = ir_build_load(builder, frac_val_ptr);
+    SirValue* div_part = ir_build_load(builder, frac_div_ptr);
+    SirValue* int_f = ir_build_cast(builder, int_part, type_get_basic(TY_F64));
+    SirValue* frac_f = ir_build_cast(builder, frac_part, type_get_basic(TY_F64));
+    SirValue* div_f = ir_build_cast(builder, div_part, type_get_basic(TY_F64));
+    SirValue* frac_res = ir_build_binary(builder, SIR_FDIV, frac_f, div_f);
+    SirValue* final_val = ir_build_binary(builder, SIR_FADD, int_f, frac_res);
+    SirValue* is_neg = ir_build_load(builder, is_neg_ptr);
+    SirValue* neg_val = ir_build_binary(builder, SIR_FSUB, ir_const_float(builder, type_get_basic(TY_F64), 0.0), final_val);
+    SirValue* cmp_is_neg = ir_build_binary(builder, SIR_ICMP_EQ, is_neg, ir_const_int(builder, type_get_basic(TY_I32), 1));
+    
+    SirBlock* store_4 = ir_builder_create_block(builder, "store_4");
+    SirBlock* store_8 = ir_builder_create_block(builder, "store_8");
+    SirBlock* ok = ir_builder_create_block(builder, "ok");
+    SirValue* cmp_s4 = ir_build_binary(builder, SIR_ICMP_EQ, size, ir_const_int(builder, type_get_basic(TY_I32), 4));
+    ir_build_br(builder, cmp_s4, store_4, store_8);
+    
+    ir_builder_set_insert_point(builder, store_4);
+    SirValue* final_val_4 = ir_build_cast(builder, final_val, type_get_basic(TY_F32));
+    SirValue* neg_val_4 = ir_build_cast(builder, neg_val, type_get_basic(TY_F32));
+    SirValue* res_4 = ir_build_select(builder, cmp_is_neg, neg_val_4, final_val_4);
+    SirValue* ptr_4 = ir_build_cast(builder, ptr, type_get_via(type_get_basic(TY_F32)));
+    ir_build_store(builder, res_4, ptr_4);
+    ir_build_jmp(builder, ok);
+    
+    ir_builder_set_insert_point(builder, store_8);
+    SirValue* res_8 = ir_build_select(builder, cmp_is_neg, neg_val, final_val);
+    ir_build_store(builder, res_8, ptr);
+    ir_build_jmp(builder, ok);
+    
+    ir_builder_set_insert_point(builder, ok);
+    ir_build_ret(builder, ir_const_int(builder, type_get_basic(TY_I32), 1));
+    ir_builder_set_insert_point(builder, fail);
+    ir_build_ret(builder, ir_const_int(builder, type_get_basic(TY_I32), 0));
+}
+
+static void ir_lower_builtins(IrBuilder* builder) {
+    bool uses_crea = false, uses_neca = false;
+    bool uses_print_str = false, uses_print_int = false, uses_print_uint = false;
+    bool uses_print_float = false, uses_print_bool = false, uses_print_hex = false;
+    bool uses_print_char = false;
+    bool uses_lege_int = false, uses_lege_float = false, uses_lege_char = false, uses_lege_bool = false;
+    bool uses_read_char = false;
+
+    for (SirFunction* func = builder->module->first_func; func; func = func->next) {
+        for (SirBlock* block = func->first_block; block; block = block->next) {
+            for (SirInst* inst = block->first_inst; inst; inst = inst->next) {
+                if (inst->opcode == SIR_CALL && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                    const char* callee = inst->operands[0]->as.global_name;
+                    if (strcmp(callee, "crea") == 0) uses_crea = true;
+                    if (strcmp(callee, "neca") == 0) uses_neca = true;
+                    if (strcmp(callee, "scribe") == 0) {
+                        PrintType pt = get_print_type(inst->operands[1]);
+                        if (pt == PRINT_STR) uses_print_str = true;
+                        else if (pt == PRINT_INT) uses_print_int = true;
+                        else if (pt == PRINT_UINT) uses_print_uint = true;
+                        else if (pt == PRINT_FLOAT) uses_print_float = true;
+                        else if (pt == PRINT_BOOL) uses_print_bool = true;
+                        else if (pt == PRINT_HEX) uses_print_hex = true;
+                        else if (pt == PRINT_CHAR) uses_print_char = true;
+                    } else if (strcmp(callee, "lege") == 0) {
+                        ScoriaType* target_type = inst->operands[1]->type;
+                        if (target_type && target_type->kind == TY_VIA) target_type = target_type->as.inner;
+                        if (target_type && (target_type->kind == TY_F32 || target_type->kind == TY_F64)) uses_lege_float = true;
+                        else if (target_type && target_type->kind == TY_LITTERA) uses_lege_char = true;
+                        else if (target_type && target_type->kind == TY_LOGICA) uses_lege_bool = true;
+                        else uses_lege_int = true;
+                        uses_read_char = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if (uses_print_float) { uses_print_int = true; uses_print_str = true; uses_print_uint = true; }
+    if (uses_print_int) { uses_print_uint = true; uses_print_str = true; }
+    if (uses_print_uint) { uses_print_str = true; }
+    if (uses_print_bool) { uses_print_str = true; }
+    if (uses_print_hex) { uses_print_str = true; }
+    if (uses_print_char) { uses_print_str = true; }
+
+    if (!uses_crea && !uses_neca && !uses_print_str && !uses_read_char) return;
+
+    SirFunction* orig_func = builder->current_func;
+    SirBlock* orig_block = builder->current_block;
+
+    if (uses_print_str) build_print_str(builder);
+    if (uses_print_uint) build_print_uint(builder);
+    if (uses_print_int) build_print_int(builder);
+    if (uses_print_float) build_print_float(builder);
+    if (uses_print_bool) build_print_bool(builder);
+    if (uses_print_hex) build_print_hex(builder);
+    if (uses_read_char) build_read_char(builder);
+    if (uses_lege_int) build_lege_int(builder);
+    if (uses_lege_float) build_lege_float(builder);
+    if (uses_lege_char) build_lege_char(builder);
+    if (uses_lege_bool) build_lege_bool(builder);
+
+    builder->current_func = orig_func;
+    builder->current_block = orig_block;
+
+    if (uses_print_str) {
+        ir_builder_add_extern(builder, "GetStdHandle", 12, "\"kernel32.dll\"", 14);
+        ir_builder_add_extern(builder, "WriteFile", 9, "\"kernel32.dll\"", 14);
+    }
+    if (uses_read_char) {
+        if (!uses_print_str) ir_builder_add_extern(builder, "GetStdHandle", 12, "\"kernel32.dll\"", 14);
+        ir_builder_add_extern(builder, "ReadFile", 8, "\"kernel32.dll\"", 14);
+    }
+    if (uses_crea || uses_neca) {
+        ir_builder_add_extern(builder, "GetProcessHeap", 14, "\"kernel32.dll\"", 14);
+        if (uses_crea) ir_builder_add_extern(builder, "HeapAlloc", 9, "\"kernel32.dll\"", 14);
+        if (uses_neca) ir_builder_add_extern(builder, "HeapFree", 8, "\"kernel32.dll\"", 14);
+    }
+
+    for (SirFunction* func = builder->module->first_func; func; func = func->next) {
+        if (strncmp(func->name, "__print_", 8) == 0) continue;
+
+        builder->current_func = func;
+        for (SirBlock* block = func->first_block; block; block = block->next) {
+            SirInst* inst = block->first_inst;
+            while (inst) {
+                if (inst->opcode == SIR_CALL && inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                    const char* callee = inst->operands[0]->as.global_name;
+                    if (strcmp(callee, "crea") == 0 || strcmp(callee, "neca") == 0) {
+                        bool is_crea = (strcmp(callee, "crea") == 0);
+                        inst->opcode = is_crea ? SIR_SYS_ALLOC : SIR_SYS_FREE;
+                        SirValue* orig_arg = inst->operands[1];
+                        inst->num_operands = 1;
+                        inst->operands = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * 1);
+                        inst->operands[0] = orig_arg;
+                        if (is_crea) {
+                            inst->dest = create_vreg(builder, type_get_via(type_get_basic(TY_NIHIL)));
+                        } else {
+                            inst->dest = NULL;
+                        }
+                    } else if (strcmp(callee, "scribe") == 0) {
+                        PrintType pt = get_print_type(inst->operands[1]);
+                        builder->current_block = NULL;
+                        
+                        SirValue* print_func = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN));
+                        
+                        if (pt == PRINT_STR) {
+                            print_func->as.global_name = "__print_str";
+                            SirValue* str_ptr;
+                            SirValue* str_len;
+                            if (inst->operands[1]->kind == SIR_VAL_CONST_STRING) {
+                                str_ptr = inst->operands[1];
+                                str_len = ir_const_int(builder, type_get_basic(TY_I32), inst->operands[1]->as.string_val.len);
+                            } else {
+                                SirInst* gep_caput = create_inst(builder, SIR_GEP, 3);
+                                gep_caput->operands[0] = inst->operands[1];
+                                gep_caput->operands[1] = ir_const_int(builder, type_get_basic(TY_I32), 0);
+                                gep_caput->operands[2] = ir_const_int(builder, type_get_basic(TY_I32), 1);
+                                gep_caput->dest = create_vreg(builder, type_get_via(type_get_via(type_get_basic(TY_LITTERA))));
+                                
+                                SirInst* load_caput = create_inst(builder, SIR_LOAD, 1);
+                                load_caput->operands[0] = gep_caput->dest;
+                                load_caput->dest = create_vreg(builder, type_get_via(type_get_basic(TY_LITTERA)));
+                                str_ptr = load_caput->dest;
+                                
+                                SirInst* gep_len = create_inst(builder, SIR_GEP, 3);
+                                gep_len->operands[0] = inst->operands[1];
+                                gep_len->operands[1] = ir_const_int(builder, type_get_basic(TY_I32), 8);
+                                gep_len->operands[2] = ir_const_int(builder, type_get_basic(TY_I32), 1);
+                                gep_len->dest = create_vreg(builder, type_get_via(type_get_basic(TY_I64)));
+                                
+                                SirInst* load_len = create_inst(builder, SIR_LOAD, 1);
+                                load_len->operands[0] = gep_len->dest;
+                                load_len->dest = create_vreg(builder, type_get_basic(TY_I64));
+                                
+                                SirInst* cast_len = create_inst(builder, SIR_CAST, 1);
+                                cast_len->operands[0] = load_len->dest;
+                                cast_len->dest = create_vreg(builder, type_get_basic(TY_I32));
+                                str_len = cast_len->dest;
+                                
+                                gep_caput->prev = inst->prev; gep_caput->next = load_caput;
+                                if (inst->prev) inst->prev->next = gep_caput; else block->first_inst = gep_caput;
+                                load_caput->prev = gep_caput; load_caput->next = gep_len;
+                                gep_len->prev = load_caput; gep_len->next = load_len;
+                                load_len->prev = gep_len; load_len->next = cast_len;
+                                cast_len->prev = load_len; cast_len->next = inst;
+                                inst->prev = cast_len;
+                            }
+                            inst->num_operands = 3;
+                            inst->operands = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * 3);
+                            inst->operands[0] = print_func;
+                            inst->operands[1] = str_ptr;
+                            inst->operands[2] = str_len;
+                        } else if (pt == PRINT_CHAR) {
+                            print_func->as.global_name = "__print_str";
+                            SirInst* alloca_buf = create_inst(builder, SIR_ALLOCA, 1);
+                            alloca_buf->operands[0] = ir_const_int(builder, type_get_basic(TY_I32), 1);
+                            alloca_buf->dest = create_vreg(builder, type_get_via(type_get_basic(TY_LITTERA)));
+                            
+                            SirInst* store_char = create_inst(builder, SIR_STORE, 2);
+                            store_char->operands[0] = inst->operands[1];
+                            store_char->operands[1] = alloca_buf->dest;
+                            
+                            alloca_buf->prev = inst->prev; alloca_buf->next = store_char;
+                            if (inst->prev) inst->prev->next = alloca_buf; else block->first_inst = alloca_buf;
+                            store_char->prev = alloca_buf; store_char->next = inst;
+                            inst->prev = store_char;
+                            
+                            inst->num_operands = 3;
+                            inst->operands = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * 3);
+                            inst->operands[0] = print_func;
+                            inst->operands[1] = alloca_buf->dest;
+                            inst->operands[2] = ir_const_int(builder, type_get_basic(TY_I32), 1);
+                        } else {
+                            if (pt == PRINT_INT) print_func->as.global_name = "__print_int";
+                            else if (pt == PRINT_UINT) print_func->as.global_name = "__print_uint";
+                            else if (pt == PRINT_FLOAT) print_func->as.global_name = "__print_float";
+                            else if (pt == PRINT_BOOL) print_func->as.global_name = "__print_bool";
+                            else if (pt == PRINT_HEX) print_func->as.global_name = "__print_hex";
+                            
+                            SirValue* arg = inst->operands[1];
+                            ScoriaType* target_type = (pt == PRINT_FLOAT) ? type_get_basic(TY_F64) : ((pt == PRINT_BOOL) ? type_get_basic(TY_LOGICA) : ((pt == PRINT_UINT || pt == PRINT_HEX) ? type_get_basic(TY_P64) : type_get_basic(TY_I64)));
+                            
+                            if (arg->type && arg->type->kind != target_type->kind && pt != PRINT_BOOL) {
+                                SirInst* cast_arg = create_inst(builder, SIR_CAST, 1);
+                                cast_arg->operands[0] = arg;
+                                cast_arg->dest = create_vreg(builder, target_type);
+                                
+                                cast_arg->prev = inst->prev; cast_arg->next = inst;
+                                if (inst->prev) inst->prev->next = cast_arg; else block->first_inst = cast_arg;
+                                inst->prev = cast_arg;
+                                arg = cast_arg->dest;
+                            }
+                            
+                            inst->num_operands = 2;
+                            inst->operands = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * 2);
+                            inst->operands[0] = print_func;
+                            inst->operands[1] = arg;
+                        }
+                        builder->current_block = block;
+                    } else if (strcmp(callee, "lege") == 0) {
+                        ScoriaType* target_type = inst->operands[1]->type;
+                        if (target_type && target_type->kind == TY_VIA) target_type = target_type->as.inner;
+                        int size = target_type ? type_get_size(target_type) : 8;
+                        if (size == 0 || size > 8) size = 8;
+                        
+                        builder->current_block = NULL;
+                        SirValue* lege_func = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN));
+                        
+                        if (target_type && target_type->kind == TY_LITTERA) {
+                            lege_func->as.global_name = "__lege_char";
+                            inst->num_operands = 2;
+                        } else if (target_type && target_type->kind == TY_LOGICA) {
+                            lege_func->as.global_name = "__lege_bool";
+                            inst->num_operands = 2;
+                        } else {
+                            if (target_type && (target_type->kind == TY_F32 || target_type->kind == TY_F64)) lege_func->as.global_name = "__lege_float";
+                            else lege_func->as.global_name = "__lege_int";
+                            inst->num_operands = 3;
+                        }
+                        
+                        SirValue** new_ops = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * inst->num_operands);
+                        new_ops[0] = lege_func;
+                        new_ops[1] = inst->operands[1];
+                        if (inst->num_operands == 3) new_ops[2] = ir_const_int(builder, type_get_basic(TY_I32), size);
+                        inst->operands = new_ops;
+                        
+                        builder->current_block = block;
+                    }
+                }
+                inst = inst->next;
+            }
+        }
+    }
+}
+
 void ir_optimize_module(IrBuilder* builder, int opt_level) {
     if (!builder || !builder->module) return;
+    
+    // 将内置宏降级为标准 IR 节点
+    ir_lower_builtins(builder);
+    
     if (opt_level == 0) return;
 
     if (opt_level >= 2) {

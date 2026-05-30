@@ -1,6 +1,5 @@
 #include "x86_mir.h"
 #include "reg_alloc.h"
-#include "builtins.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -216,7 +215,15 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                 }
                 if (inst->opcode == SIR_CALL) {
                     int num_args = inst->num_operands - 1;
-                    if (num_args > max_call_args) max_call_args = num_args;
+                    // SIR_CALL 需要额外的暂存区，总共需要 4 (shadow) + num_args 个 8 字节槽
+                    int required_slots = 4 + num_args;
+                    if (required_slots > max_call_args) max_call_args = required_slots;
+                } else if (inst->opcode == SIR_SYS_WRITE || inst->opcode == SIR_SYS_READ) {
+                    // 使用了 48(%rsp) 作为局部指针，总共需要 56 字节 (7 个槽)
+                    if (7 > max_call_args) max_call_args = 7;
+                } else if (inst->opcode == SIR_SYS_ALLOC || inst->opcode == SIR_SYS_FREE) {
+                    // 使用了 32(%rsp) 作为暂存，总共需要 40 字节 (5 个槽)
+                    if (5 > max_call_args) max_call_args = 5;
                 }
             }
         }
@@ -246,8 +253,12 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
             }
         }
 
-        // 预留足够的栈空间用于函数调用：32字节 shadow space + 所有参数的暂存空间
-        int max_call_area = 32 + max_call_args * 8;
+        // 动态计算传参空间 (Outgoing Space)
+        // 保证至少 32 字节的 Shadow Space，超出 4 个参数的部分每个 8 字节
+        int outgoing_space = (max_call_args > 4 ? max_call_args : 4) * 8;
+        // 强制 16 字节对齐
+        int aligned_outgoing_space = (outgoing_space + 15) & ~15;
+        int max_call_area = aligned_outgoing_space;
         int stack_sub_size = allocator.current_offset + max_call_area;
         int num_callee_pushes = 0;
         for (int i = 0; i < 7; i++) {
@@ -380,7 +391,8 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                         else if (inst->opcode == SIR_OR) opc = X86_INST_OR;
                         else if (inst->opcode == SIR_XOR) opc = X86_INST_XOR;
                         
-                        if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
+                        if (inst->operands[1]->kind == SIR_VAL_CONST_INT && 
+                            inst->operands[1]->as.int_val >= -2147483648LL && inst->operands[1]->as.int_val <= 2147483647LL) {
                             emit_inst2(xblock, opc, op_reg(work_reg, size), op_imm(inst->operands[1]->as.int_val, size));
                         } else {
                             X86Reg right_scratch = (work_reg == X86_REG_RCX) ? X86_REG_RDX : X86_REG_RCX;
@@ -415,7 +427,15 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                                 if (inst->opcode == SIR_DIV) {
                                     if (log2 > 0) emit_inst2(xblock, X86_INST_SHR, op_reg(X86_REG_RAX, size), op_imm(log2, 1));
                                 } else {
-                                    if (log2 > 0) emit_inst2(xblock, X86_INST_AND, op_reg(X86_REG_RAX, size), op_imm(imm - 1, size));
+                                    if (log2 > 0) {
+                                        if ((imm - 1) <= 2147483647LL) {
+                                            emit_inst2(xblock, X86_INST_AND, op_reg(X86_REG_RAX, size), op_imm(imm - 1, size));
+                                        } else {
+                                            X86Reg mask_reg = X86_REG_RCX;
+                                            emit_inst2(xblock, X86_INST_MOV, op_reg(mask_reg, size), op_imm(imm - 1, size));
+                                            emit_inst2(xblock, X86_INST_AND, op_reg(X86_REG_RAX, size), op_reg(mask_reg, size));
+                                        }
+                                    }
                                     else emit_inst2(xblock, X86_INST_XOR, op_reg(X86_REG_RAX, size), op_reg(X86_REG_RAX, size));
                                 }
                                 store_result_mir(xblock, &allocator, inst->dest, X86_REG_RAX, xfunc->frame_size);
@@ -493,7 +513,8 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                         
                         X86Reg left = load_operand_mir(xblock, &allocator, inst->operands[0], left_scratch, xfunc->frame_size);
                         
-                        if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
+                        if (inst->operands[1]->kind == SIR_VAL_CONST_INT && 
+                            inst->operands[1]->as.int_val >= -2147483648LL && inst->operands[1]->as.int_val <= 2147483647LL) {
                             emit_inst2(xblock, X86_INST_CMP, op_reg(left, size), op_imm(inst->operands[1]->as.int_val, size));
                         } else {
                             X86Reg right_scratch = (left == X86_REG_RCX) ? X86_REG_RDX : X86_REG_RCX;
@@ -850,8 +871,13 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                         SirBlock* def_block = inst->operands[1]->as.block;
 
                         for (int i = 0; i < case_count; i++) {
-                            X86Reg val_reg = load_operand_mir(xblock, &allocator, inst->operands[2 + i * 2], X86_REG_RCX, xfunc->frame_size);
-                            emit_inst2(xblock, X86_INST_CMP, op_reg(X86_REG_RAX, 8), op_reg(val_reg, 8));
+                            if (inst->operands[2 + i * 2]->kind == SIR_VAL_CONST_INT && 
+                                inst->operands[2 + i * 2]->as.int_val >= -2147483648LL && inst->operands[2 + i * 2]->as.int_val <= 2147483647LL) {
+                                emit_inst2(xblock, X86_INST_CMP, op_reg(X86_REG_RAX, 8), op_imm(inst->operands[2 + i * 2]->as.int_val, 8));
+                            } else {
+                                X86Reg val_reg = load_operand_mir(xblock, &allocator, inst->operands[2 + i * 2], X86_REG_RCX, xfunc->frame_size);
+                                emit_inst2(xblock, X86_INST_CMP, op_reg(X86_REG_RAX, 8), op_reg(val_reg, 8));
+                            }
 
                             SirBlock* target = inst->operands[2 + i * 2 + 1]->as.block;
                             X86Inst* jcc = emit_inst1(xblock, X86_INST_JCC, op_block(target->id));
@@ -864,102 +890,75 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                         emit_inst0(xblock, X86_INST_UD2);
                         break;
                     }
+                    case SIR_SYS_ALLOC: {
+                        X86Reg size_reg = load_operand_mir(xblock, &allocator, inst->operands[0], X86_REG_RAX, xfunc->frame_size);
+                        emit_inst2(xblock, X86_INST_MOV, op_mem_bd(X86_REG_RSP, 32, 8), op_reg(size_reg, 8));
+                        emit_inst1(xblock, X86_INST_CALL, op_mem_rip("GetProcessHeap", 8));
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 8), op_reg(X86_REG_RAX, 8));
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RDX, 8), op_imm(8, 8));
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_R8, 8), op_mem_bd(X86_REG_RSP, 32, 8));
+                        emit_inst1(xblock, X86_INST_CALL, op_mem_rip("HeapAlloc", 8));
+                        store_result_mir(xblock, &allocator, inst->dest, X86_REG_RAX, xfunc->frame_size);
+                        break;
+                    }
+                    case SIR_SYS_FREE: {
+                        X86Reg ptr_reg = load_operand_mir(xblock, &allocator, inst->operands[0], X86_REG_RAX, xfunc->frame_size);
+                        emit_inst2(xblock, X86_INST_MOV, op_mem_bd(X86_REG_RSP, 32, 8), op_reg(ptr_reg, 8));
+                        emit_inst1(xblock, X86_INST_CALL, op_mem_rip("GetProcessHeap", 8));
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 8), op_reg(X86_REG_RAX, 8));
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RDX, 8), op_imm(0, 8));
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_R8, 8), op_mem_bd(X86_REG_RSP, 32, 8));
+                        emit_inst1(xblock, X86_INST_CALL, op_mem_rip("HeapFree", 8));
+                        break;
+                    }
+                    case SIR_SYS_WRITE: {
+                        X86Reg buf_reg = load_operand_mir(xblock, &allocator, inst->operands[1], X86_REG_RAX, xfunc->frame_size);
+                        emit_inst2(xblock, X86_INST_MOV, op_mem_bd(X86_REG_RSP, 32, 8), op_reg(buf_reg, 8));
+                        X86Reg len_reg = load_operand_mir(xblock, &allocator, inst->operands[2], X86_REG_R10, xfunc->frame_size);
+                        emit_inst2(xblock, X86_INST_MOV, op_mem_bd(X86_REG_RSP, 40, 8), op_reg(len_reg, 8));
+                        
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 4), op_imm(-11, 4));
+                        emit_inst1(xblock, X86_INST_CALL, op_mem_rip("GetStdHandle", 8));
+                        
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 8), op_reg(X86_REG_RAX, 8));
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RDX, 8), op_mem_bd(X86_REG_RSP, 32, 8));
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_R8, 4), op_mem_bd(X86_REG_RSP, 40, 4));
+                        emit_inst2(xblock, X86_INST_LEA, op_reg(X86_REG_R9, 8), op_mem_bd(X86_REG_RSP, 48, 8));
+                        emit_inst2(xblock, X86_INST_MOV, op_mem_bd(X86_REG_RSP, 32, 8), op_imm(0, 8));
+                        emit_inst1(xblock, X86_INST_CALL, op_mem_rip("WriteFile", 8));
+                        
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RAX, 4), op_mem_bd(X86_REG_RSP, 48, 4));
+                        store_result_mir(xblock, &allocator, inst->dest, X86_REG_RAX, xfunc->frame_size);
+                        break;
+                    }
+                    case SIR_SYS_READ: {
+                        X86Reg buf_reg = load_operand_mir(xblock, &allocator, inst->operands[1], X86_REG_RAX, xfunc->frame_size);
+                        emit_inst2(xblock, X86_INST_MOV, op_mem_bd(X86_REG_RSP, 32, 8), op_reg(buf_reg, 8));
+                        X86Reg len_reg = load_operand_mir(xblock, &allocator, inst->operands[2], X86_REG_R10, xfunc->frame_size);
+                        emit_inst2(xblock, X86_INST_MOV, op_mem_bd(X86_REG_RSP, 40, 8), op_reg(len_reg, 8));
+                        
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 4), op_imm(-10, 4));
+                        emit_inst1(xblock, X86_INST_CALL, op_mem_rip("GetStdHandle", 8));
+                        
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 8), op_reg(X86_REG_RAX, 8));
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RDX, 8), op_mem_bd(X86_REG_RSP, 32, 8));
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_R8, 4), op_mem_bd(X86_REG_RSP, 40, 4));
+                        emit_inst2(xblock, X86_INST_MOV, op_mem_bd(X86_REG_RSP, 48, 4), op_imm(0, 4));
+                        emit_inst2(xblock, X86_INST_LEA, op_reg(X86_REG_R9, 8), op_mem_bd(X86_REG_RSP, 48, 8));
+                        emit_inst2(xblock, X86_INST_MOV, op_mem_bd(X86_REG_RSP, 32, 8), op_imm(0, 8));
+                        emit_inst1(xblock, X86_INST_CALL, op_mem_rip("ReadFile", 8));
+                        
+                        emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RAX, 4), op_mem_bd(X86_REG_RSP, 48, 4));
+                        store_result_mir(xblock, &allocator, inst->dest, X86_REG_RAX, xfunc->frame_size);
+                        break;
+                    }
+                    case SIR_SYS_EXIT: {
+                        X86Reg code_reg = load_operand_mir(xblock, &allocator, inst->operands[0], X86_REG_RCX, xfunc->frame_size);
+                        if (code_reg != X86_REG_RCX) emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 4), op_reg(code_reg, 4));
+                        emit_inst1(xblock, X86_INST_CALL, op_mem_rip("ExitProcess", 8));
+                        break;
+                    }
                     case SIR_CALL: {
-                        if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "scribe") == 0) {
-                            PrintType pt = builtins_get_print_type(inst->operands[1]);
-                            X86Reg arg = load_operand_mir(xblock, &allocator, inst->operands[1], X86_REG_RAX, xfunc->frame_size);
-                            if (arg != X86_REG_RCX) emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 8), op_reg(arg, 8));
-                            
-                            if (pt == PRINT_STR) {
-                                if (inst->operands[1]->kind == SIR_VAL_CONST_STRING) {
-                                    // 如果直接传入字符串字面量，RCX 已经是字符串数据的地址
-                                    emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RDX, 8), op_imm(inst->operands[1]->as.string_val.len, 8));
-                                    emit_inst1(xblock, X86_INST_CALL, op_label("__print_str"));
-                                } else {
-                                    // 如果传入的是局部变量，RCX 是指向 cohors littera (胖指针) 的地址
-                                    emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RDX, 8), op_mem_bd(X86_REG_RCX, 8, 8));
-                                    emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 8), op_mem_bd(X86_REG_RCX, 0, 8));
-                                    emit_inst1(xblock, X86_INST_CALL, op_label("__print_str"));
-                                }
-                            } else if (pt == PRINT_BOOL) {
-                                emit_inst1(xblock, X86_INST_CALL, op_label("__print_bool"));
-                            } else if (pt == PRINT_CHAR) {
-                                emit_inst2(xblock, X86_INST_SUB, op_reg(X86_REG_RSP, 8), op_imm(24, 8));
-                                emit_inst2(xblock, X86_INST_MOV, op_mem_bd(X86_REG_RSP, 15, 1), op_reg(X86_REG_RCX, 1));
-                                emit_inst2(xblock, X86_INST_LEA, op_reg(X86_REG_RCX, 8), op_mem_bd(X86_REG_RSP, 15, 8));
-                                emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RDX, 8), op_imm(1, 8));
-                                emit_inst1(xblock, X86_INST_CALL, op_label("__print_str"));
-                                emit_inst2(xblock, X86_INST_ADD, op_reg(X86_REG_RSP, 8), op_imm(24, 8));
-                            } else if (pt == PRINT_HEX) {
-                                emit_inst1(xblock, X86_INST_CALL, op_label("__print_hex"));
-                            } else if (pt == PRINT_FLOAT) {
-                                if (inst->operands[1]->type && inst->operands[1]->type->kind == TY_F32) {
-                                    emit_inst2(xblock, X86_INST_MOVD, op_reg(X86_REG_XMM0, 4), op_reg(X86_REG_RCX, 4));
-                                    emit_inst2(xblock, X86_INST_CVTSS2SD, op_reg(X86_REG_XMM0, 8), op_reg(X86_REG_XMM0, 4));
-                                    emit_inst2(xblock, X86_INST_MOVQ, op_reg(X86_REG_RCX, 8), op_reg(X86_REG_XMM0, 8));
-                                }
-                                emit_inst1(xblock, X86_INST_CALL, op_label("__print_float"));
-                            } else if (pt == PRINT_UINT) {
-                                int arg_size = type_get_size(inst->operands[1]->type);
-                                if (arg_size == 0 || arg_size > 8) arg_size = 8;
-                                if (arg_size < 8) {
-                                    X86Opcode opc = (arg_size == 1) ? X86_INST_MOVZX : (arg_size == 2 ? X86_INST_MOVZX : X86_INST_MOV);
-                                    emit_inst2(xblock, opc, op_reg(X86_REG_RCX, 8), op_reg(X86_REG_RCX, arg_size));
-                                }
-                                emit_inst1(xblock, X86_INST_CALL, op_label("__print_uint"));
-                            } else {
-                                int arg_size = type_get_size(inst->operands[1]->type);
-                                if (arg_size == 0 || arg_size > 8) arg_size = 8;
-                                if (arg_size < 8) {
-                                    bool is_signed = type_is_signed(inst->operands[1]->type);
-                                    X86Opcode opc = X86_INST_MOV;
-                                    if (arg_size == 1) opc = is_signed ? X86_INST_MOVSX : X86_INST_MOVZX;
-                                    else if (arg_size == 2) opc = is_signed ? X86_INST_MOVSX : X86_INST_MOVZX;
-                                    else if (arg_size == 4 && is_signed) opc = X86_INST_MOVSX;
-                                    emit_inst2(xblock, opc, op_reg(X86_REG_RCX, 8), op_reg(X86_REG_RCX, arg_size));
-                                }
-                                emit_inst1(xblock, X86_INST_CALL, op_label("__print_int"));
-                            }
-                            break;
-                        }
-                        if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "lege") == 0) {
-                            ScoriaType* target_type = inst->operands[1]->type;
-                            if (target_type && target_type->kind == TY_VIA) target_type = target_type->as.inner;
-                            int size = target_type ? type_get_size(target_type) : 8;
-                            if (size == 0 || size > 8) size = 8;
-                            
-                            X86Reg ptr_reg = load_operand_mir(xblock, &allocator, inst->operands[1], X86_REG_RCX, xfunc->frame_size);
-                            if (ptr_reg != X86_REG_RCX) emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 8), op_reg(ptr_reg, 8));
-                            
-                            emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RDX, 4), op_imm(size, 4));
-                            
-                            if (target_type && (target_type->kind == TY_F32 || target_type->kind == TY_F64)) {
-                                emit_inst1(xblock, X86_INST_CALL, op_label("__lege_float"));
-                            } else if (target_type && target_type->kind == TY_LITTERA) {
-                                emit_inst1(xblock, X86_INST_CALL, op_label("__lege_char"));
-                            } else if (target_type && target_type->kind == TY_LOGICA) {
-                                emit_inst1(xblock, X86_INST_CALL, op_label("__lege_bool"));
-                            } else {
-                                emit_inst1(xblock, X86_INST_CALL, op_label("__lege_int"));
-                            }
-                            
-                            if (inst->dest) store_result_mir(xblock, &allocator, inst->dest, X86_REG_RAX, xfunc->frame_size);
-                            break;
-                        }
-                        if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "crea") == 0) {
-                            X86Reg arg = load_operand_mir(xblock, &allocator, inst->operands[1], X86_REG_RCX, xfunc->frame_size);
-                            if (arg != X86_REG_RCX) emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 8), op_reg(arg, 8));
-                            emit_inst1(xblock, X86_INST_CALL, op_label("crea"));
-                            if (inst->dest) store_result_mir(xblock, &allocator, inst->dest, X86_REG_RAX, xfunc->frame_size);
-                            break;
-                        }
-                        if (inst->operands[0]->kind == SIR_VAL_GLOBAL && strcmp(inst->operands[0]->as.global_name, "neca") == 0) {
-                            X86Reg arg = load_operand_mir(xblock, &allocator, inst->operands[1], X86_REG_RCX, xfunc->frame_size);
-                            if (arg != X86_REG_RCX) emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 8), op_reg(arg, 8));
-                            emit_inst1(xblock, X86_INST_CALL, op_label("neca"));
-                            break;
-                        }
-
                         bool is_extern = false;
                         if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
                             for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) {
@@ -1038,7 +1037,11 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                         }
                         
                         if (inst->operands[0]->kind == SIR_VAL_GLOBAL) {
-                            emit_inst1(xblock, X86_INST_CALL, op_label(inst->operands[0]->as.global_name));
+                            if (is_extern) {
+                                emit_inst1(xblock, X86_INST_CALL, op_mem_rip(inst->operands[0]->as.global_name, 8));
+                            } else {
+                                emit_inst1(xblock, X86_INST_CALL, op_label(inst->operands[0]->as.global_name));
+                            }
                         } else {
                             X86Reg callee_reg = load_operand_mir(xblock, &allocator, inst->operands[0], X86_REG_R10, xfunc->frame_size);
                             emit_inst1(xblock, X86_INST_CALL, op_reg(callee_reg, 8));

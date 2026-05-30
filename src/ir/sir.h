@@ -33,6 +33,13 @@ typedef enum {
     SIR_RET,     // 返回
     SIR_TRAP,    // 硬件陷阱 (mori)
     
+    // 系统抽象 (OS Lowering)
+    SIR_SYS_ALLOC,
+    SIR_SYS_FREE,
+    SIR_SYS_WRITE,
+    SIR_SYS_READ,
+    SIR_SYS_EXIT,
+    
     // 其他
     SIR_CAST,    // 类型转换
     SIR_GET_PARAM, // 获取函数参数

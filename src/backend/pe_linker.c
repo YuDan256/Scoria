@@ -1,6 +1,5 @@
 #include "pe_linker.h"
 #include "x86_mir.h"
-#include "builtins.h"
 #include "pe_idata.h"
 #include <stdlib.h>
 #include <string.h>
@@ -30,7 +29,7 @@ static uint32_t align_up(uint32_t val, uint32_t alignment) { return (val + align
 
 void emit8(PeCodeBuffer* cb, uint8_t b) { buf_append(cb, b); }
 void emit32(PeCodeBuffer* cb, uint32_t v) { emit8(cb, v & 0xFF); emit8(cb, (v >> 8) & 0xFF); emit8(cb, (v >> 16) & 0xFF); emit8(cb, (v >> 24) & 0xFF); }
-void emit_rex(PeCodeBuffer* cb, int w, int r, int x, int b) { emit8(cb, (uint8_t)(0x40 | (w ? 8 : 0) | (r ? 4 : 0) | (x ? 2 : 0) | (b ? 1 : 0))); }
+void emit_rex(PeCodeBuffer* cb, int w, int r, int x, int b) { if (w || r || x || b) emit8(cb, (uint8_t)(0x40 | (w ? 8 : 0) | (r ? 4 : 0) | (x ? 2 : 0) | (b ? 1 : 0))); }
 void emit_modrm(PeCodeBuffer* cb, int mod, int reg, int rm) { emit8(cb, (uint8_t)(((mod & 3) << 6) | ((reg & 7) << 3) | (rm & 7))); }
 static void emit_sib(PeCodeBuffer* cb, int scale, int index, int base) { emit8(cb, (uint8_t)(((scale & 3) << 6) | ((index & 7) << 3) | (base & 7))); }
 
@@ -68,21 +67,8 @@ uint32_t g_data_relocs[MAX_RELOCS], g_data_offs[MAX_RELOCS]; int g_data_reloc_co
 uint32_t g_func_relocs[MAX_RELOCS], g_func_offs[MAX_RELOCS]; int g_func_reloc_count = 0;
 uint32_t g_extern_relocs[MAX_RELOCS]; int g_extern_idxs[MAX_RELOCS]; int g_extern_reloc_count = 0;
 
-uint32_t g_print_str_relocs[MAX_RELOCS]; int g_print_str_reloc_count = 0;
-uint32_t g_print_int_relocs[MAX_RELOCS]; int g_print_int_reloc_count = 0;
-uint32_t g_print_uint_relocs[MAX_RELOCS]; int g_print_uint_reloc_count = 0;
-uint32_t g_print_hex_relocs[MAX_RELOCS]; int g_print_hex_reloc_count = 0;
-uint32_t g_print_float_relocs[MAX_RELOCS]; int g_print_float_reloc_count = 0;
-uint32_t g_print_bool_relocs[MAX_RELOCS]; int g_print_bool_reloc_count = 0;
-uint32_t g_crea_relocs[MAX_RELOCS]; int g_crea_reloc_count = 0;
-uint32_t g_neca_relocs[MAX_RELOCS]; int g_neca_reloc_count = 0;
-uint32_t g_lege_int_relocs[MAX_RELOCS]; int g_lege_int_reloc_count = 0;
-uint32_t g_lege_float_relocs[MAX_RELOCS]; int g_lege_float_reloc_count = 0;
-uint32_t g_lege_char_relocs[MAX_RELOCS]; int g_lege_char_reloc_count = 0;
-uint32_t g_lege_bool_relocs[MAX_RELOCS]; int g_lege_bool_reloc_count = 0;
-
-uint32_t g_verum_rdata_off = 0, g_falsum_rdata_off = 0, g_dot_rdata_off = 0, g_minus_rdata_off = 0, g_float_10_rdata_off = 0;
 uint32_t g_princeps_offset = 0, g_init_offset = 0;
+uint32_t g_call_exitprocess_reloc = 0;
 
 static void get_mem_rex(X86Operand* op, int* x, int* b) {
     *x = 0; *b = 0;
@@ -118,8 +104,13 @@ static void emit_mem_op(PeCodeBuffer* cb, int reg, X86Operand* op, LinkCtx* ctx)
                         if (strcmp(ext->name, name) == 0) { g_extern_relocs[g_extern_reloc_count] = (uint32_t)cb->size; g_extern_idxs[g_extern_reloc_count++] = ext_idx; is_ext = true; break; }
                     }
                     if (!is_ext) {
+                        bool is_func = false;
                         for (int i = 0; i < ctx->func_count; i++) {
-                            if (strcmp(ctx->funcs[i], name) == 0) { g_func_relocs[g_func_reloc_count] = (uint32_t)cb->size; g_func_offs[g_func_reloc_count++] = ctx->func_offsets[i]; break; }
+                            if (strcmp(ctx->funcs[i], name) == 0) { g_func_relocs[g_func_reloc_count] = (uint32_t)cb->size; g_func_offs[g_func_reloc_count++] = ctx->func_offsets[i]; is_func = true; break; }
+                        }
+                        if (!is_func) {
+                            fprintf(stderr, "Clades fatalis: Symbolum externum non inventum: %s\n", name);
+                            exit(1);
                         }
                     }
                 }
@@ -158,6 +149,12 @@ static void emit_x86_inst(PeCodeBuffer* cb, X86Inst* inst, LinkCtx* ctx) {
                 if (op1->size == 1) { emit_rex(cb, 0, op1->as.reg > 7, x, b); emit8(cb, 0x88); }
                 else { emit_rex(cb, w, op1->as.reg > 7, x, b); emit8(cb, 0x89); }
                 emit_mem_op(cb, op1->as.reg, op0, ctx);
+            } else if (op0->kind >= X86_OP_MEM_BASE_DISP && op1->kind == X86_OP_IMM) {
+                int x=0, b=0; get_mem_rex(op0, &x, &b);
+                emit_rex(cb, w, 0, x, b);
+                if (op0->size == 1) { emit8(cb, 0xC6); emit_mem_op(cb, 0, op0, ctx); emit8(cb, (uint8_t)op1->as.imm); }
+                else if (op0->size == 2) { emit8(cb, 0xC7); emit_mem_op(cb, 0, op0, ctx); emit8(cb, (uint8_t)(op1->as.imm & 0xFF)); emit8(cb, (uint8_t)((op1->as.imm >> 8) & 0xFF)); }
+                else { emit8(cb, 0xC7); emit_mem_op(cb, 0, op0, ctx); emit32(cb, (uint32_t)op1->as.imm); }
             }
             break;
         case X86_INST_MOVSX: case X86_INST_MOVZX: {
@@ -244,28 +241,13 @@ static void emit_x86_inst(PeCodeBuffer* cb, X86Inst* inst, LinkCtx* ctx) {
             if (op0->kind == X86_OP_LABEL) {
                 emit8(cb, 0xE8); const char* name = op0->as.label;
                 if (ctx->pass == 1) {
-                    if (strcmp(name, "__print_str") == 0) {
-                        g_print_str_relocs[g_print_str_reloc_count++] = (uint32_t)cb->size;
-                    }
-                    else if (strcmp(name, "__print_int") == 0) g_print_int_relocs[g_print_int_reloc_count++] = (uint32_t)cb->size;
-                    else if (strcmp(name, "__print_uint") == 0) g_print_uint_relocs[g_print_uint_reloc_count++] = (uint32_t)cb->size;
-                    else if (strcmp(name, "__print_hex") == 0) g_print_hex_relocs[g_print_hex_reloc_count++] = (uint32_t)cb->size;
-                    else if (strcmp(name, "__print_float") == 0) g_print_float_relocs[g_print_float_reloc_count++] = (uint32_t)cb->size;
-                    else if (strcmp(name, "__print_bool") == 0) g_print_bool_relocs[g_print_bool_reloc_count++] = (uint32_t)cb->size;
-                    else if (strcmp(name, "crea") == 0) g_crea_relocs[g_crea_reloc_count++] = (uint32_t)cb->size;
-                    else if (strcmp(name, "neca") == 0) g_neca_relocs[g_neca_reloc_count++] = (uint32_t)cb->size;
-                    else if (strcmp(name, "__lege_int") == 0) g_lege_int_relocs[g_lege_int_reloc_count++] = (uint32_t)cb->size;
-                    else if (strcmp(name, "__lege_float") == 0) g_lege_float_relocs[g_lege_float_reloc_count++] = (uint32_t)cb->size;
-                    else if (strcmp(name, "__lege_char") == 0) g_lege_char_relocs[g_lege_char_reloc_count++] = (uint32_t)cb->size;
-                    else if (strcmp(name, "__lege_bool") == 0) g_lege_bool_relocs[g_lege_bool_reloc_count++] = (uint32_t)cb->size;
-                    else {
-                        for (int i = 0; i < ctx->func_count; i++) {
-                            if (strcmp(ctx->funcs[i], name) == 0) { g_func_relocs[g_func_reloc_count] = (uint32_t)cb->size; g_func_offs[g_func_reloc_count++] = ctx->func_offsets[i]; break; }
-                        }
+                    for (int i = 0; i < ctx->func_count; i++) {
+                        if (strcmp(ctx->funcs[i], name) == 0) { g_func_relocs[g_func_reloc_count] = (uint32_t)cb->size; g_func_offs[g_func_reloc_count++] = ctx->func_offsets[i]; break; }
                     }
                 }
                 emit32(cb, 0);
             } else if (op0->kind == X86_OP_REG) { emit_rex(cb, 1, 0, 0, op0->as.reg > 7); emit8(cb, 0xFF); emit_modrm(cb, 3, 2, op0->as.reg & 7); }
+            else if (op0->kind == X86_OP_MEM_RIP) { emit8(cb, 0xFF); emit_mem_op(cb, 2, op0, ctx); }
             break;
         case X86_INST_RET: emit8(cb, 0xC3); break;
         case X86_INST_CQO: emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x99); break;
@@ -334,8 +316,26 @@ static void emit_x86_inst(PeCodeBuffer* cb, X86Inst* inst, LinkCtx* ctx) {
     }
 }
 
+static void add_sys_extern(SirModule* mod, const char* name, const char* dll) {
+    for (SirExternFunc* e = mod->first_extern; e; e = e->next) {
+        if (strcmp(e->name, name) == 0) return;
+    }
+    SirExternFunc* ext = (SirExternFunc*)calloc(1, sizeof(SirExternFunc));
+    ext->name = name;
+    ext->dll_name = dll;
+    ext->next = mod->first_extern;
+    mod->first_extern = ext;
+}
+
 static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_level) {
-    builtins_analyze_usage(module);
+    add_sys_extern(module, "GetStdHandle", "kernel32.dll");
+    add_sys_extern(module, "WriteFile", "kernel32.dll");
+    add_sys_extern(module, "ReadFile", "kernel32.dll");
+    add_sys_extern(module, "GetProcessHeap", "kernel32.dll");
+    add_sys_extern(module, "HeapAlloc", "kernel32.dll");
+    add_sys_extern(module, "HeapFree", "kernel32.dll");
+    add_sys_extern(module, "ExitProcess", "kernel32.dll");
+
     X86Module* mir = x86_mir_build(module, opt_level);
 
     uint32_t max_block_id = 0;
@@ -429,27 +429,10 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
         }
     }
 
-    if (g_use_print_bool) {
-        g_verum_rdata_off = (uint32_t)linker->rdata_section.size; const char* str_verum = "verum";
-        for (size_t k = 0; k < strlen(str_verum); k++) buf_append(&linker->rdata_section, (uint8_t)str_verum[k]);
-        g_falsum_rdata_off = (uint32_t)linker->rdata_section.size; const char* str_falsum = "falsum";
-        for (size_t k = 0; k < strlen(str_falsum); k++) buf_append(&linker->rdata_section, (uint8_t)str_falsum[k]);
-    }
-
-    if (g_use_print_float) {
-        g_dot_rdata_off = (uint32_t)linker->rdata_section.size; buf_append(&linker->rdata_section, '.');
-        g_minus_rdata_off = (uint32_t)linker->rdata_section.size; buf_append(&linker->rdata_section, '-');
-        while (linker->rdata_section.size % 8 != 0) buf_append(&linker->rdata_section, 0);
-        g_float_10_rdata_off = (uint32_t)linker->rdata_section.size; uint64_t float_10_bits = 4621819117588971520ULL;
-        for (int i = 0; i < 8; i++) buf_append(&linker->rdata_section, (uint8_t)(float_10_bits >> (i * 8)));
-    }
-
     for (int pass = 0; pass < 2; pass++) {
         linker->text_section.size = 0;
-        g_print_str_reloc_count = 0; g_print_int_reloc_count = 0; g_print_uint_reloc_count = 0; g_print_hex_reloc_count = 0;
-        g_print_float_reloc_count = 0; g_print_bool_reloc_count = 0; g_str_reloc_count = 0; g_crea_reloc_count = 0;
-        g_neca_reloc_count = 0; g_lege_int_reloc_count = 0; g_lege_float_reloc_count = 0; g_lege_char_reloc_count = 0;
-        g_lege_bool_reloc_count = 0; g_data_reloc_count = 0; g_func_reloc_count = 0; g_extern_reloc_count = 0;
+        g_str_reloc_count = 0;
+        g_data_reloc_count = 0; g_func_reloc_count = 0; g_extern_reloc_count = 0;
 
         LinkCtx ctx;
         ctx.pass = pass; ctx.strings = strings; ctx.string_lens = string_lens; ctx.string_offsets = string_offsets; ctx.string_count = string_count;
@@ -471,7 +454,38 @@ static void generate_machine_code(PeLinker* linker, SirModule* module, int opt_l
                 for (X86Inst* inst = block->first_inst; inst; inst = inst->next) emit_x86_inst(&linker->text_section, inst, &ctx);
             }
         }
-        pe_builtins_generate(linker, g_princeps_offset, g_init_offset);
+
+        // 追加内置汇编例程: _start (真正的入口点)
+        linker->entry_point_offset = (uint32_t)linker->text_section.size;
+        PeCodeBuffer* cb = &linker->text_section;
+        // sub rsp, 40 (32 bytes shadow space + 8 bytes alignment)
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x83); emit8(cb, 0xEC); emit8(cb, 0x28);
+        // mov [rsp+48], rcx (保存 argc 到 Caller 的 Shadow Space)
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x89); emit8(cb, 0x4C); emit8(cb, 0x24); emit8(cb, 0x30);
+        // mov [rsp+56], rdx (保存 argv 到 Caller 的 Shadow Space)
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x89); emit8(cb, 0x54); emit8(cb, 0x24); emit8(cb, 0x38);
+    
+        // call __scoria_init
+        emit8(cb, 0xE8);
+        int32_t rel_init = (int32_t)(g_init_offset - (cb->size + 4));
+        emit32(cb, (uint32_t)rel_init);
+    
+        // mov rcx, [rsp+48] (恢复 argc)
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x8B); emit8(cb, 0x4C); emit8(cb, 0x24); emit8(cb, 0x30);
+        // mov rdx, [rsp+56] (恢复 argv)
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x8B); emit8(cb, 0x54); emit8(cb, 0x24); emit8(cb, 0x38);
+    
+        // call princeps
+        emit8(cb, 0xE8);
+        int32_t rel_princeps = (int32_t)(g_princeps_offset - (cb->size + 4));
+        emit32(cb, (uint32_t)rel_princeps);
+    
+        // mov rcx, rax (exit code)
+        emit_rex(cb, 1, 0, 0, 0); emit8(cb, 0x89); emit8(cb, 0xC1);
+        // call [rip + IAT_ExitProcess]
+        emit8(cb, 0xFF); emit8(cb, 0x15);
+        g_call_exitprocess_reloc = (uint32_t)cb->size;
+        emit32(cb, 0);
     }
 
     x86_mir_free(mir); free(block_offsets); free(func_names); free(func_offsets);
@@ -509,12 +523,7 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
 
     uint32_t rdata_rva = align_up(text_sec.VirtualAddress + text_sec.VirtualSize, sec_align);
     PeImportTable* idata = pe_idata_create();
-    if (g_use_print_str || g_use_print_int || g_use_print_uint) { pe_idata_add_import(idata, "kernel32.dll", "GetStdHandle"); pe_idata_add_import(idata, "kernel32.dll", "WriteFile"); }
     pe_idata_add_import(idata, "kernel32.dll", "ExitProcess");
-    if (g_use_crea || g_use_neca) { pe_idata_add_import(idata, "kernel32.dll", "GetProcessHeap"); }
-    if (g_use_lege) { pe_idata_add_import(idata, "kernel32.dll", "GetStdHandle"); pe_idata_add_import(idata, "kernel32.dll", "ReadFile"); }
-    if (g_use_crea) pe_idata_add_import(idata, "kernel32.dll", "HeapAlloc");
-    if (g_use_neca) pe_idata_add_import(idata, "kernel32.dll", "HeapFree");
     for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) pe_idata_add_import(idata, ext->dll_name, ext->name);
     
     PeCodeBuffer iat_buf;
@@ -573,57 +582,12 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
         memcpy(linker->text_section.buffer + text_off, &rel32, 4);
     }
 
-    if (g_use_print_str) { 
-        for (int i = 0; i < g_print_str_reloc_count; i++) { 
-            uint32_t text_off = g_print_str_relocs[i]; 
-            int32_t rel32 = (int32_t)(g_print_str_offset - (text_off + 4)); 
-            memcpy(linker->text_section.buffer + text_off, &rel32, 4); 
-        } 
-    }
-    if (g_use_print_int) { for (int i = 0; i < g_print_int_reloc_count; i++) { uint32_t text_off = g_print_int_relocs[i]; int32_t rel32 = (int32_t)(g_print_int_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); } }
-    if (g_use_print_uint) { for (int i = 0; i < g_print_uint_reloc_count; i++) { uint32_t text_off = g_print_uint_relocs[i]; int32_t rel32 = (int32_t)(g_print_uint_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); } }
-    if (g_use_print_float) {
-        for (int i = 0; i < g_print_float_reloc_count; i++) { uint32_t text_off = g_print_float_relocs[i]; int32_t rel32 = (int32_t)(g_print_float_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); }
-        int32_t rel_float_minus = (int32_t)((rdata_sec.VirtualAddress + iat_shift + g_minus_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 23 + 4)); 
-        memcpy(linker->text_section.buffer + g_print_float_offset + 23, &rel_float_minus, 4);
-        int32_t rel_float_print_str1 = (int32_t)(g_print_str_offset - (g_print_float_offset + 35 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 35, &rel_float_print_str1, 4);
-        int32_t rel_float_print_int1 = (int32_t)(g_print_int_offset - (g_print_float_offset + 67 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 67, &rel_float_print_int1, 4);
-        int32_t rel_float_dot = (int32_t)((rdata_sec.VirtualAddress + iat_shift + g_dot_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 74 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 74, &rel_float_dot, 4);
-        int32_t rel_float_print_str2 = (int32_t)(g_print_str_offset - (g_print_float_offset + 86 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 86, &rel_float_print_str2, 4);
-        int32_t rel_float_10 = (int32_t)((rdata_sec.VirtualAddress + iat_shift + g_float_10_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 115 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 115, &rel_float_10, 4);
-        int32_t rel_float_print_int2 = (int32_t)(g_print_int_offset - (g_print_float_offset + 138 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 138, &rel_float_print_int2, 4);
-    }
-    if (g_use_print_hex) {
-        for (int i = 0; i < g_print_hex_reloc_count; i++) { uint32_t text_off = g_print_hex_relocs[i]; int32_t rel32 = (int32_t)(g_print_hex_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); }
-        int32_t rel_hex_print_str = (int32_t)(g_print_str_offset - (g_print_hex_offset + 78 + 4)); memcpy(linker->text_section.buffer + g_print_hex_offset + 78, &rel_hex_print_str, 4);
-    }
-    if (g_use_print_bool) {
-        for (int i = 0; i < g_print_bool_reloc_count; i++) { uint32_t text_off = g_print_bool_relocs[i]; int32_t rel32 = (int32_t)(g_print_bool_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); }
-        int32_t rel_bool_print_str = (int32_t)(g_print_str_offset - (g_print_bool_offset + 32 + 4)); memcpy(linker->text_section.buffer + g_print_bool_offset + 32, &rel_bool_print_str, 4);
-        int32_t rel_verum = (int32_t)((rdata_sec.VirtualAddress + iat_shift + g_verum_rdata_off) - (text_sec.VirtualAddress + g_print_bool_offset + 8 + 4)); memcpy(linker->text_section.buffer + g_print_bool_offset + 8, &rel_verum, 4);
-        int32_t rel_falsum = (int32_t)((rdata_sec.VirtualAddress + iat_shift + g_falsum_rdata_off) - (text_sec.VirtualAddress + g_print_bool_offset + 22 + 4)); memcpy(linker->text_section.buffer + g_print_bool_offset + 22, &rel_falsum, 4);
-    }
-    if (g_use_lege) {
-        for (int i = 0; i < g_lege_int_reloc_count; i++) { uint32_t text_off = g_lege_int_relocs[i]; int32_t rel32 = (int32_t)(g_lege_int_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); }
-        for (int i = 0; i < g_lege_float_reloc_count; i++) { uint32_t text_off = g_lege_float_relocs[i]; int32_t rel32 = (int32_t)(g_lege_float_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); }
-        for (int i = 0; i < g_lege_char_reloc_count; i++) { uint32_t text_off = g_lege_char_relocs[i]; int32_t rel32 = (int32_t)(g_lege_char_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); }
-        for (int i = 0; i < g_lege_bool_reloc_count; i++) { uint32_t text_off = g_lege_bool_relocs[i]; int32_t rel32 = (int32_t)(g_lege_bool_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); }
-    }
-    if (g_use_crea) { for (int i = 0; i < g_crea_reloc_count; i++) { uint32_t text_off = g_crea_relocs[i]; int32_t rel32 = (int32_t)(g_crea_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); } }
-    if (g_use_neca) { for (int i = 0; i < g_neca_reloc_count; i++) { uint32_t text_off = g_neca_relocs[i]; int32_t rel32 = (int32_t)(g_neca_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); } }
-
     #define RELOC_IAT(reloc_var, dll, func) do { \
         uint32_t iat_off = pe_idata_get_iat_offset(idata, dll, func); \
         int32_t rel32 = (int32_t)((rdata_sec.VirtualAddress + iat_off) - (text_sec.VirtualAddress + reloc_var + 4)); \
         memcpy(linker->text_section.buffer + reloc_var, &rel32, 4); \
     } while(0)
-    if (g_use_print_str) { RELOC_IAT(g_call_getstdhandle_reloc, "kernel32.dll", "GetStdHandle"); RELOC_IAT(g_call_writeconsolea_reloc, "kernel32.dll", "WriteFile"); }
-    if (g_use_print_int) { RELOC_IAT(g_call_getstdhandle_reloc2, "kernel32.dll", "GetStdHandle"); RELOC_IAT(g_call_writeconsolea_reloc2, "kernel32.dll", "WriteFile"); }
-    if (g_use_print_uint) { RELOC_IAT(g_call_getstdhandle_reloc3, "kernel32.dll", "GetStdHandle"); RELOC_IAT(g_call_writeconsolea_reloc3, "kernel32.dll", "WriteFile"); }
     RELOC_IAT(g_call_exitprocess_reloc, "kernel32.dll", "ExitProcess");
-    if (g_use_crea) { RELOC_IAT(g_call_getprocessheap_reloc1, "kernel32.dll", "GetProcessHeap"); RELOC_IAT(g_call_heapalloc_reloc, "kernel32.dll", "HeapAlloc"); }
-    if (g_use_neca) { RELOC_IAT(g_call_getprocessheap_reloc2, "kernel32.dll", "GetProcessHeap"); RELOC_IAT(g_call_heapfree_reloc, "kernel32.dll", "HeapFree"); }
-    if (g_use_lege) { RELOC_IAT(g_call_getstdhandle_reloc_read, "kernel32.dll", "GetStdHandle"); RELOC_IAT(g_call_readfile_reloc, "kernel32.dll", "ReadFile"); }
 
     for (int i = 0; i < g_extern_reloc_count; i++) {
         uint32_t text_off = g_extern_relocs[i]; int target_idx = g_extern_idxs[i]; SirExternFunc* ext = module->first_extern;

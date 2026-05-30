@@ -1,6 +1,5 @@
 #include "asm_x86_64.h"
 #include "x86_mir.h"
-#include "builtins.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -262,7 +261,7 @@ static void generate_x86_function(FILE* out, X86Function* func) {
                 if (inst->num_ops == 0) {
                     fprintf(out, "    %s\n", opc_name);
                 } else if (inst->num_ops == 1) {
-                    if (inst->opcode == X86_INST_CALL && inst->ops[0].kind == X86_OP_REG) {
+                    if (inst->opcode == X86_INST_CALL && (inst->ops[0].kind == X86_OP_REG || inst->ops[0].kind == X86_OP_MEM_RIP)) {
                         fprintf(out, "    call *%s\n", op0);
                     } else {
                         fprintf(out, "    %s %s\n", opc_name, op0);
@@ -279,7 +278,6 @@ static void generate_x86_function(FILE* out, X86Function* func) {
 void asm_x86_64_generate(FILE* out, SirModule* module, int opt_level) {
     if (!module) return;
 
-    builtins_analyze_usage(module);
     g_string_count = 0;
 
     if (module->first_global) {
@@ -326,8 +324,6 @@ void asm_x86_64_generate(FILE* out, SirModule* module, int opt_level) {
         generate_x86_function(out, func);
     }
     x86_mir_free(mir);
-
-    asm_builtins_generate(out);
 
     if (g_string_count > 0) {
         fprintf(out, "    .section .rdata,\"a\"\n");

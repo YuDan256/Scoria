@@ -200,7 +200,8 @@ void reg_alloc_build_and_color(RegAllocator* allocator, SirFunction* func, int o
                 }
             }
 
-            if (inst->opcode == SIR_CALL) {
+            if (inst->opcode == SIR_CALL || inst->opcode == SIR_SYS_ALLOC || inst->opcode == SIR_SYS_FREE ||
+                inst->opcode == SIR_SYS_WRITE || inst->opcode == SIR_SYS_READ || inst->opcode == SIR_SYS_EXIT) {
                 for (uint32_t v = 1; v <= max_v; v++) {
                     if (current_live[v]) allocator->crosses_call[v] = true;
                 }
