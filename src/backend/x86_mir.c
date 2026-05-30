@@ -131,6 +131,7 @@ static X86Reg load_operand_mir(X86Block* block, RegAllocator* alloc, SirValue* v
         
         int offset = reg_alloc_get_offset(alloc, val->as.vreg, 8);
         int size = val->type ? type_get_size(val->type) : 8;
+        if (size == 0 || size > 8) size = 8;
         bool is_signed = val->type ? type_is_signed(val->type) : false;
         
         X86Opcode opc = X86_INST_MOV;
@@ -306,6 +307,7 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                     }
                     case SIR_LOAD: {
                         int size = type_get_size(inst->dest->type);
+                        if (size == 0 || size > 8) size = 8;
                         bool is_signed = type_is_signed(inst->dest->type);
                         X86Reg ptr_reg = load_operand_mir(xblock, &allocator, inst->operands[0], X86_REG_RCX, xfunc->frame_size);
                         
@@ -327,12 +329,21 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                         int size = 8;
                         if (inst->operands[1]->type && inst->operands[1]->type->kind == TY_VIA) {
                             size = type_get_size(inst->operands[1]->type->as.inner);
-                        } else if (inst->operands[0]->type) {
+                        }
+                        if (size == 0 && inst->operands[0]->type) {
                             size = type_get_size(inst->operands[0]->type);
                         }
+                        if (size == 0 || size > 8 || inst->operands[0]->kind == SIR_VAL_CONST_STRING || inst->operands[0]->kind == SIR_VAL_GLOBAL) {
+                            size = 8;
+                        }
                         
-                        X86Reg val_reg = load_operand_mir(xblock, &allocator, inst->operands[0], X86_REG_RAX, xfunc->frame_size);
+                        X86Reg ptr_color = (inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
+                        X86Reg ptr_phys = (ptr_color != -1) ? get_phys_reg(ptr_color) : -1;
+                        X86Reg val_scratch = (ptr_phys == X86_REG_RAX) ? X86_REG_RCX : X86_REG_RAX;
+                        
+                        X86Reg val_reg = load_operand_mir(xblock, &allocator, inst->operands[0], val_scratch, xfunc->frame_size);
                         X86Reg ptr_scratch = (val_reg == X86_REG_RCX) ? X86_REG_RDX : X86_REG_RCX;
+                        if (ptr_scratch == val_scratch) ptr_scratch = (ptr_scratch == X86_REG_RDX) ? X86_REG_R8 : X86_REG_RDX;
                         X86Reg ptr_reg = load_operand_mir(xblock, &allocator, inst->operands[1], ptr_scratch, xfunc->frame_size);
                         
                         emit_inst2(xblock, X86_INST_MOV, op_mem_bd(ptr_reg, 0, size), op_reg(val_reg, size));
@@ -351,28 +362,33 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                         }
                         int size = (inst->dest && inst->dest->type && type_get_size(inst->dest->type) <= 4) ? 4 : 8;
                         
-                        X86Reg left = load_operand_mir(xblock, &allocator, inst->operands[0], dest_reg, xfunc->frame_size);
-                        if (left != dest_reg) emit_inst2(xblock, X86_INST_MOV, op_reg(dest_reg, size), op_reg(left, size));
+                        X86Reg right_color = (inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
+                        X86Reg right_phys = (right_color != -1) ? get_phys_reg(right_color) : -1;
+                        
+                        X86Reg work_reg = dest_reg;
+                        if (right_phys == dest_reg) {
+                            work_reg = (dest_reg == X86_REG_RAX) ? X86_REG_RCX : X86_REG_RAX;
+                        }
+                        
+                        X86Reg left = load_operand_mir(xblock, &allocator, inst->operands[0], work_reg, xfunc->frame_size);
+                        if (left != work_reg) emit_inst2(xblock, X86_INST_MOV, op_reg(work_reg, size), op_reg(left, size));
+                        
+                        X86Opcode opc = X86_INST_ADD;
+                        if (inst->opcode == SIR_SUB) opc = X86_INST_SUB;
+                        else if (inst->opcode == SIR_MUL) opc = X86_INST_IMUL;
+                        else if (inst->opcode == SIR_AND) opc = X86_INST_AND;
+                        else if (inst->opcode == SIR_OR) opc = X86_INST_OR;
+                        else if (inst->opcode == SIR_XOR) opc = X86_INST_XOR;
                         
                         if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
-                            X86Opcode opc = X86_INST_ADD;
-                            if (inst->opcode == SIR_SUB) opc = X86_INST_SUB;
-                            else if (inst->opcode == SIR_MUL) opc = X86_INST_IMUL;
-                            else if (inst->opcode == SIR_AND) opc = X86_INST_AND;
-                            else if (inst->opcode == SIR_OR) opc = X86_INST_OR;
-                            else if (inst->opcode == SIR_XOR) opc = X86_INST_XOR;
-                            emit_inst2(xblock, opc, op_reg(dest_reg, size), op_imm(inst->operands[1]->as.int_val, size));
+                            emit_inst2(xblock, opc, op_reg(work_reg, size), op_imm(inst->operands[1]->as.int_val, size));
                         } else {
-                            X86Reg right_scratch = (dest_reg == X86_REG_RCX) ? X86_REG_RDX : X86_REG_RCX;
+                            X86Reg right_scratch = (work_reg == X86_REG_RCX) ? X86_REG_RDX : X86_REG_RCX;
                             X86Reg right = load_operand_mir(xblock, &allocator, inst->operands[1], right_scratch, xfunc->frame_size);
-                            X86Opcode opc = X86_INST_ADD;
-                            if (inst->opcode == SIR_SUB) opc = X86_INST_SUB;
-                            else if (inst->opcode == SIR_MUL) opc = X86_INST_IMUL;
-                            else if (inst->opcode == SIR_AND) opc = X86_INST_AND;
-                            else if (inst->opcode == SIR_OR) opc = X86_INST_OR;
-                            else if (inst->opcode == SIR_XOR) opc = X86_INST_XOR;
-                            emit_inst2(xblock, opc, op_reg(dest_reg, size), op_reg(right, size));
+                            emit_inst2(xblock, opc, op_reg(work_reg, size), op_reg(right, size));
                         }
+                        
+                        if (work_reg != dest_reg) emit_inst2(xblock, X86_INST_MOV, op_reg(dest_reg, size), op_reg(work_reg, size));
                         store_result_mir(xblock, &allocator, inst->dest, dest_reg, xfunc->frame_size);
                         break;
                     }
@@ -380,6 +396,10 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                     case SIR_MOD: {
                         bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                         int size = (inst->dest && inst->dest->type && type_get_size(inst->dest->type) <= 4) ? 4 : 8;
+                        
+                        X86Reg right_color = (inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
+                        X86Reg right_phys = (right_color != -1) ? get_phys_reg(right_color) : -1;
+                        X86Reg left_scratch = (right_phys == X86_REG_RAX) ? X86_REG_R8 : X86_REG_RAX;
                         
                         // 常量除法优化 (降级为极其高效的位移和位与)
                         if (opt_level > 0 && is_unsigned && inst->operands[1]->kind == SIR_VAL_CONST_INT) {
@@ -389,7 +409,7 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                                 uint64_t temp = imm;
                                 while (temp > 1) { log2++; temp >>= 1; }
                                 
-                                X86Reg left = load_operand_mir(xblock, &allocator, inst->operands[0], X86_REG_RAX, xfunc->frame_size);
+                                X86Reg left = load_operand_mir(xblock, &allocator, inst->operands[0], left_scratch, xfunc->frame_size);
                                 if (left != X86_REG_RAX) emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RAX, size), op_reg(left, size));
                                 
                                 if (inst->opcode == SIR_DIV) {
@@ -403,8 +423,8 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                             }
                         }
                         
-                        X86Reg left = load_operand_mir(xblock, &allocator, inst->operands[0], X86_REG_RAX, xfunc->frame_size);
-                        X86Reg right_scratch = (left == X86_REG_RCX) ? X86_REG_RDX : X86_REG_RCX;
+                        X86Reg left = load_operand_mir(xblock, &allocator, inst->operands[0], left_scratch, xfunc->frame_size);
+                        X86Reg right_scratch = (left == X86_REG_RCX) ? X86_REG_R9 : X86_REG_RCX;
                         X86Reg right = load_operand_mir(xblock, &allocator, inst->operands[1], right_scratch, xfunc->frame_size);
                         
                         if (left == X86_REG_RCX && right == X86_REG_RAX) {
@@ -434,8 +454,12 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                         bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                         int size = (inst->dest && inst->dest->type && type_get_size(inst->dest->type) <= 4) ? 4 : 8;
                         
-                        X86Reg left = load_operand_mir(xblock, &allocator, inst->operands[0], X86_REG_RAX, xfunc->frame_size);
-                        X86Reg right_scratch = (left == X86_REG_RCX) ? X86_REG_RDX : X86_REG_RCX;
+                        X86Reg right_color = (inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
+                        X86Reg right_phys = (right_color != -1) ? get_phys_reg(right_color) : -1;
+                        X86Reg left_scratch = (right_phys == X86_REG_RAX) ? X86_REG_R8 : X86_REG_RAX;
+                        
+                        X86Reg left = load_operand_mir(xblock, &allocator, inst->operands[0], left_scratch, xfunc->frame_size);
+                        X86Reg right_scratch = (left == X86_REG_RCX) ? X86_REG_R9 : X86_REG_RCX;
                         X86Reg right = load_operand_mir(xblock, &allocator, inst->operands[1], right_scratch, xfunc->frame_size);
                         
                         if (left == X86_REG_RCX && right == X86_REG_RAX) {
@@ -463,7 +487,11 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                         bool is_unsigned = type_is_unsigned(inst->operands[0]->type);
                         int size = (inst->operands[0]->type && type_get_size(inst->operands[0]->type) <= 4) ? 4 : 8;
                         
-                        X86Reg left = load_operand_mir(xblock, &allocator, inst->operands[0], X86_REG_RAX, xfunc->frame_size);
+                        X86Reg right_color = (inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
+                        X86Reg right_phys = (right_color != -1) ? get_phys_reg(right_color) : -1;
+                        X86Reg left_scratch = (right_phys == X86_REG_RAX) ? X86_REG_RCX : X86_REG_RAX;
+                        
+                        X86Reg left = load_operand_mir(xblock, &allocator, inst->operands[0], left_scratch, xfunc->frame_size);
                         
                         if (inst->operands[1]->kind == SIR_VAL_CONST_INT) {
                             emit_inst2(xblock, X86_INST_CMP, op_reg(left, size), op_imm(inst->operands[1]->as.int_val, size));
@@ -562,6 +590,7 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                         } else {
                             int offset = 8 + xfunc->frame_size + num_callee_pushes * 8 + (param_idx - max_reg_args) * 8;
                             int size = type_get_size(inst->dest->type);
+                            if (size == 0 || size > 8) size = 8;
                             bool is_signed = type_is_signed(inst->dest->type);
                             
                             X86Reg dest_reg = X86_REG_RAX;
@@ -631,7 +660,12 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                                 emit_inst2(xblock, X86_INST_LEA, op_reg(dest_reg, 8), op_mem_bd(ptr, offset, 8));
                             }
                         } else {
+                            X86Reg idx_color = (inst->operands[1]->kind == SIR_VAL_VREG) ? reg_alloc_get_color(&allocator, inst->operands[1]->as.vreg) : -1;
+                            X86Reg idx_phys = (idx_color != -1) ? get_phys_reg(idx_color) : -1;
+                            
                             X86Reg ptr_scratch = (dest_reg == X86_REG_RAX) ? X86_REG_RCX : X86_REG_RAX;
+                            if (ptr_scratch == idx_phys) ptr_scratch = (ptr_scratch == X86_REG_RCX) ? X86_REG_RDX : X86_REG_RCX;
+                            
                             X86Reg ptr = load_operand_mir(xblock, &allocator, inst->operands[0], ptr_scratch, xfunc->frame_size);
                             
                             X86Reg idx_scratch = (dest_reg == X86_REG_RCX) ? X86_REG_RDX : X86_REG_RCX;
@@ -676,6 +710,7 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                         if (src != X86_REG_RAX) emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RAX, 8), op_reg(src, 8));
                         
                         int src_size = type_get_size(src_type);
+                        if (src_size == 0 || src_size > 8) src_size = 8;
                         if (src_size < 8 && !src_is_float) {
                             if (type_is_signed(src_type)) {
                                 X86Opcode opc = (src_size == 4) ? X86_INST_MOVSX : X86_INST_MOVSX;
@@ -701,6 +736,7 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                             emit_inst2(xblock, src_is_f32 ? X86_INST_MOVQ : X86_INST_MOVD, op_reg(X86_REG_RAX, src_is_f32 ? 8 : 4), op_reg(X86_REG_XMM0, src_is_f32 ? 8 : 4));
                         } else {
                             int dst_size = type_get_size(dst_type);
+                            if (dst_size == 0 || dst_size > 8) dst_size = 8;
                             if (dst_size < 8) {
                                 if (type_is_signed(dst_type)) {
                                     X86Opcode opc = (dst_size == 4) ? X86_INST_MOVSX : X86_INST_MOVSX;
@@ -835,9 +871,16 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                             if (arg != X86_REG_RCX) emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 8), op_reg(arg, 8));
                             
                             if (pt == PRINT_STR) {
-                                emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RDX, 8), op_mem_bd(X86_REG_RCX, 8, 8));
-                                emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 8), op_mem_bd(X86_REG_RCX, 0, 8));
-                                emit_inst1(xblock, X86_INST_CALL, op_label("__print_str"));
+                                if (inst->operands[1]->kind == SIR_VAL_CONST_STRING) {
+                                    // 如果直接传入字符串字面量，RCX 已经是字符串数据的地址
+                                    emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RDX, 8), op_imm(inst->operands[1]->as.string_val.len, 8));
+                                    emit_inst1(xblock, X86_INST_CALL, op_label("__print_str"));
+                                } else {
+                                    // 如果传入的是局部变量，RCX 是指向 cohors littera (胖指针) 的地址
+                                    emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RDX, 8), op_mem_bd(X86_REG_RCX, 8, 8));
+                                    emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 8), op_mem_bd(X86_REG_RCX, 0, 8));
+                                    emit_inst1(xblock, X86_INST_CALL, op_label("__print_str"));
+                                }
                             } else if (pt == PRINT_BOOL) {
                                 emit_inst1(xblock, X86_INST_CALL, op_label("__print_bool"));
                             } else if (pt == PRINT_CHAR) {
@@ -858,6 +901,7 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                                 emit_inst1(xblock, X86_INST_CALL, op_label("__print_float"));
                             } else if (pt == PRINT_UINT) {
                                 int arg_size = type_get_size(inst->operands[1]->type);
+                                if (arg_size == 0 || arg_size > 8) arg_size = 8;
                                 if (arg_size < 8) {
                                     X86Opcode opc = (arg_size == 1) ? X86_INST_MOVZX : (arg_size == 2 ? X86_INST_MOVZX : X86_INST_MOV);
                                     emit_inst2(xblock, opc, op_reg(X86_REG_RCX, 8), op_reg(X86_REG_RCX, arg_size));
@@ -865,6 +909,7 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                                 emit_inst1(xblock, X86_INST_CALL, op_label("__print_uint"));
                             } else {
                                 int arg_size = type_get_size(inst->operands[1]->type);
+                                if (arg_size == 0 || arg_size > 8) arg_size = 8;
                                 if (arg_size < 8) {
                                     bool is_signed = type_is_signed(inst->operands[1]->type);
                                     X86Opcode opc = X86_INST_MOV;
@@ -881,6 +926,7 @@ X86Module* x86_mir_build(SirModule* module, int opt_level) {
                             ScoriaType* target_type = inst->operands[1]->type;
                             if (target_type && target_type->kind == TY_VIA) target_type = target_type->as.inner;
                             int size = target_type ? type_get_size(target_type) : 8;
+                            if (size == 0 || size > 8) size = 8;
                             
                             X86Reg ptr_reg = load_operand_mir(xblock, &allocator, inst->operands[1], X86_REG_RCX, xfunc->frame_size);
                             if (ptr_reg != X86_REG_RCX) emit_inst2(xblock, X86_INST_MOV, op_reg(X86_REG_RCX, 8), op_reg(ptr_reg, 8));

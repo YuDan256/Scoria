@@ -133,7 +133,7 @@ static void emit_x86_inst(PeCodeBuffer* cb, X86Inst* inst, LinkCtx* ctx) {
     int opc = inst->opcode;
     X86Operand* op0 = &inst->ops[0];
     X86Operand* op1 = &inst->ops[1];
-    int w = (inst->num_ops > 0 && op0->size == 8) ? 1 : 0;
+    int w = (inst->num_ops > 0 && op0->size >= 8) ? 1 : 0;
     if (inst->num_ops > 0 && op0->size == 2) emit8(cb, 0x66);
 
     switch (opc) {
@@ -244,7 +244,9 @@ static void emit_x86_inst(PeCodeBuffer* cb, X86Inst* inst, LinkCtx* ctx) {
             if (op0->kind == X86_OP_LABEL) {
                 emit8(cb, 0xE8); const char* name = op0->as.label;
                 if (ctx->pass == 1) {
-                    if (strcmp(name, "__print_str") == 0) g_print_str_relocs[g_print_str_reloc_count++] = (uint32_t)cb->size;
+                    if (strcmp(name, "__print_str") == 0) {
+                        g_print_str_relocs[g_print_str_reloc_count++] = (uint32_t)cb->size;
+                    }
                     else if (strcmp(name, "__print_int") == 0) g_print_int_relocs[g_print_int_reloc_count++] = (uint32_t)cb->size;
                     else if (strcmp(name, "__print_uint") == 0) g_print_uint_relocs[g_print_uint_reloc_count++] = (uint32_t)cb->size;
                     else if (strcmp(name, "__print_hex") == 0) g_print_hex_relocs[g_print_hex_reloc_count++] = (uint32_t)cb->size;
@@ -515,8 +517,22 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     if (g_use_neca) pe_idata_add_import(idata, "kernel32.dll", "HeapFree");
     for (SirExternFunc* ext = module->first_extern; ext; ext = ext->next) pe_idata_add_import(idata, ext->dll_name, ext->name);
     
+    PeCodeBuffer iat_buf;
+    iat_buf.capacity = 4096; iat_buf.size = 0; iat_buf.buffer = (uint8_t*)malloc(iat_buf.capacity);
     uint32_t import_dir_offset = 0, import_dir_size = 0, iat_rva = 0, iat_size = 0;
-    pe_idata_build(idata, &linker->rdata_section, rdata_rva, &import_dir_offset, &import_dir_size, &iat_rva, &iat_size);
+    pe_idata_build(idata, &iat_buf, rdata_rva, &import_dir_offset, &import_dir_size, &iat_rva, &iat_size);
+    
+    uint32_t iat_shift = (uint32_t)iat_buf.size;
+    for (size_t i = 0; i < linker->rdata_section.size; i++) {
+        if (iat_buf.size >= iat_buf.capacity) {
+            iat_buf.capacity *= 2;
+            iat_buf.buffer = (uint8_t*)realloc(iat_buf.buffer, iat_buf.capacity);
+        }
+        iat_buf.buffer[iat_buf.size++] = linker->rdata_section.buffer[i];
+    }
+    free(linker->rdata_section.buffer);
+    linker->rdata_section = iat_buf;
+
     opt.DataDirectory[1].VirtualAddress = rdata_rva + import_dir_offset; opt.DataDirectory[1].Size = import_dir_size;
     opt.DataDirectory[12].VirtualAddress = iat_rva; opt.DataDirectory[12].Size = iat_size;
 
@@ -552,21 +568,29 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
         int32_t rel32 = (int32_t)(target_rva - (text_sec.VirtualAddress + text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4);
     }
     for (int i = 0; i < g_str_reloc_count; i++) {
-        uint32_t text_off = g_str_relocs[i]; uint32_t target_rva = rdata_sec.VirtualAddress + g_str_rdata_offs[i];
-        int32_t rel32 = (int32_t)(target_rva - (text_sec.VirtualAddress + text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4);
+        uint32_t text_off = g_str_relocs[i]; uint32_t target_rva = rdata_sec.VirtualAddress + iat_shift + g_str_rdata_offs[i];
+        int32_t rel32 = (int32_t)(target_rva - (text_sec.VirtualAddress + text_off + 4)); 
+        memcpy(linker->text_section.buffer + text_off, &rel32, 4);
     }
 
-    if (g_use_print_str) { for (int i = 0; i < g_print_str_reloc_count; i++) { uint32_t text_off = g_print_str_relocs[i]; int32_t rel32 = (int32_t)(g_print_str_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); } }
+    if (g_use_print_str) { 
+        for (int i = 0; i < g_print_str_reloc_count; i++) { 
+            uint32_t text_off = g_print_str_relocs[i]; 
+            int32_t rel32 = (int32_t)(g_print_str_offset - (text_off + 4)); 
+            memcpy(linker->text_section.buffer + text_off, &rel32, 4); 
+        } 
+    }
     if (g_use_print_int) { for (int i = 0; i < g_print_int_reloc_count; i++) { uint32_t text_off = g_print_int_relocs[i]; int32_t rel32 = (int32_t)(g_print_int_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); } }
     if (g_use_print_uint) { for (int i = 0; i < g_print_uint_reloc_count; i++) { uint32_t text_off = g_print_uint_relocs[i]; int32_t rel32 = (int32_t)(g_print_uint_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); } }
     if (g_use_print_float) {
         for (int i = 0; i < g_print_float_reloc_count; i++) { uint32_t text_off = g_print_float_relocs[i]; int32_t rel32 = (int32_t)(g_print_float_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); }
-        int32_t rel_float_minus = (int32_t)((rdata_sec.VirtualAddress + g_minus_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 23 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 23, &rel_float_minus, 4);
+        int32_t rel_float_minus = (int32_t)((rdata_sec.VirtualAddress + iat_shift + g_minus_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 23 + 4)); 
+        memcpy(linker->text_section.buffer + g_print_float_offset + 23, &rel_float_minus, 4);
         int32_t rel_float_print_str1 = (int32_t)(g_print_str_offset - (g_print_float_offset + 35 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 35, &rel_float_print_str1, 4);
         int32_t rel_float_print_int1 = (int32_t)(g_print_int_offset - (g_print_float_offset + 67 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 67, &rel_float_print_int1, 4);
-        int32_t rel_float_dot = (int32_t)((rdata_sec.VirtualAddress + g_dot_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 74 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 74, &rel_float_dot, 4);
+        int32_t rel_float_dot = (int32_t)((rdata_sec.VirtualAddress + iat_shift + g_dot_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 74 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 74, &rel_float_dot, 4);
         int32_t rel_float_print_str2 = (int32_t)(g_print_str_offset - (g_print_float_offset + 86 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 86, &rel_float_print_str2, 4);
-        int32_t rel_float_10 = (int32_t)((rdata_sec.VirtualAddress + g_float_10_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 115 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 115, &rel_float_10, 4);
+        int32_t rel_float_10 = (int32_t)((rdata_sec.VirtualAddress + iat_shift + g_float_10_rdata_off) - (text_sec.VirtualAddress + g_print_float_offset + 115 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 115, &rel_float_10, 4);
         int32_t rel_float_print_int2 = (int32_t)(g_print_int_offset - (g_print_float_offset + 138 + 4)); memcpy(linker->text_section.buffer + g_print_float_offset + 138, &rel_float_print_int2, 4);
     }
     if (g_use_print_hex) {
@@ -576,8 +600,8 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     if (g_use_print_bool) {
         for (int i = 0; i < g_print_bool_reloc_count; i++) { uint32_t text_off = g_print_bool_relocs[i]; int32_t rel32 = (int32_t)(g_print_bool_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); }
         int32_t rel_bool_print_str = (int32_t)(g_print_str_offset - (g_print_bool_offset + 32 + 4)); memcpy(linker->text_section.buffer + g_print_bool_offset + 32, &rel_bool_print_str, 4);
-        int32_t rel_verum = (int32_t)((rdata_sec.VirtualAddress + g_verum_rdata_off) - (text_sec.VirtualAddress + g_print_bool_offset + 8 + 4)); memcpy(linker->text_section.buffer + g_print_bool_offset + 8, &rel_verum, 4);
-        int32_t rel_falsum = (int32_t)((rdata_sec.VirtualAddress + g_falsum_rdata_off) - (text_sec.VirtualAddress + g_print_bool_offset + 22 + 4)); memcpy(linker->text_section.buffer + g_print_bool_offset + 22, &rel_falsum, 4);
+        int32_t rel_verum = (int32_t)((rdata_sec.VirtualAddress + iat_shift + g_verum_rdata_off) - (text_sec.VirtualAddress + g_print_bool_offset + 8 + 4)); memcpy(linker->text_section.buffer + g_print_bool_offset + 8, &rel_verum, 4);
+        int32_t rel_falsum = (int32_t)((rdata_sec.VirtualAddress + iat_shift + g_falsum_rdata_off) - (text_sec.VirtualAddress + g_print_bool_offset + 22 + 4)); memcpy(linker->text_section.buffer + g_print_bool_offset + 22, &rel_falsum, 4);
     }
     if (g_use_lege) {
         for (int i = 0; i < g_lege_int_reloc_count; i++) { uint32_t text_off = g_lege_int_relocs[i]; int32_t rel32 = (int32_t)(g_lege_int_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); }
@@ -588,7 +612,11 @@ bool pe_linker_generate_executable(PeLinker* linker, SirModule* module, const ch
     if (g_use_crea) { for (int i = 0; i < g_crea_reloc_count; i++) { uint32_t text_off = g_crea_relocs[i]; int32_t rel32 = (int32_t)(g_crea_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); } }
     if (g_use_neca) { for (int i = 0; i < g_neca_reloc_count; i++) { uint32_t text_off = g_neca_relocs[i]; int32_t rel32 = (int32_t)(g_neca_offset - (text_off + 4)); memcpy(linker->text_section.buffer + text_off, &rel32, 4); } }
 
-    #define RELOC_IAT(reloc_var, dll, func) do { uint32_t iat_off = pe_idata_get_iat_offset(idata, dll, func); int32_t rel32 = (int32_t)((rdata_sec.VirtualAddress + iat_off) - (text_sec.VirtualAddress + reloc_var + 4)); memcpy(linker->text_section.buffer + reloc_var, &rel32, 4); } while(0)
+    #define RELOC_IAT(reloc_var, dll, func) do { \
+        uint32_t iat_off = pe_idata_get_iat_offset(idata, dll, func); \
+        int32_t rel32 = (int32_t)((rdata_sec.VirtualAddress + iat_off) - (text_sec.VirtualAddress + reloc_var + 4)); \
+        memcpy(linker->text_section.buffer + reloc_var, &rel32, 4); \
+    } while(0)
     if (g_use_print_str) { RELOC_IAT(g_call_getstdhandle_reloc, "kernel32.dll", "GetStdHandle"); RELOC_IAT(g_call_writeconsolea_reloc, "kernel32.dll", "WriteFile"); }
     if (g_use_print_int) { RELOC_IAT(g_call_getstdhandle_reloc2, "kernel32.dll", "GetStdHandle"); RELOC_IAT(g_call_writeconsolea_reloc2, "kernel32.dll", "WriteFile"); }
     if (g_use_print_uint) { RELOC_IAT(g_call_getstdhandle_reloc3, "kernel32.dll", "GetStdHandle"); RELOC_IAT(g_call_writeconsolea_reloc3, "kernel32.dll", "WriteFile"); }
