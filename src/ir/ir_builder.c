@@ -1938,9 +1938,7 @@ static void ir_lower_builtins(IrBuilder* builder) {
                         inst->num_operands = 1;
                         inst->operands = (SirValue**)arena_alloc(&builder->arena, sizeof(SirValue*) * 1);
                         inst->operands[0] = orig_arg;
-                        if (is_crea) {
-                            inst->dest = create_vreg(builder, type_get_via(type_get_basic(TY_NIHIL)));
-                        } else {
+                        if (!is_crea) {
                             inst->dest = NULL;
                         }
                     } else if (strcmp(callee, "scribe") == 0) {
@@ -2703,8 +2701,9 @@ void ir_optimize_module(IrBuilder* builder, int opt_level) {
                                 if (strcmp(cf->name, i->operands[0]->as.global_name) == 0) { callee = cf; break; }
                             }
                             if (!callee || !callee->is_pure) { pure = false; break; }
-                        } else if (i->opcode == SIR_ALLOCA || i->opcode == SIR_LOAD || i->opcode == SIR_STORE || i->opcode == SIR_GEP || i->opcode == SIR_MEMCPY) {
-                            pure = false; // 严格模式：禁止任何内存操作
+                        } else if (i->opcode == SIR_ALLOCA || i->opcode == SIR_LOAD || i->opcode == SIR_STORE || i->opcode == SIR_GEP || i->opcode == SIR_MEMCPY ||
+                                   i->opcode == SIR_SYS_ALLOC || i->opcode == SIR_SYS_FREE || i->opcode == SIR_SYS_WRITE || i->opcode == SIR_SYS_READ || i->opcode == SIR_SYS_EXIT) {
+                            pure = false; // 严格模式：禁止任何内存操作与系统调用
                         } else if ((i->opcode >= SIR_FADD && i->opcode <= SIR_FDIV) || (i->opcode >= SIR_FCMP_EQ && i->opcode <= SIR_FCMP_GE)) {
                             pure = false; // 严格模式：禁止浮点数以避免跨平台精度不一致
                         }
