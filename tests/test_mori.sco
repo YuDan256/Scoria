@@ -12,7 +12,7 @@ actio test_return_path(x: i32) -> i32 {
     }
 }
 
-actio edita princeps() -> i32 {
+actio princeps() -> i32 {
     scribe("=== Test mori (Trap) ===\n");
     
     scribe("Test 1: x = 10\n");

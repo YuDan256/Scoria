@@ -20,6 +20,7 @@ set(SCORIA_SRCS
     src/ir/ir_gen.c
     src/ir/ir_printer.c
     src/backend/reg_alloc.c
+    src/backend/x86_mir.c
     src/backend/asm_x86_64.c
     src/backend/pe_linker.c
     src/backend/pe_idata.c

@@ -278,6 +278,35 @@ SirValue* ir_build_binary(IrBuilder* builder, SirOpcode op, SirValue* left, SirV
         return ir_const_float(builder, left->type, res);
     }
 
+    // 代数化简 (Algebraic Simplifications) - 即时消除冗余指令
+    if (op == SIR_ADD) {
+        if (right->kind == SIR_VAL_CONST_INT && right->as.int_val == 0) return left;
+        if (left->kind == SIR_VAL_CONST_INT && left->as.int_val == 0) return right;
+    } else if (op == SIR_SUB) {
+        if (right->kind == SIR_VAL_CONST_INT && right->as.int_val == 0) return left;
+        if (left == right) return ir_const_int(builder, left->type, 0);
+    } else if (op == SIR_MUL) {
+        if (right->kind == SIR_VAL_CONST_INT && right->as.int_val == 1) return left;
+        if (left->kind == SIR_VAL_CONST_INT && left->as.int_val == 1) return right;
+        if (right->kind == SIR_VAL_CONST_INT && right->as.int_val == 0) return ir_const_int(builder, left->type, 0);
+        if (left->kind == SIR_VAL_CONST_INT && left->as.int_val == 0) return ir_const_int(builder, left->type, 0);
+    } else if (op == SIR_DIV) {
+        if (right->kind == SIR_VAL_CONST_INT && right->as.int_val == 1) return left;
+        if (left == right) return ir_const_int(builder, left->type, 1);
+    } else if (op == SIR_AND) {
+        if (right->kind == SIR_VAL_CONST_INT && right->as.int_val == 0) return ir_const_int(builder, left->type, 0);
+        if (left->kind == SIR_VAL_CONST_INT && left->as.int_val == 0) return ir_const_int(builder, left->type, 0);
+        if (left == right) return left;
+    } else if (op == SIR_OR) {
+        if (right->kind == SIR_VAL_CONST_INT && right->as.int_val == 0) return left;
+        if (left->kind == SIR_VAL_CONST_INT && left->as.int_val == 0) return right;
+        if (left == right) return left;
+    } else if (op == SIR_XOR) {
+        if (right->kind == SIR_VAL_CONST_INT && right->as.int_val == 0) return left;
+        if (left->kind == SIR_VAL_CONST_INT && left->as.int_val == 0) return right;
+        if (left == right) return ir_const_int(builder, left->type, 0);
+    }
+
 no_fold:;
     SirInst* inst = create_inst(builder, op, 2);
     inst->operands[0] = left;
@@ -428,6 +457,12 @@ void ir_build_br(IrBuilder* builder, SirValue* cond, SirBlock* true_block, SirBl
         return;
     }
     
+    // 如果两个分支目标相同，退化为无条件跳转
+    if (true_block == false_block) {
+        ir_build_jmp(builder, true_block);
+        return;
+    }
+    
     SirInst* inst = create_inst(builder, SIR_BR, 3);
     inst->operands[0] = cond;
     
@@ -441,6 +476,20 @@ void ir_build_br(IrBuilder* builder, SirValue* cond, SirBlock* true_block, SirBl
 }
 
 void ir_build_switch(IrBuilder* builder, SirValue* cond, SirBlock* default_block, SirValue** case_vals, SirBlock** case_blocks, int case_count) {
+    // 常量折叠：如果 switch 的条件是常量，直接退化为 JMP
+    if (cond && cond->kind == SIR_VAL_CONST_INT) {
+        int64_t val = cond->as.int_val;
+        SirBlock* target = default_block;
+        for (int i = 0; i < case_count; i++) {
+            if (case_vals[i]->kind == SIR_VAL_CONST_INT && case_vals[i]->as.int_val == val) {
+                target = case_blocks[i];
+                break;
+            }
+        }
+        ir_build_jmp(builder, target);
+        return;
+    }
+
     SirInst* inst = create_inst(builder, SIR_SWITCH, 2 + case_count * 2);
     inst->operands[0] = cond;
     SirValue* def_val = create_value(builder, SIR_VAL_BLOCK, type_get_basic(TY_UNKNOWN));
