@@ -559,12 +559,13 @@ static AstNode* block_statement(Parser* parser) {
             capacity = capacity < 8 ? 8 : capacity * 2;
             node->as.block.statements = arena_realloc(&parser->arena, node->as.block.statements, sizeof(AstNode*) * old_capacity, sizeof(AstNode*) * capacity);
         }
+        const char* start_cursor = parser->current.start;
         AstNode* decl = declaration(parser);
         if (decl) {
             node->as.block.statements[node->as.block.stmt_count++] = decl;
         }
-        // 如果在恐慌模式下，且游标没有前进，强制推进以避免死循环
-        if (parser->panic_mode && parser->current.kind == parser->previous.kind) {
+        // 如果游标没有前进，强制推进以避免死循环
+        if (parser->current.start == start_cursor) {
             advance(parser);
         }
     }
@@ -632,7 +633,14 @@ static AstNode* statement(Parser* parser) {
                         stmt_cap = stmt_cap < 4 ? 4 : stmt_cap * 2;
                         body->as.block.statements = arena_realloc(&parser->arena, body->as.block.statements, sizeof(AstNode*) * old_cap, sizeof(AstNode*) * stmt_cap);
                     }
-                    body->as.block.statements[body->as.block.stmt_count++] = declaration(parser);
+                    const char* start_cursor = parser->current.start;
+                    AstNode* decl = declaration(parser);
+                    if (decl) {
+                        body->as.block.statements[body->as.block.stmt_count++] = decl;
+                    }
+                    if (parser->current.start == start_cursor) {
+                        advance(parser);
+                    }
                 }
 
                 if (case_count >= capacity) {
@@ -658,7 +666,14 @@ static AstNode* statement(Parser* parser) {
                         stmt_cap = stmt_cap < 4 ? 4 : stmt_cap * 2;
                         body->as.block.statements = arena_realloc(&parser->arena, body->as.block.statements, sizeof(AstNode*) * old_cap, sizeof(AstNode*) * stmt_cap);
                     }
-                    body->as.block.statements[body->as.block.stmt_count++] = declaration(parser);
+                    const char* start_cursor = parser->current.start;
+                    AstNode* decl = declaration(parser);
+                    if (decl) {
+                        body->as.block.statements[body->as.block.stmt_count++] = decl;
+                    }
+                    if (parser->current.start == start_cursor) {
+                        advance(parser);
+                    }
                 }
                 default_branch = body;
             } else {
@@ -1177,12 +1192,13 @@ AstNode* parse_program(Parser* parser) {
             capacity = capacity < 8 ? 8 : capacity * 2;
             node->as.program.declarations = arena_realloc(&parser->arena, node->as.program.declarations, sizeof(AstNode*) * old_capacity, sizeof(AstNode*) * capacity);
         }
+        const char* start_cursor = parser->current.start;
         AstNode* decl = declaration(parser);
         if (decl) {
             node->as.program.declarations[node->as.program.decl_count++] = decl;
         }
-        // 如果在恐慌模式下，且游标没有前进，强制推进以避免死循环
-        if (parser->panic_mode && parser->current.kind == parser->previous.kind) {
+        // 如果游标没有前进，强制推进以避免死循环
+        if (parser->current.start == start_cursor) {
             advance(parser);
         }
     }

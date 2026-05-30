@@ -77,7 +77,7 @@ finis:
 actio test_memoria() -> nihil {
     // 动态分配
     sit ptr: via medius = crea(medius, 5);
-    si (ptr == nhl) {
+    si (ptr == nullus) {
         scribe("Allocatio defecit!\n");
         redde;
     }
