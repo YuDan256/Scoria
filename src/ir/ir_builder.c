@@ -1255,8 +1255,8 @@ static void build_print_float(IrBuilder* builder) {
     ir_build_br(builder, is_zero, print_zero, calc_exp);
 
     ir_builder_set_insert_point(builder, print_zero);
-    SirValue* zero_str = ir_const_string(builder, "0.000000", 8);
-    SirValue* args_zero[] = { zero_str, ir_const_int(builder, type_get_basic(TY_I32), 8) };
+    SirValue* zero_str = ir_const_string(builder, "0", 1);
+    SirValue* args_zero[] = { zero_str, ir_const_int(builder, type_get_basic(TY_I32), 1) };
     ir_build_call(builder, print_str_val, args_zero, 2, type_get_basic(TY_NIHIL));
     ir_build_ret(builder, NULL);
 
@@ -1319,6 +1319,16 @@ static void build_print_float(IrBuilder* builder) {
     SirValue* int_part_norm = ir_build_cast(builder, abs_val, type_get_basic(TY_P64));
     SirValue* args_norm_int[] = { int_part_norm };
     ir_build_call(builder, print_uint_val, args_norm_int, 1, type_get_basic(TY_NIHIL));
+    
+    SirValue* curr_exp_norm = ir_build_load(builder, exp_ptr);
+    SirValue* frac_digits = ir_build_binary(builder, SIR_SUB, ir_const_int(builder, type_get_basic(TY_I64), 5), curr_exp_norm);
+    SirValue* frac_digits_i32 = ir_build_cast(builder, frac_digits, type_get_basic(TY_I32));
+    SirValue* cmp_frac_gt_0 = ir_build_binary(builder, SIR_ICMP_GT, frac_digits_i32, ir_const_int(builder, type_get_basic(TY_I32), 0));
+    
+    SirBlock* print_dot_norm = ir_builder_create_block(builder, "print_dot_norm");
+    ir_build_br(builder, cmp_frac_gt_0, print_dot_norm, loop_end);
+    
+    ir_builder_set_insert_point(builder, print_dot_norm);
     ir_build_call(builder, print_str_val, args_dot, 2, type_get_basic(TY_NIHIL));
     
     SirValue* int_part_norm_f = ir_build_cast(builder, int_part_norm, type_get_basic(TY_F64));
@@ -1334,7 +1344,7 @@ static void build_print_float(IrBuilder* builder) {
     
     ir_builder_set_insert_point(builder, loop_cond_norm);
     SirValue* curr_i_norm = ir_build_load(builder, i_ptr_norm);
-    SirValue* cmp_i_norm = ir_build_binary(builder, SIR_ICMP_LT, curr_i_norm, ir_const_int(builder, type_get_basic(TY_I32), 6));
+    SirValue* cmp_i_norm = ir_build_binary(builder, SIR_ICMP_LT, curr_i_norm, frac_digits_i32);
     ir_build_br(builder, cmp_i_norm, loop_body_norm, loop_end);
     
     ir_builder_set_insert_point(builder, loop_body_norm);
@@ -1372,7 +1382,7 @@ static void build_print_float(IrBuilder* builder) {
     
     ir_builder_set_insert_point(builder, loop_cond_sci);
     SirValue* curr_i_sci = ir_build_load(builder, i_ptr_sci);
-    SirValue* cmp_i_sci = ir_build_binary(builder, SIR_ICMP_LT, curr_i_sci, ir_const_int(builder, type_get_basic(TY_I32), 6));
+    SirValue* cmp_i_sci = ir_build_binary(builder, SIR_ICMP_LT, curr_i_sci, ir_const_int(builder, type_get_basic(TY_I32), 5));
     ir_build_br(builder, cmp_i_sci, loop_body_sci, print_e);
     
     ir_builder_set_insert_point(builder, loop_body_sci);
@@ -1389,13 +1399,44 @@ static void build_print_float(IrBuilder* builder) {
     ir_build_jmp(builder, loop_cond_sci);
     
     ir_builder_set_insert_point(builder, print_e);
-    SirValue* e_str = ir_const_string(builder, "e", 1);
-    SirValue* args_e[] = { e_str, ir_const_int(builder, type_get_basic(TY_I32), 1) };
-    ir_build_call(builder, print_str_val, args_e, 2, type_get_basic(TY_NIHIL));
-    
     curr_exp = ir_build_load(builder, exp_ptr);
+    SirValue* cmp_exp_ge_0 = ir_build_binary(builder, SIR_ICMP_GE, curr_exp, ir_const_int(builder, type_get_basic(TY_I64), 0));
+    
+    SirBlock* print_e_plus = ir_builder_create_block(builder, "print_e_plus");
+    SirBlock* print_e_minus = ir_builder_create_block(builder, "print_e_minus");
+    SirBlock* print_exp_val = ir_builder_create_block(builder, "print_exp_val");
+    
+    ir_build_br(builder, cmp_exp_ge_0, print_e_plus, print_e_minus);
+    
+    ir_builder_set_insert_point(builder, print_e_plus);
+    SirValue* e_plus_str = ir_const_string(builder, "e+", 2);
+    SirValue* args_e_plus[] = { e_plus_str, ir_const_int(builder, type_get_basic(TY_I32), 2) };
+    ir_build_call(builder, print_str_val, args_e_plus, 2, type_get_basic(TY_NIHIL));
+    ir_build_jmp(builder, print_exp_val);
+    
+    ir_builder_set_insert_point(builder, print_e_minus);
+    SirValue* e_minus_str = ir_const_string(builder, "e-", 2);
+    SirValue* args_e_minus[] = { e_minus_str, ir_const_int(builder, type_get_basic(TY_I32), 2) };
+    ir_build_call(builder, print_str_val, args_e_minus, 2, type_get_basic(TY_NIHIL));
+    ir_build_jmp(builder, print_exp_val);
+    
+    ir_builder_set_insert_point(builder, print_exp_val);
+    SirValue* exp_abs = ir_build_select(builder, cmp_exp_ge_0, curr_exp, ir_build_binary(builder, SIR_SUB, ir_const_int(builder, type_get_basic(TY_I64), 0), curr_exp));
+    
+    SirValue* cmp_exp_lt_10 = ir_build_binary(builder, SIR_ICMP_LT, exp_abs, ir_const_int(builder, type_get_basic(TY_I64), 10));
+    SirBlock* print_exp_pad = ir_builder_create_block(builder, "print_exp_pad");
+    SirBlock* print_exp_num = ir_builder_create_block(builder, "print_exp_num");
+    ir_build_br(builder, cmp_exp_lt_10, print_exp_pad, print_exp_num);
+    
+    ir_builder_set_insert_point(builder, print_exp_pad);
+    SirValue* zero_str_pad = ir_const_string(builder, "0", 1);
+    SirValue* args_zero_pad[] = { zero_str_pad, ir_const_int(builder, type_get_basic(TY_I32), 1) };
+    ir_build_call(builder, print_str_val, args_zero_pad, 2, type_get_basic(TY_NIHIL));
+    ir_build_jmp(builder, print_exp_num);
+    
+    ir_builder_set_insert_point(builder, print_exp_num);
     SirValue* print_int_val = create_value(builder, SIR_VAL_GLOBAL, type_get_basic(TY_UNKNOWN)); print_int_val->as.global_name = "__print_int";
-    SirValue* args_exp[] = { curr_exp };
+    SirValue* args_exp[] = { exp_abs };
     ir_build_call(builder, print_int_val, args_exp, 1, type_get_basic(TY_NIHIL));
     ir_build_jmp(builder, loop_end);
 
